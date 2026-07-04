@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:flutter_gpu/gpu.dart' as gpu;
 
+import 'bands.dart' show f32fromBits;
+
 const curveTexWidth = 1024;
 
 class AtlasTextures {
@@ -39,13 +41,21 @@ AtlasTextures uploadAtlasTextures(
     curvePixels[o + 1] = curves[i * 2 + 1];
   }
 
-  final rowCount = rows.length ~/ 2;
-  final rowTexHeight = (rowCount + curveTexWidth - 1) ~/ curveTexWidth;
+  // Row table: 5 u32s per band [start, count, areaBits, xMinBits, xMaxBits]
+  // (see bands.dart). Packed as TWO RGBA32F texels per band — the bit-punned
+  // f32s are un-punned here since our storage medium is a float texture:
+  //   texel[2b]   = (start, count, area, xMin)
+  //   texel[2b+1] = (xMax, 0, 0, 0)
+  final rowCount = rows.length ~/ 5;
+  final rowTexHeight = (rowCount * 2 + curveTexWidth - 1) ~/ curveTexWidth;
   final rowPixels = Float32List(curveTexWidth * rowTexHeight * 4);
   for (var i = 0; i < rowCount; i++) {
-    final o = i * 4;
-    rowPixels[o] = rows[i * 2].toDouble();
-    rowPixels[o + 1] = rows[i * 2 + 1].toDouble();
+    final o = i * 8;
+    rowPixels[o] = rows[i * 5].toDouble();
+    rowPixels[o + 1] = rows[i * 5 + 1].toDouble();
+    rowPixels[o + 2] = f32fromBits(rows[i * 5 + 2]); // band winding area
+    rowPixels[o + 3] = f32fromBits(rows[i * 5 + 3]); // ink hull xMin
+    rowPixels[o + 4] = f32fromBits(rows[i * 5 + 4]); // ink hull xMax
   }
 
   final curvesTex = context.createTexture(

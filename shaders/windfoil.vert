@@ -21,7 +21,8 @@ out vec4 v_band;
 void main() {
   float unitsToPx = place.z;
   vec2 camScale = frame_info.cam.xy;
-  float pad = 2.0 / (unitsToPx * max(camScale.x, 1.0e-6));
+  // 1 device px pad: the AA skirt reaches at most half a pixel past the ink.
+  float pad = 1.0 / (unitsToPx * max(camScale.x, 1.0e-6));
   vec2 lo = bbox.xy - vec2(pad);
   vec2 hi = bbox.zw + vec2(pad);
   vec2 em = mix(lo, hi, corner);
