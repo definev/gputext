@@ -15,14 +15,25 @@
 // wrap as unbreakable placeholder boxes, and painted/hit-tested as regular
 // render children on top of the text image.
 //
+// Emoji are supported by delegation: expandEmojiSpans rewrites emoji
+// clusters (ZWJ sequences, skin tones, flags, keycaps) into baseline-aligned
+// inline Text children, so the platform's color-emoji font renders them
+// while windfoil renders everything else.
+//
+// Font fallback is two-layered: the flattener resolves each character
+// against TextStyle.fontFamilyFallback + the engine's fallback chain
+// (still windfoil-rendered), and expandUncoveredSpans delegates characters
+// no registered font covers to inline engine Text (platform fallback).
+//
 // Remaining limits (asserted in debug, degrade gracefully in release):
-// no selection, bidi/RTL shaping, decorations, or font fallback.
+// no selection or bidi/RTL shaping.
 
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
@@ -31,12 +42,18 @@ import '../engine/engine.dart';
 import '../engine/pipeline.dart';
 import '../layout.dart' as wf show LayoutBounds;
 import '../paragraph.dart' as wf;
+import 'emoji.dart';
 import 'span_flattener.dart';
 
 const _maxSurfaceDim = 8192;
 
-class WindfoilRichText extends MultiChildRenderObjectWidget {
-  WindfoilRichText({
+/// Drop-in replacement for RichText. This public widget is a thin
+/// build-time layer: it expands emoji clusters and characters no registered
+/// font covers into inline engine-Text spans (consulting loaded fonts via
+/// ListenableBuilder, so late-loading fonts re-expand), then builds the
+/// render-object widget.
+class WindfoilRichText extends StatelessWidget {
+  const WindfoilRichText({
     super.key,
     required this.text,
     this.textAlign = TextAlign.start,
@@ -56,8 +73,7 @@ class WindfoilRichText extends MultiChildRenderObjectWidget {
     this.filterQuality = FilterQuality.low,
   })  : assert(maxLines == null || maxLines > 0),
         assert(selectionRegistrar == null,
-            'WindfoilRichText does not support text selection (v1)'),
-        super(children: WidgetSpan.extractFromInlineSpan(text, textScaler));
+            'WindfoilRichText does not support text selection (v1)');
 
   final InlineSpan text;
   final TextAlign textAlign;
@@ -86,9 +102,104 @@ class WindfoilRichText extends MultiChildRenderObjectWidget {
   final FilterQuality filterQuality;
 
   @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: Windfoil.instance,
+      builder: (context, _) {
+        var effective = expandEmojiSpans(text);
+        effective = expandUncoveredSpans(effective, Windfoil.instance);
+        return _RawWindfoilRichText(
+          text: text,
+          effectiveText: effective,
+          textAlign: textAlign,
+          textDirection: textDirection,
+          softWrap: softWrap,
+          overflow: overflow,
+          textScaler: textScaler,
+          maxLines: maxLines,
+          locale: locale,
+          strutStyle: strutStyle,
+          textWidthBasis: textWidthBasis,
+          textHeightBehavior: textHeightBehavior,
+          selectionColor: selectionColor,
+          transformAdaptive: transformAdaptive,
+          scaleHint: scaleHint,
+          filterQuality: filterQuality,
+        );
+      },
+    );
+  }
+
+  @override
+  void debugFillProperties(DiagnosticPropertiesBuilder properties) {
+    super.debugFillProperties(properties);
+    properties.add(DiagnosticsProperty<InlineSpan>('text', text));
+    properties.add(EnumProperty<TextAlign>('textAlign', textAlign));
+    properties.add(IntProperty('maxLines', maxLines, defaultValue: null));
+  }
+}
+
+class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
+  _RawWindfoilRichText({
+    required this.text,
+    required this.effectiveText,
+    this.textAlign = TextAlign.start,
+    this.textDirection,
+    this.softWrap = true,
+    this.overflow = TextOverflow.clip,
+    this.textScaler = TextScaler.noScaling,
+    this.maxLines,
+    this.locale,
+    this.strutStyle,
+    this.textWidthBasis = TextWidthBasis.parent,
+    this.textHeightBehavior,
+    this.selectionRegistrar,
+    this.selectionColor,
+    this.transformAdaptive = true,
+    this.scaleHint,
+    this.filterQuality = FilterQuality.low,
+  })  : assert(maxLines == null || maxLines > 0),
+        assert(selectionRegistrar == null,
+            'WindfoilRichText does not support text selection (v1)'),
+        super(
+            children:
+                WidgetSpan.extractFromInlineSpan(effectiveText, textScaler));
+
+  /// The original span, as passed in (RichText-compatible).
+  final InlineSpan text;
+
+  /// The emoji-expanded span tree that is actually laid out and painted.
+  final InlineSpan effectiveText;
+  final TextAlign textAlign;
+  final TextDirection? textDirection;
+  final bool softWrap;
+  final TextOverflow overflow;
+  final TextScaler textScaler;
+  final int? maxLines;
+
+  /// Accepted for RichText signature compatibility; ignored in v1.
+  final Locale? locale;
+  final StrutStyle? strutStyle;
+  final TextWidthBasis textWidthBasis;
+  final TextHeightBehavior? textHeightBehavior;
+  final SelectionRegistrar? selectionRegistrar;
+  final Color? selectionColor;
+
+  /// Re-render glyphs at the effective ancestor-transform scale so text stays
+  /// crisp inside zooming containers.
+  final bool transformAdaptive;
+
+  /// Repaint trigger for zoom changes hidden behind RepaintBoundaries
+  /// (e.g. an InteractiveViewer's TransformationController).
+  final Listenable? scaleHint;
+
+  final FilterQuality filterQuality;
+
+  @override
   RenderWindfoilParagraph createRenderObject(BuildContext context) {
     return RenderWindfoilParagraph(
-      text: text,
+      text: effectiveText,
+      semanticsLabel: text.toPlainText(),
       textAlign: textAlign,
       textDirection: textDirection ?? Directionality.of(context),
       softWrap: softWrap,
@@ -107,7 +218,8 @@ class WindfoilRichText extends MultiChildRenderObjectWidget {
   void updateRenderObject(
       BuildContext context, RenderWindfoilParagraph renderObject) {
     renderObject
-      ..text = text
+      ..text = effectiveText
+      ..semanticsLabel = text.toPlainText()
       ..textAlign = textAlign
       ..textDirection = textDirection ?? Directionality.of(context)
       ..softWrap = softWrap
@@ -136,6 +248,7 @@ class RenderWindfoilParagraph extends RenderBox
         RenderInlineChildrenContainerDefaults {
   RenderWindfoilParagraph({
     required InlineSpan text,
+    required String semanticsLabel,
     required TextAlign textAlign,
     required TextDirection textDirection,
     required bool softWrap,
@@ -147,6 +260,7 @@ class RenderWindfoilParagraph extends RenderBox
     required Listenable? scaleHint,
     required FilterQuality filterQuality,
   })  : _text = text,
+        _semanticsLabel = semanticsLabel,
         _textAlign = textAlign,
         _textDirection = textDirection,
         _softWrap = softWrap,
@@ -175,6 +289,14 @@ class RenderWindfoilParagraph extends RenderBox
   gpu.DeviceBuffer? _instanceBuffer;
   gpu.GpuImageSurface? _surface;
   ui.Image? _image;
+  // Superseded surface+image generations, each tagged with the number of the
+  // frame whose paint replaced them. Disposed only once the engine reports a
+  // frame at least that new has finished rasterizing (see _renderSurface).
+  final List<(gpu.GpuImageSurface?, ui.Image, int)> _retired = [];
+  bool _timingsHooked = false;
+  // Frame number of the newest size-changed render; a heal re-render runs
+  // once the engine reports that frame rasterized (see _renderSurface).
+  int? _healAfterFrame;
   (int, double)? _cacheKey; // (contentGen, renderScale)
   Rect _imageDevRect = Rect.zero;
   double _imageScale = 1;
@@ -200,6 +322,13 @@ class RenderWindfoilParagraph extends RenderBox
         _text = value;
         _needsRelayout();
     }
+  }
+
+  String _semanticsLabel;
+  set semanticsLabel(String value) {
+    if (_semanticsLabel == value) return;
+    _semanticsLabel = value;
+    markNeedsSemanticsUpdate();
   }
 
   TextAlign _textAlign;
@@ -297,9 +426,51 @@ class RenderWindfoilParagraph extends RenderBox
     super.detach();
   }
 
+  /// Timings callback: frames reported here have finished rasterizing.
+  /// Two consumers: images superseded by a frame that old can no longer be
+  /// referenced by the compositor and are safe to dispose, and once the
+  /// newest size-changed frame has rasterized the resize churn has drained,
+  /// so the owed heal re-render can run (see _renderSurface).
+  void _onFrameTimings(List<ui.FrameTiming> timings) {
+    var latest = -1;
+    for (final t in timings) {
+      if (t.frameNumber > latest) latest = t.frameNumber;
+    }
+    while (_retired.isNotEmpty && _retired.first.$3 <= latest) {
+      _retired.removeAt(0).$2.dispose();
+    }
+    final healAt = _healAfterFrame;
+    if (healAt != null && latest >= healAt) {
+      _healAfterFrame = null;
+      if (attached && hasSize) {
+        _cacheKey = null; // force a fresh present, not a cached-image repaint
+        markNeedsPaint();
+      }
+    }
+    if (_retired.isEmpty && _healAfterFrame == null && _timingsHooked) {
+      _timingsHooked = false;
+      SchedulerBinding.instance.removeTimingsCallback(_onFrameTimings);
+    }
+  }
+
+  void _hookTimings() {
+    if (_timingsHooked) return;
+    _timingsHooked = true;
+    SchedulerBinding.instance.addTimingsCallback(_onFrameTimings);
+  }
+
   @override
   void dispose() {
+    _healAfterFrame = null;
+    if (_timingsHooked) {
+      _timingsHooked = false;
+      SchedulerBinding.instance.removeTimingsCallback(_onFrameTimings);
+    }
     _clipHandle.layer = null;
+    for (final (_, img, _) in _retired) {
+      img.dispose();
+    }
+    _retired.clear();
     _image?.dispose();
     _image = null;
     _surface = null;
@@ -494,7 +665,7 @@ class RenderWindfoilParagraph extends RenderBox
   void describeSemanticsConfiguration(SemanticsConfiguration config) {
     super.describeSemanticsConfiguration(config);
     config
-      ..label = _text.toPlainText()
+      ..label = _semanticsLabel
       ..textDirection = _textDirection;
   }
 
@@ -571,9 +742,66 @@ class RenderWindfoilParagraph extends RenderBox
     return false;
   }
 
+  void _drawDecorations(
+      Canvas canvas, Offset offset, Iterable<wf.DecorationLine> lines) {
+    for (final d in lines) {
+      final paint = Paint()
+        ..color = Color.from(
+          alpha: d.color.length > 3 ? d.color[3] : 1.0,
+          red: d.color[0],
+          green: d.color[1],
+          blue: d.color[2],
+        );
+      final x = offset.dx + d.x;
+      final y = offset.dy + d.y;
+      final w = d.width;
+      final th = math.max(d.thickness, 0.5);
+      switch (d.style) {
+        case wf.InlineDecorationStyle.solid:
+          canvas.drawRect(Rect.fromLTWH(x, y - th / 2, w, th), paint);
+        case wf.InlineDecorationStyle.doubleLine:
+          canvas.drawRect(Rect.fromLTWH(x, y - th * 1.5, w, th), paint);
+          canvas.drawRect(Rect.fromLTWH(x, y + th * 0.5, w, th), paint);
+        case wf.InlineDecorationStyle.dotted:
+          for (var dx = th / 2; dx < w; dx += th * 3) {
+            canvas.drawCircle(Offset(x + dx, y), th / 2, paint);
+          }
+        case wf.InlineDecorationStyle.dashed:
+          for (var dx = 0.0; dx < w; dx += th * 5) {
+            canvas.drawRect(
+                Rect.fromLTWH(x + dx, y - th / 2, math.min(th * 3, w - dx), th),
+                paint);
+          }
+        case wf.InlineDecorationStyle.wavy:
+          final path = Path()..moveTo(x, y);
+          final half = th * 2;
+          var cx = x;
+          var up = true;
+          while (cx < x + w) {
+            final nx = math.min(cx + half, x + w);
+            final t = (nx - cx) / half;
+            path.quadraticBezierTo(
+                cx + half / 2, y + (up ? -half : half) * t, nx, y);
+            up = !up;
+            cx = nx;
+          }
+          canvas.drawPath(
+              path,
+              Paint()
+                ..color = paint.color
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = th);
+      }
+    }
+  }
+
   void _paintContents(PaintingContext context, Offset offset) {
     final emitted = _emitted;
     final ink = emitted?.inkBounds;
+    if (emitted != null && emitted.decorations.isNotEmpty) {
+      _drawDecorations(context.canvas, offset,
+          emitted.decorations.where((d) => !d.aboveText));
+    }
     if (emitted != null &&
         ink != null &&
         emitted.glyphCount > 0 &&
@@ -615,6 +843,10 @@ class RenderWindfoilParagraph extends RenderBox
         );
       }
     }
+    if (emitted != null && emitted.decorations.isNotEmpty) {
+      _drawDecorations(context.canvas, offset,
+          emitted.decorations.where((d) => d.aboveText));
+    }
     if (childCount > 0) paintInlineChildren(context, offset);
   }
 
@@ -633,14 +865,21 @@ class RenderWindfoilParagraph extends RenderBox
 
     _instanceBuffer ??= _engine.pipeline.uploadInstances(emitted.instances);
     var surface = _surface;
+    final sizeChanged =
+        surface == null || surface.width != w || surface.height != h;
+    gpu.GpuSurfaceFrame? frame;
     try {
-      if (surface == null) {
-        surface = _surface =
+      if (sizeChanged) {
+        // Never resize() a live surface: while a presented image is still
+        // referenced by the compositor (in-flight raster, retained layers),
+        // resizing can leave later frames on a stale-size backing texture —
+        // observed on flutter_gpu master as text stretched to the wrong
+        // scale after live window resizes. A fresh surface gets fresh
+        // textures; the old one is retired below with its presented image.
+        surface =
             gpu.gpuContext.createImageSurface(w, h, format: _surfaceFormat());
-      } else if (surface.width != w || surface.height != h) {
-        surface.resize(w, h);
       }
-      final frame = surface.acquireNextFrame();
+      frame = surface.acquireNextFrame();
       final cmd = gpu.gpuContext.createCommandBuffer();
       final target = gpu.RenderTarget.singleColor(
         gpu.ColorAttachment(
@@ -665,14 +904,45 @@ class RenderWindfoilParagraph extends RenderBox
       frame.present(cmd);
       cmd.submit();
     } catch (e) {
+      // Release an unpresented frame; otherwise every future resize() on
+      // this surface throws "frame still acquired". No-op after present().
+      frame?.discard();
       debugPrint('windfoil: paragraph render failed: $e');
       return false;
     }
-    _image?.dispose();
+    // Retire the previous surface+image instead of disposing them now:
+    // frames that reference the old image may still be waiting to
+    // rasterize (paint outpaces raster during live window resizes), and
+    // disposing it early lets the pool recycle its texture under a frame
+    // that is still on its way to the screen — which paints as text
+    // stretched to the wrong scale. The retired pair is disposed by
+    // _flushRetired once the engine reports a frame at least as new as
+    // this one has finished rasterizing.
+    final prevImage = _image;
+    if (prevImage != null) {
+      _retired.add((
+        identical(_surface, surface) ? null : _surface,
+        prevImage,
+        ui.PlatformDispatcher.instance.frameData.frameNumber,
+      ));
+      _hookTimings();
+    }
+    _surface = surface;
     _image = surface.currentImage;
     _imageScale = scale;
     _imageDevRect = Rect.fromLTWH(
         devLeft.toDouble(), devTop.toDouble(), w.toDouble(), h.toDouble());
+    if (sizeChanged) {
+      // The engine can composite a resize-churn frame from a stale-size
+      // texture (flutter_gpu master; happens regardless of image lifetime),
+      // and the last churn frame then sticks on screen wrong. A clean render
+      // on a drained pipeline always heals it, so owe one follow-up render
+      // gated on this frame's raster being reported: during churn every size
+      // change re-arms this with a newer frame, so it converges to a single
+      // heal once the engine has actually caught up — no wall-clock timers.
+      _healAfterFrame = ui.PlatformDispatcher.instance.frameData.frameNumber;
+      _hookTimings();
+    }
     return true;
   }
 

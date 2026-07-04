@@ -28,7 +28,9 @@ class SharedGlyphAtlas implements GlyphTable {
   /// `font`. Returns true when new glyph data was appended.
   bool ensureGlyphs(WindfoilFont font, String text) {
     var grew = false;
-    for (final ch in text.split('').toSet()) {
+    for (final rune in text.runes.toSet()) {
+      if (isZeroWidthCodePoint(rune)) continue;
+      final ch = String.fromCharCode(rune);
       if (ch == ' ' || ch == '\n') continue;
       final key = (font, ch);
       if (_table.containsKey(key) || _blank.contains(key)) continue;

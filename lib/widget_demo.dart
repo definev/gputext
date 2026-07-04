@@ -4,7 +4,7 @@
 // Dev hooks (demo only): WINDFOIL_DEMO_ZOOM=<n> presets the InteractiveViewer
 // zoom so screenshots can be taken without driving gestures.
 
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 
 import 'package:flutter/material.dart';
 
@@ -17,7 +17,7 @@ const _accentBlue = Color(0xFF14508C);
 TextSpan _sampleSpan() => const TextSpan(
       style: TextStyle(fontFamily: 'Lato', fontSize: 16, color: _ink),
       children: [
-        TextSpan(text: 'Windfoil '),
+        TextSpan(text: '🌚 Windfoil '),
         TextSpan(
           text: 'rich',
           style: TextStyle(fontSize: 26, color: _accentRed),
@@ -75,6 +75,92 @@ TextSpan _widgetSpanSample() => TextSpan(
       ],
     );
 
+TextSpan _decorationSample() => const TextSpan(
+      style: TextStyle(fontFamily: 'Lato', fontSize: 15, color: _ink),
+      children: [
+        TextSpan(
+          text: 'underline ',
+          style: TextStyle(decoration: TextDecoration.underline),
+        ),
+        TextSpan(
+          text: 'wavy ',
+          style: TextStyle(
+            decoration: TextDecoration.underline,
+            decorationStyle: TextDecorationStyle.wavy,
+            decorationColor: _accentRed,
+          ),
+        ),
+        TextSpan(
+          text: 'strike ',
+          style: TextStyle(decoration: TextDecoration.lineThrough),
+        ),
+        TextSpan(
+          text: 'dashed-over ',
+          style: TextStyle(
+            decoration: TextDecoration.overline,
+            decorationStyle: TextDecorationStyle.dashed,
+            decorationColor: _accentBlue,
+          ),
+        ),
+        TextSpan(
+          text: 'dotted+spaced',
+          style: TextStyle(
+            letterSpacing: 2,
+            wordSpacing: 6,
+            decoration: TextDecoration.underline,
+            decorationStyle: TextDecorationStyle.dotted,
+          ),
+        ),
+        TextSpan(
+          text: ' — and this paragraph is justified, so its spaces stretch '
+              'to fill the column width evenly on every wrapped line except '
+              'the last one, tall lines included.',
+          style: TextStyle(height: 1.6),
+        ),
+      ],
+    );
+
+TextSpan _emojiSample() => const TextSpan(
+      style: TextStyle(fontFamily: 'Lato', fontSize: 16, color: _ink),
+      children: [
+        TextSpan(text: 'Emoji ride along: 🌚 moon, thumbs '),
+        TextSpan(text: '👍🏽', style: TextStyle(fontSize: 26)),
+        TextSpan(
+          text: ' with tone, flag 🇻🇳, family 👨‍👩‍👧‍👦, keycap 1️⃣ — while '
+              'the surrounding windfoil text stays vector-crisp.',
+        ),
+      ],
+    );
+
+TextSpan _fallbackSample() => const TextSpan(
+      style: TextStyle(fontFamily: 'Lato', fontSize: 16, color: _ink),
+      children: [
+        TextSpan(
+          text: 'Fallback: Latin windfoil text with 中文汉字, かなカナ, '
+              '한글 — covered by the registered wide fallback font — and '
+              'SMP music 𝄞𝄢 delegated to the platform. All of it wraps '
+              'and mixes freely.',
+        ),
+      ],
+    );
+
+/// Demo of layer-1 (native) fallback: register a wide-coverage system TTF
+/// so CJK renders through the windfoil shader itself. Uncovered characters
+/// (e.g. SMP symbols) still delegate to the platform (layer 2).
+Future<void> _registerWideFallback() async {
+  final engine = Windfoil.instance;
+  if (engine.fallbackFamilies.isNotEmpty) return;
+  try {
+    final file = File('/System/Library/Fonts/Supplemental/Arial Unicode.ttf');
+    if (!await file.exists()) return;
+    final font = WindfoilFont.parse(await file.readAsBytes());
+    engine.registerFont('Arial Unicode', font);
+    engine.setFallbackFamilies(const ['Arial Unicode']);
+  } catch (e) {
+    debugPrint('demo: wide fallback font unavailable: $e');
+  }
+}
+
 class WidgetDemoPage extends StatefulWidget {
   const WidgetDemoPage({super.key});
 
@@ -88,6 +174,7 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
   @override
   void initState() {
     super.initState();
+    _registerWideFallback();
     final z = double.tryParse(Platform.environment['WINDFOIL_DEMO_ZOOM'] ?? '');
     if (z != null && z > 0) {
       var fx = 110.0, fy = 46.0; // focal point held stationary while zooming
@@ -149,8 +236,7 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
     return Scaffold(
       backgroundColor: const Color(0xFFE9E3D5),
       appBar: AppBar(title: const Text('RichText vs WindfoilRichText')),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: ListView(
         children: [
           _pair(
             'Mixed-style paragraph, word wrap',
@@ -180,11 +266,36 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
                 ? WindfoilRichText(text: _widgetSpanSample())
                 : RichText(text: _widgetSpanSample()),
           ),
+          _pair(
+            'Emoji: clusters, tones, flags, ZWJ, keycaps',
+            (windfoil) => windfoil
+                ? WindfoilRichText(text: _emojiSample())
+                : RichText(text: _emojiSample()),
+          ),
+          _pair(
+            'Font fallback: native (wide TTF) + platform delegation (SMP)',
+            (windfoil) => windfoil
+                ? WindfoilRichText(text: _fallbackSample())
+                : RichText(text: _fallbackSample()),
+          ),
+          _pair(
+            'Decorations, justify, wordSpacing, height',
+            (windfoil) => windfoil
+                ? WindfoilRichText(
+                    text: _decorationSample(),
+                    textAlign: TextAlign.justify,
+                  )
+                : RichText(
+                    text: _decorationSample(),
+                    textAlign: TextAlign.justify,
+                  ),
+          ),
           const Padding(
             padding: EdgeInsets.fromLTRB(12, 12, 12, 0),
             child: Text('Pinch/scroll to zoom — windfoil re-renders crisp'),
           ),
-          Expanded(
+          SizedBox(
+            height: 300,
             child: Container(
               margin: const EdgeInsets.all(12),
               decoration: BoxDecoration(border: Border.all(color: Colors.black26)),

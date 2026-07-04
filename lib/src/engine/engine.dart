@@ -10,6 +10,8 @@
 // when ready. Platforms without Impeller/flutter_gpu set isSupported=false:
 // widgets still lay out (fonts are pure Dart) but paint nothing.
 
+import 'dart:ui' as ui show FontStyle, FontWeight;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_gpu/gpu.dart' as gpu;
@@ -27,11 +29,14 @@ abstract final class Windfoil {
   static WindfoilEngine get instance => WindfoilEngine._instance;
 
   /// Load fonts and build the GPU pipeline up front (no first-frame flash).
+  /// `fallbackFamilies` are tried, in order, for characters the styled
+  /// family doesn't cover (after TextStyle.fontFamilyFallback).
   static Future<void> initialize({
     Map<String, String> fontAssets = const {},
     String? defaultFamily,
+    List<String> fallbackFamilies = const [],
   }) =>
-      instance._initializeWith(fontAssets, defaultFamily);
+      instance._initializeWith(fontAssets, defaultFamily, fallbackFamilies);
 
   /// False when flutter_gpu/Impeller is unavailable; windfoil widgets lay
   /// out but paint blank, so apps can fall back to stock RichText.
@@ -46,7 +51,8 @@ class WindfoilEngine extends ChangeNotifier {
   Future<void>? _initFuture;
   WindfoilPipeline? _pipeline;
   final atlas = SharedGlyphAtlas();
-  final _fonts = <String, WindfoilFont>{};
+  final _fonts = <String, List<_FontVariant>>{};
+  final _fallbackFamilies = <String>[];
   String? _defaultFamily;
   var _unsupported = false;
 
@@ -66,12 +72,40 @@ class WindfoilEngine extends ChangeNotifier {
   Future<void> _initializeWith(
     Map<String, String> fontAssets,
     String? defaultFamily,
+    List<String> fallbackFamilies,
   ) async {
     for (final e in fontAssets.entries) {
       await loadFontAsset(e.key, e.value);
     }
     if (defaultFamily != null) _defaultFamily = defaultFamily;
+    if (fallbackFamilies.isNotEmpty) setFallbackFamilies(fallbackFamilies);
     await ensureInitialized();
+  }
+
+  /// Engine-wide fallback chain, tried after a style's own family list.
+  List<String> get fallbackFamilies => List.unmodifiable(_fallbackFamilies);
+
+  void setFallbackFamilies(List<String> families) {
+    _fallbackFamilies
+      ..clear()
+      ..addAll(families);
+    notifyListeners();
+  }
+
+  /// First font along `families` + the engine fallback chain that covers
+  /// `ch`; null when no registered font does (callers then delegate the
+  /// character to the platform text stack).
+  WindfoilFont? resolveFontForChar(
+    String ch, {
+    List<String?> families = const [null],
+    ui.FontWeight? weight,
+    ui.FontStyle? fontStyle,
+  }) {
+    for (final family in families.followedBy(_fallbackFamilies)) {
+      final font = resolveFont(family, weight: weight, fontStyle: fontStyle);
+      if (font != null && font.hasGlyph(ch)) return font;
+    }
+    return null;
   }
 
   Future<void> _init() async {
@@ -93,7 +127,12 @@ class WindfoilEngine extends ChangeNotifier {
 
   /// Load and register a TTF from the asset bundle (bare key first, then
   /// packages/windfoil_flutter/-prefixed for package consumers).
-  Future<WindfoilFont> loadFontAsset(String family, String assetKey) async {
+  Future<WindfoilFont> loadFontAsset(
+    String family,
+    String assetKey, {
+    ui.FontWeight weight = ui.FontWeight.w400,
+    ui.FontStyle style = ui.FontStyle.normal,
+  }) async {
     ByteData data;
     try {
       data = await rootBundle.load(assetKey);
@@ -104,24 +143,52 @@ class WindfoilEngine extends ChangeNotifier {
       data.offsetInBytes,
       data.lengthInBytes,
     ));
-    registerFont(family, font);
+    registerFont(family, font, weight: weight, style: style);
     return font;
   }
 
-  void registerFont(String family, WindfoilFont font) {
-    _fonts[family] = font;
+  void registerFont(
+    String family,
+    WindfoilFont font, {
+    ui.FontWeight weight = ui.FontWeight.w400,
+    ui.FontStyle style = ui.FontStyle.normal,
+  }) {
+    final variants = _fonts.putIfAbsent(family, () => []);
+    final w = weight.value;
+    final italic = style == ui.FontStyle.italic;
+    variants
+      ..removeWhere((v) => v.weight == w && v.italic == italic)
+      ..add(_FontVariant(w, italic, font));
     _defaultFamily ??= family;
     notifyListeners();
   }
 
-  /// Family lookup with default-family fallback; null while no fonts loaded.
-  WindfoilFont? resolveFont(String? family) {
-    if (family != null) {
-      final f = _fonts[family];
-      if (f != null) return f;
+  /// Family lookup with default-family fallback and nearest weight/style
+  /// matching among registered variants; null while no fonts loaded.
+  WindfoilFont? resolveFont(
+    String? family, {
+    ui.FontWeight? weight,
+    ui.FontStyle? fontStyle,
+  }) {
+    var variants = family != null ? _fonts[family] : null;
+    if (variants == null || variants.isEmpty) {
+      final def = _defaultFamily;
+      variants = def != null ? _fonts[def] : null;
     }
-    final def = _defaultFamily;
-    return def != null ? _fonts[def] : null;
+    if (variants == null || variants.isEmpty) return null;
+    final targetW = (weight ?? ui.FontWeight.w400).value;
+    final italic = fontStyle == ui.FontStyle.italic;
+    _FontVariant? best;
+    var bestScore = 1 << 30;
+    for (final v in variants) {
+      final score =
+          (v.weight - targetW).abs() + (v.italic == italic ? 0 : 1000);
+      if (score < bestScore) {
+        bestScore = score;
+        best = v;
+      }
+    }
+    return best?.font;
   }
 
   /// Current curve/row textures, re-uploaded when the atlas has grown.
@@ -149,4 +216,12 @@ class WindfoilEngine extends ChangeNotifier {
     _texturesGeneration = -1;
     _unsupported = false;
   }
+}
+
+class _FontVariant {
+  const _FontVariant(this.weight, this.italic, this.font);
+
+  final int weight; // 100..900
+  final bool italic;
+  final WindfoilFont font;
 }

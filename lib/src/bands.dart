@@ -135,7 +135,11 @@ class GlyphAtlas {
 }
 
 GlyphAtlas buildGlyphAtlas(WindfoilFont font, String text) {
-  final chars = text.split('').toSet().where((ch) => ch != ' ').toList();
+  final chars = text.runes
+      .toSet()
+      .map(String.fromCharCode)
+      .where((ch) => ch != ' ')
+      .toList();
   final curves = <double>[];
   final rows = <int>[];
   final table = <String, GlyphTableEntry>{};

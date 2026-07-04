@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 import 'package:flutter_gpu/gpu.dart' as gpu;
@@ -70,6 +71,11 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
   Offset _pinchMid = Offset.zero;
 
   ui.Image? _image;
+  // Superseded surface+image generations, tagged with the frame number whose
+  // render replaced them (mirrors RenderWindfoilParagraph._retired).
+  final List<(gpu.GpuImageSurface?, ui.Image, int)> _retired = [];
+  bool _timingsHooked = false;
+  late final Ticker _ticker;
   double _dpr = 1;
   Size _size = Size.zero;
   double _fpsDt = 1000 / 60;
@@ -79,7 +85,39 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
   void initState() {
     super.initState();
     _bootstrap();
-    createTicker(_onTick).start();
+    _ticker = createTicker(_onTick)..start();
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    if (_timingsHooked) {
+      _timingsHooked = false;
+      SchedulerBinding.instance.removeTimingsCallback(_flushRetired);
+    }
+    for (final (_, img, _) in _retired) {
+      img.dispose();
+    }
+    _retired.clear();
+    _image?.dispose();
+    _image = null;
+    super.dispose();
+  }
+
+  // Frames reported here have finished rasterizing; images superseded by a
+  // frame that old can no longer be referenced by the compositor.
+  void _flushRetired(List<ui.FrameTiming> timings) {
+    var latest = -1;
+    for (final t in timings) {
+      if (t.frameNumber > latest) latest = t.frameNumber;
+    }
+    while (_retired.isNotEmpty && _retired.first.$3 <= latest) {
+      _retired.removeAt(0).$2.dispose();
+    }
+    if (_retired.isEmpty && _timingsHooked) {
+      _timingsHooked = false;
+      SchedulerBinding.instance.removeTimingsCallback(_flushRetired);
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -146,11 +184,18 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
 
   void _renderFrame() {
     final renderer = _renderer!;
-    final surface = _surface!;
+    var surface = _surface!;
     final width = (_size.width * _dpr).round().clamp(1, 100000);
     final height = (_size.height * _dpr).round().clamp(1, 100000);
     if (surface.width != width || surface.height != height) {
-      surface.resize(width, height);
+      // Never resize() a live surface — see RenderWindfoilParagraph: resizing
+      // while a presented image is still referenced can leave later frames on
+      // a stale-size backing texture. Recreate and retire the old one below.
+      surface = gpu.gpuContext.createImageSurface(
+        width,
+        height,
+        format: windfoilSurfaceFormat(gpu.gpuContext),
+      );
     }
 
     final frame = surface.acquireNextFrame();
@@ -178,6 +223,22 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
     );
     frame.present(cmd);
     cmd.submit();
+    // Each currentImage call returns a new handle; retire the previous one
+    // (with its surface, which must outlive it) and dispose it once the
+    // engine reports a frame at least this new has finished rasterizing.
+    final prevImage = _image;
+    if (prevImage != null) {
+      _retired.add((
+        identical(_surface, surface) ? null : _surface,
+        prevImage,
+        ui.PlatformDispatcher.instance.frameData.frameNumber,
+      ));
+      if (!_timingsHooked) {
+        _timingsHooked = true;
+        SchedulerBinding.instance.addTimingsCallback(_flushRetired);
+      }
+    }
+    _surface = surface;
     _image = surface.currentImage;
   }
 

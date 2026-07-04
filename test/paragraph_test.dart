@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:windfoil_flutter/src/engine/engine.dart';
 import 'package:windfoil_flutter/src/engine/shared_atlas.dart';
 import 'package:windfoil_flutter/src/font.dart';
+import 'package:windfoil_flutter/src/layout.dart' show measureText;
 import 'package:windfoil_flutter/src/paragraph.dart' as wf;
 import 'package:windfoil_flutter/src/widgets/span_flattener.dart';
 
@@ -181,6 +182,147 @@ void main() {
     expect(placeholders[0].width, 20);
     expect(placeholders[1].index, 1);
     expect(placeholders[1].alignment, wf.InlinePlaceholderAlignment.middle);
+  });
+
+  test('justify stretches spaces on wrapped lines only', () {
+    // 'aa bb' fits the wrap width; 'cc' wraps to a hard last line.
+    final wAA = measureText('aa', font, 16);
+    final wBB = measureText('bb', font, 16);
+    final wSpace = measureText(' ', font, 16);
+    final wrapW = wAA + wSpace + wBB + 2;
+    final para = wf.breakLines([run('aa bb cc')], wrapW,
+        wf.ParagraphStyle(maxWidth: wrapW, align: wf.TextAlign.justify));
+    expect(para.lines.length, 2);
+    expect(para.lines[0].hardBreak, isFalse);
+    expect(para.lines[1].hardBreak, isTrue);
+
+    final atlas = SharedGlyphAtlas()..ensureGlyphs(font, 'abc');
+    final emitted =
+        wf.emitInstances(para, wrapW, wf.TextAlign.justify, atlas);
+    // First glyph of 'bb' (3rd glyph overall) starts at wrapW - width('bb').
+    final bbX = emitted.instances[2 * 16];
+    expect(bbX, closeTo(wrapW - wBB, 0.5));
+  });
+
+  test('TextStyle.height multiplier sets the line extent', () {
+    final normal = wf.breakLines(
+        [run('hello')], double.infinity, const wf.ParagraphStyle());
+    final doubled = wf.breakLines([
+      wf.TextRun(
+        text: 'hello',
+        font: font,
+        fontSizePx: 16,
+        color: const [0, 0, 0, 1],
+        height: 2,
+      ),
+    ], double.infinity, const wf.ParagraphStyle());
+    expect(doubled.height, closeTo(32, 0.001));
+    expect(doubled.height, greaterThan(normal.height));
+    final l = doubled.lines.single;
+    expect(l.ascent + l.descent, closeTo(32, 0.001));
+  });
+
+  test('decorations emit per-kind strokes with sane geometry', () {
+    final decorated = wf.TextRun(
+      text: 'deco text',
+      font: font,
+      fontSizePx: 20,
+      color: const [0, 0, 0, 1],
+      decoration: const wf.InlineDecoration(
+        underline: true,
+        lineThrough: true,
+        color: [1, 0, 0, 1],
+        thickness: 2,
+      ),
+    );
+    final para = wf.breakLines(
+        [decorated], double.infinity, const wf.ParagraphStyle());
+    final emitted = wf.emitInstances(para, 500, wf.TextAlign.left, null);
+    final under = emitted.decorations.where((d) => !d.aboveText).toList();
+    final over = emitted.decorations.where((d) => d.aboveText).toList();
+    expect(under, isNotEmpty);
+    expect(over, isNotEmpty);
+    final baseline = para.lines.single.ascent;
+    for (final d in under) {
+      expect(d.y, greaterThan(baseline)); // underline below baseline
+      expect(d.color[0], 1); // decorationColor red
+      expect(d.width, greaterThan(0));
+    }
+    for (final d in over) {
+      expect(d.y, lessThan(baseline)); // strike above baseline
+    }
+    // Segments tile the whole text: total decorated width ≈ line width.
+    final totalUnder = under.fold<double>(0, (w, d) => w + d.width);
+    expect(totalUnder, closeTo(para.lines.single.width, 0.5));
+  });
+
+  test('wordSpacing widens spaces', () {
+    final spaced = wf.TextRun(
+      text: 'a b c',
+      font: font,
+      fontSizePx: 16,
+      color: const [0, 0, 0, 1],
+      wordSpacingPx: 10,
+    );
+    final wide =
+        wf.breakLines([spaced], double.infinity, const wf.ParagraphStyle());
+    final narrow =
+        wf.breakLines([run('a b c')], double.infinity, const wf.ParagraphStyle());
+    expect(wide.lines.single.width - narrow.lines.single.width,
+        closeTo(20, 0.001));
+  });
+
+  test('astral characters map to .notdef instead of vanishing', () {
+    expect(font.advanceOf('🌚'), greaterThan(0));
+    final para = wf.breakLines(
+        [run('🌚a')], double.infinity, const wf.ParagraphStyle());
+    // One notdef advance + one 'a' — not two surrogate halves.
+    expect(
+        para.lines.single.width,
+        closeTo(
+            (font.advanceOf('🌚') + font.advanceOf('a')) * 16 / font.unitsPerEm,
+            0.5));
+  });
+
+  test('engine resolves nearest weight/style variant', () {
+    final engine = Windfoil.instance;
+    engine.registerFont('VarTest', font);
+    engine.registerFont('VarTest', font, weight: FontWeight.w700);
+    final regular = engine.resolveFont('VarTest');
+    final bold = engine.resolveFont('VarTest', weight: FontWeight.w700);
+    final heavy = engine.resolveFont('VarTest', weight: FontWeight.w900);
+    expect(regular, isNotNull);
+    expect(bold, isNotNull);
+    expect(identical(heavy, bold), isTrue); // nearest weight wins
+  });
+
+  test('flattenSpan maps decorations, height, and wordSpacing', () {
+    Windfoil.instance.registerFont('Lato', font);
+    final items = flattenSpan(
+      const TextSpan(
+        style: TextStyle(
+          fontFamily: 'Lato',
+          fontSize: 16,
+          height: 1.5,
+          wordSpacing: 4,
+          decoration: TextDecoration.underline,
+          decorationStyle: TextDecorationStyle.wavy,
+          decorationColor: Color(0xFF00FF00),
+          decorationThickness: 2,
+        ),
+        text: 'x',
+      ),
+      TextScaler.noScaling,
+      Windfoil.instance,
+    );
+    final r = items!.single as wf.TextRun;
+    expect(r.height, 1.5);
+    expect(r.wordSpacingPx, 4);
+    final d = r.decoration!;
+    expect(d.underline, isTrue);
+    expect(d.style, wf.InlineDecorationStyle.wavy);
+    expect(d.thickness, 2);
+    expect(d.color![1], closeTo(1, 1e-6));
   });
 
   test('flattenSpan applies the style cascade and text scaling', () {

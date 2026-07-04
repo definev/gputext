@@ -2,6 +2,15 @@ import 'dart:typed_data';
 
 enum FillRule { nonzero, evenOdd }
 
+/// Zero-width/invisible code points the layout engine skips entirely:
+/// ZWSP/ZWNJ/ZWJ, variation selectors, and the BOM/ZWNBSP.
+bool isZeroWidthCodePoint(int cp) =>
+    cp == 0x200B ||
+    cp == 0x200C ||
+    cp == 0x200D ||
+    (cp >= 0xFE00 && cp <= 0xFE0F) ||
+    cp == 0xFEFF;
+
 class VerticalMetrics {
   const VerticalMetrics({
     required this.ascender,
@@ -12,6 +21,23 @@ class VerticalMetrics {
   final double ascender;
   final double descender;
   final double lineGap;
+}
+
+/// Decoration guide positions in font units, Y-up as stored in the font:
+/// underlinePosition is typically negative (below the baseline),
+/// strikeoutPosition positive (above it).
+class DecorationMetrics {
+  const DecorationMetrics({
+    required this.underlinePosition,
+    required this.underlineThickness,
+    required this.strikeoutPosition,
+    required this.strikeoutSize,
+  });
+
+  final double underlinePosition;
+  final double underlineThickness;
+  final double strikeoutPosition;
+  final double strikeoutSize;
 }
 
 class GlyphOutline {
@@ -94,6 +120,7 @@ class WindfoilFont {
   WindfoilFont._({
     required this.unitsPerEm,
     required this.verticalMetrics,
+    required this.decorationMetrics,
     required this._bytes,
     required this._tables,
     required this._numGlyphs,
@@ -107,6 +134,7 @@ class WindfoilFont {
 
   final int unitsPerEm;
   final VerticalMetrics verticalMetrics;
+  final DecorationMetrics decorationMetrics;
   final ByteData _bytes;
   final Map<String, _TableRecord> _tables;
   final int _numGlyphs;
@@ -188,6 +216,33 @@ class WindfoilFont {
     r.readFixed(); // version
     final numGlyphs = r.readU16();
 
+    // Decoration guides: post (underline) + OS/2 (strikeout), with sensible
+    // em-relative fallbacks when a table is missing or degenerate.
+    var underlinePos = -0.075 * unitsPerEm;
+    var underlineThick = 0.05 * unitsPerEm;
+    final post = tables['post'];
+    if (post != null) {
+      r.seek(post.offset + 8); // version(4) + italicAngle(4)
+      final pos = r.readI16().toDouble();
+      final thick = r.readI16().toDouble();
+      if (thick > 0) {
+        underlinePos = pos;
+        underlineThick = thick;
+      }
+    }
+    var strikeSize = underlineThick;
+    var strikePos = 0.25 * unitsPerEm;
+    final os2 = tables['OS/2'];
+    if (os2 != null) {
+      r.seek(os2.offset + 26); // ...ySuperscriptYOffset | yStrikeoutSize
+      final size = r.readI16().toDouble();
+      final pos = r.readI16().toDouble();
+      if (size > 0) {
+        strikeSize = size;
+        strikePos = pos;
+      }
+    }
+
     final cmap = _parseCmap(data, tableOffset('cmap'));
     final (advances, lsbs) = _parseHmtx(
       data,
@@ -211,6 +266,12 @@ class WindfoilFont {
         ascender: ascender,
         descender: descender,
         lineGap: lineGap,
+      ),
+      decorationMetrics: DecorationMetrics(
+        underlinePosition: underlinePos,
+        underlineThickness: underlineThick,
+        strikeoutPosition: strikePos,
+        strikeoutSize: strikeSize,
       ),
       bytes: data,
       tables: tables,
@@ -368,14 +429,15 @@ class WindfoilFont {
 
   int? _glyphId(String ch) {
     if (ch.isEmpty) return null;
-    return _cmap[ch.codeUnitAt(0)];
+    return _cmap[ch.runes.first];
   }
 
   bool hasGlyph(String ch) => _glyphId(ch) != null;
 
   double advanceOf(String ch) {
-    final id = _glyphId(ch);
-    if (id == null) return 0;
+    // cmap miss → .notdef (glyph 0) advance, so unsupported characters
+    // occupy tofu-sized space instead of collapsing to zero width.
+    final id = _glyphId(ch) ?? 0;
     return _advances[id];
   }
 
@@ -387,8 +449,8 @@ class WindfoilFont {
   }
 
   GlyphOutline? glyphQuads(String ch) {
-    final id = _glyphId(ch);
-    if (id == null) return null;
+    // cmap miss → .notdef (glyph 0), usually a tofu box outline.
+    final id = _glyphId(ch) ?? 0;
     final glyfOffset = _tables['glyf']!.offset;
     final start = _glyphOffsets[id];
     final end = _glyphOffsets[id + 1];

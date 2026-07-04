@@ -17,7 +17,58 @@ import 'bands.dart';
 import 'font.dart';
 import 'layout.dart';
 
-enum TextAlign { left, center, right }
+enum TextAlign { left, center, right, justify }
+
+/// Mirror of ui.TextDecorationStyle (VM-pure).
+enum InlineDecorationStyle { solid, doubleLine, dotted, dashed, wavy }
+
+/// Which decoration guides a run draws, and how.
+class InlineDecoration {
+  const InlineDecoration({
+    this.underline = false,
+    this.overline = false,
+    this.lineThrough = false,
+    this.color,
+    this.style = InlineDecorationStyle.solid,
+    this.thickness = 1,
+  });
+
+  final bool underline;
+  final bool overline;
+  final bool lineThrough;
+
+  /// RGBA 0..1; null → the run's text color.
+  final List<double>? color;
+  final InlineDecorationStyle style;
+
+  /// Multiplier on the font's decoration thickness.
+  final double thickness;
+
+  bool get isActive => underline || overline || lineThrough;
+}
+
+/// One resolved decoration stroke in layout space; `y` is the stroke center.
+class DecorationLine {
+  const DecorationLine({
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.thickness,
+    required this.color,
+    required this.style,
+    required this.aboveText,
+  });
+
+  final double x;
+  final double y;
+  final double width;
+  final double thickness;
+  final List<double> color;
+  final InlineDecorationStyle style;
+
+  /// lineThrough paints over the glyphs; under/overline paint beneath them.
+  final bool aboveText;
+}
 
 /// Mirror of ui.PlaceholderAlignment (kept local so this file has no
 /// dart:ui dependency).
@@ -60,6 +111,9 @@ class TextRun extends InlineItem {
     required this.fontSizePx,
     required this.color,
     this.letterSpacingPx = 0,
+    this.wordSpacingPx = 0,
+    this.height,
+    this.decoration,
     this.fillRule = FillRule.nonzero,
   });
 
@@ -68,6 +122,14 @@ class TextRun extends InlineItem {
   final double fontSizePx;
   final List<double> color;
   final double letterSpacingPx;
+  final double wordSpacingPx;
+
+  /// Line-height multiplier (TextStyle.height semantics): when set, the run
+  /// contributes height*fontSizePx of line extent, distributed between
+  /// ascent and descent proportionally to the font's natural metrics.
+  final double? height;
+
+  final InlineDecoration? decoration;
   final FillRule fillRule;
 }
 
@@ -122,13 +184,26 @@ class LineRun extends LineItem {
     required this.letterSpacingPx,
     required this.fillRule,
     required this.width,
+    this.wordSpacingPx = 0,
+    this.decoration,
   });
+
+  LineRun.fromRun(TextRun run, this.text, this.width)
+      : font = run.font,
+        fontSizePx = run.fontSizePx,
+        color = run.color,
+        letterSpacingPx = run.letterSpacingPx,
+        wordSpacingPx = run.wordSpacingPx,
+        decoration = run.decoration,
+        fillRule = run.fillRule;
 
   String text;
   final WindfoilFont font;
   final double fontSizePx;
   final List<double> color;
   final double letterSpacingPx;
+  final double wordSpacingPx;
+  final InlineDecoration? decoration;
   final FillRule fillRule;
   @override
   double width;
@@ -151,6 +226,10 @@ class LineMetrics {
   double ascent = 0;
   double descent = 0;
   double height = 0; // baseline-to-baseline advance to the next line
+
+  /// True when the line ends at a '\n' or the end of the paragraph (justify
+  /// never stretches these).
+  bool hardBreak = false;
 
   /// top/middle/bottom placeholders, resolved against the final text metrics
   /// when the line is committed.
@@ -180,7 +259,7 @@ class ParagraphLines {
 
 double _measure(WindfoilFont font, String text, double sizePx, double ls) {
   if (text.isEmpty) return 0;
-  return measureText(text, font, sizePx) + ls * text.length;
+  return measureText(text, font, sizePx) + ls * text.runes.length;
 }
 
 double _lineHeightPx(WindfoilFont font, double sizePx, double lineHeight) {
@@ -228,9 +307,19 @@ ParagraphLines breakLines(
   TextRun? current; // style source for empty-line metrics
 
   void growMetrics(LineMetrics l, TextRun run) {
-    final a = _ascenderPx(run.font, run.fontSizePx);
-    final d = _descenderPx(run.font, run.fontSizePx);
-    final h = _lineHeightPx(run.font, run.fontSizePx, style.lineHeight);
+    var a = _ascenderPx(run.font, run.fontSizePx);
+    var d = _descenderPx(run.font, run.fontSizePx);
+    var h = _lineHeightPx(run.font, run.fontSizePx, style.lineHeight);
+    final hm = run.height;
+    if (hm != null && a + d > 0) {
+      // TextStyle.height semantics: the run's line extent becomes
+      // height*fontSize, split proportionally to the natural ascent/descent.
+      final target = hm * run.fontSizePx * style.lineHeight;
+      final f = target / (a + d);
+      a *= f;
+      d *= f;
+      h = target;
+    }
     if (a > l.ascent) l.ascent = a;
     if (d > l.descent) l.descent = d;
     if (h > l.height) l.height = h;
@@ -254,7 +343,8 @@ ParagraphLines breakLines(
     }
   }
 
-  void commitLine() {
+  void commitLine({bool hard = false}) {
+    line.hardBreak = hard;
     // Box-relative placeholders grow the line box only if they don't fit.
     for (final p in line._deferred) {
       final box = line.ascent + line.descent;
@@ -311,49 +401,37 @@ ParagraphLines breakLines(
     current = run;
     for (final word in _splitWords(run.text)) {
       if (word == '\n') {
-        commitLine();
+        commitLine(hard: true);
         if (hardLineWidth > maxIntrinsic) maxIntrinsic = hardLineWidth;
         hardLineWidth = 0.0;
         continue;
       }
-      final w = _measure(run.font, word, run.fontSizePx, run.letterSpacingPx);
-      hardLineWidth += w;
       if (word == ' ') {
+        final w =
+            _measure(run.font, ' ', run.fontSizePx, run.letterSpacingPx) +
+                run.wordSpacingPx;
+        hardLineWidth += w;
         if (lineWidth + w > wrapWidth && line.items.isNotEmpty) {
           commitLine();
           continue; // drop the space at the wrap point
         }
-        line.items.add(LineRun(
-          text: ' ',
-          font: run.font,
-          fontSizePx: run.fontSizePx,
-          color: run.color,
-          letterSpacingPx: run.letterSpacingPx,
-          fillRule: run.fillRule,
-          width: w,
-        ));
+        line.items.add(LineRun.fromRun(run, ' ', w));
         lineWidth += w;
         growMetrics(line, run);
         continue;
       }
+      final w = _measure(run.font, word, run.fontSizePx, run.letterSpacingPx);
+      hardLineWidth += w;
       if (w > minIntrinsic) minIntrinsic = w;
       if (lineWidth + w > wrapWidth && line.items.isNotEmpty) {
         commitLine();
       }
-      line.items.add(LineRun(
-        text: word,
-        font: run.font,
-        fontSizePx: run.fontSizePx,
-        color: run.color,
-        letterSpacingPx: run.letterSpacingPx,
-        fillRule: run.fillRule,
-        width: w,
-      ));
+      line.items.add(LineRun.fromRun(run, word, w));
       lineWidth += w;
       growMetrics(line, run);
     }
   }
-  if (line.items.isNotEmpty || lines.isEmpty) commitLine();
+  if (line.items.isNotEmpty || lines.isEmpty) commitLine(hard: true);
   if (hardLineWidth > maxIntrinsic) maxIntrinsic = hardLineWidth;
 
   final maxLines = style.maxLines;
@@ -415,6 +493,8 @@ void _ellipsize(LineMetrics line, double maxWidth) {
     letterSpacingPx: lastRun.letterSpacingPx,
     fillRule: lastRun.fillRule,
     width: _measure(font, ell, lastRun.fontSizePx, lastRun.letterSpacingPx),
+    wordSpacingPx: lastRun.wordSpacingPx,
+    decoration: lastRun.decoration,
   );
 
   double total() =>
@@ -464,6 +544,7 @@ class ParagraphInstances {
     required this.instances,
     required this.inkBounds,
     this.placeholders = const [],
+    this.decorations = const [],
   });
 
   final Float32List instances;
@@ -474,6 +555,9 @@ class ParagraphInstances {
 
   /// Resolved placeholder rects, in logical order of appearance.
   final List<PlaceholderBox> placeholders;
+
+  /// Underline/overline/lineThrough strokes in layout space.
+  final List<DecorationLine> decorations;
 
   int get glyphCount => instances.length ~/ floatsPerInstance;
 }
@@ -491,20 +575,49 @@ ParagraphInstances emitInstances(
 }) {
   final out = <double>[];
   final placeholders = <PlaceholderBox>[];
+  final decorations = <DecorationLine>[];
   var y = top;
   var inkMinX = double.infinity, inkMinY = double.infinity;
   var inkMaxX = -double.infinity, inkMaxY = -double.infinity;
 
   for (final line in para.lines) {
     final offset = switch (align) {
-      TextAlign.left => 0.0,
+      TextAlign.left || TextAlign.justify => 0.0,
       TextAlign.center => (boxWidth - line.width) * 0.5,
       TextAlign.right => boxWidth - line.width,
     };
+
+    // Justify: distribute the leftover width across non-trailing spaces.
+    // Hard-broken and ellipsized last lines keep their natural spacing.
+    var spaceExtra = 0.0;
+    var stretchable = 0;
+    if (align == TextAlign.justify &&
+        !line.hardBreak &&
+        !(para.ellipsized && identical(line, para.lines.last))) {
+      var end = line.items.length;
+      while (end > 0) {
+        final it = line.items[end - 1];
+        if (it is LineRun && it.isSpace) {
+          end--;
+        } else {
+          break;
+        }
+      }
+      for (var i = 0; i < end; i++) {
+        final it = line.items[i];
+        if (it is LineRun && it.isSpace) stretchable++;
+      }
+      final extra = boxWidth - line.width;
+      if (stretchable > 0 && extra > 0 && extra.isFinite) {
+        spaceExtra = extra / stretchable;
+      }
+    }
+
     final baselineY = y + line.ascent;
     var pen = x + offset;
     String? prev;
     WindfoilFont? prevFont;
+    var stretched = 0;
 
     for (final item in line.items) {
       if (item is LinePlaceholder) {
@@ -538,7 +651,10 @@ ParagraphInstances emitInstances(
       final rule = run.fillRule == FillRule.evenOdd ? 1.0 : 0.0;
       final color = run.color;
       final a = color.length > 3 ? color[3] : 1.0;
-      for (final ch in run.text.split('')) {
+      final penStart = pen;
+      for (final rune in run.text.runes) {
+        if (isZeroWidthCodePoint(rune)) continue;
+        final ch = String.fromCharCode(rune);
         if (prev != null && identical(prevFont, run.font)) {
           pen += run.font.kerningOf(prev, ch) * scale;
         }
@@ -560,8 +676,47 @@ ParagraphInstances emitInstances(
           if (gy1 > inkMaxY) inkMaxY = gy1;
         }
         pen += run.font.advanceOf(ch) * scale + run.letterSpacingPx;
+        if (ch == ' ') pen += run.wordSpacingPx;
         prev = ch;
         prevFont = run.font;
+      }
+      if (run.isSpace && stretched < stretchable) {
+        pen += spaceExtra; // justified gap, covered by decorations below
+        stretched++;
+      }
+
+      final deco = run.decoration;
+      if (deco != null && deco.isActive && pen > penStart) {
+        final m = run.font.decorationMetrics;
+        final decoColor = deco.color ?? run.color;
+        void addLine(double yCenter, double thickness, bool aboveText) {
+          decorations.add(DecorationLine(
+            x: penStart,
+            y: yCenter,
+            width: pen - penStart,
+            thickness: thickness * deco.thickness,
+            color: decoColor,
+            style: deco.style,
+            aboveText: aboveText,
+          ));
+        }
+
+        final underTh = m.underlineThickness * scale;
+        if (deco.underline) {
+          // underlinePosition is Y-up (negative below baseline) → Y-down.
+          addLine(baselineY - m.underlinePosition * scale + underTh / 2,
+              underTh, false);
+        }
+        if (deco.overline) {
+          addLine(
+              baselineY - _ascenderPx(run.font, run.fontSizePx) + underTh / 2,
+              underTh,
+              false);
+        }
+        if (deco.lineThrough) {
+          addLine(baselineY - m.strikeoutPosition * scale,
+              m.strikeoutSize * scale, true);
+        }
       }
     }
     y += line.height;
@@ -574,6 +729,7 @@ ParagraphInstances emitInstances(
             minX: inkMinX, minY: inkMinY, maxX: inkMaxX, maxY: inkMaxY)
         : null,
     placeholders: placeholders,
+    decorations: decorations,
   );
 }
 
@@ -592,7 +748,7 @@ LayoutResult layoutParagraph(
   var maxRight = x;
   for (final line in para.lines) {
     final offset = switch (style.align) {
-      TextAlign.left => 0.0,
+      TextAlign.left || TextAlign.justify => 0.0,
       TextAlign.center => (style.maxWidth - line.width) * 0.5,
       TextAlign.right => style.maxWidth - line.width,
     };

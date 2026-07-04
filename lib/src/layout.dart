@@ -7,7 +7,9 @@ double measureText(String text, WindfoilFont font, double fontSizePx) {
   final scale = fontSizePx / font.unitsPerEm;
   var w = 0.0;
   String? prev;
-  for (final ch in text.split('')) {
+  for (final rune in text.runes) {
+    if (isZeroWidthCodePoint(rune)) continue;
+    final ch = String.fromCharCode(rune);
     if (prev != null) w += font.kerningOf(prev, ch) * scale;
     w += font.advanceOf(ch) * scale;
     prev = ch;
@@ -35,7 +37,9 @@ double layoutLine(
   var pen = x;
   String? prev;
 
-  for (final ch in text.split('')) {
+  for (final rune in text.runes) {
+    if (isZeroWidthCodePoint(rune)) continue;
+    final ch = String.fromCharCode(rune);
     if (prev != null) pen += font.kerningOf(prev, ch) * scale;
     final gl = table[ch];
     if (gl != null) {
