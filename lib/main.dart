@@ -1,0 +1,403 @@
+import 'dart:io' as io;
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:vector_math/vector_math.dart' as vm;
+import 'package:flutter_gpu/gpu.dart' as gpu;
+
+import 'src/engine/engine.dart';
+import 'src/font.dart';
+import 'src/renderer.dart';
+import 'src/scene.dart';
+import 'widget_demo.dart';
+
+gpu.PixelFormat windfoilSurfaceFormat(gpu.GpuContext context) {
+  final preferred = context.defaultColorFormat;
+  if (preferred != gpu.PixelFormat.unknown &&
+      context.supportsTextureFormat(preferred, renderTarget: true)) {
+    return preferred;
+  }
+  // Extended-range defaults (e.g. B10G10R10 on macOS) are not exposed by flutter_gpu.
+  return gpu.PixelFormat.b8g8r8a8UNormInt;
+}
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  Windfoil.initialize(); // warm fonts + pipeline for the widget demo
+  runApp(const WindfoilApp());
+}
+
+class WindfoilApp extends StatelessWidget {
+  const WindfoilApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // Dev hook (demo only): open the widget compare page directly.
+    final page = io.Platform.environment['WINDFOIL_DEMO'];
+    return MaterialApp(
+      theme: ThemeData(useMaterial3: true),
+      home: page == 'widgets' ? const WidgetDemoPage() : const WindfoilDemoPage(),
+    );
+  }
+}
+
+class WindfoilDemoPage extends StatefulWidget {
+  const WindfoilDemoPage({super.key});
+
+  @override
+  State<WindfoilDemoPage> createState() => _WindfoilDemoPageState();
+}
+
+class _WindfoilDemoPageState extends State<WindfoilDemoPage>
+    with SingleTickerProviderStateMixin {
+  WindfoilRenderer? _renderer;
+  WindfoilScene? _scene;
+  gpu.GpuImageSurface? _surface;
+  String? _error;
+
+  final _cam = _Camera();
+  final _view = _Camera();
+  double _attackT = -double.infinity;
+  double _velX = 0;
+  double _velY = 0;
+  bool _dragging = false;
+  double _lastMoveT = 0;
+  Offset? _lastPanPos;
+  double _pinchStartDistance = 0;
+  Offset _pinchMid = Offset.zero;
+
+  ui.Image? _image;
+  double _dpr = 1;
+  Size _size = Size.zero;
+  double _fpsDt = 1000 / 60;
+  double _prevTs = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _bootstrap();
+    createTicker(_onTick).start();
+  }
+
+  Future<void> _bootstrap() async {
+    try {
+      final bytes = await rootBundle.load('assets/Lato-Regular.ttf');
+      final font = WindfoilFont.parse(bytes.buffer.asUint8List());
+      final scene = WindfoilScene.build(font);
+      final renderer = await WindfoilRenderer.create(
+        curves: scene.atlas.curves,
+        rows: scene.atlas.rows,
+        instances: scene.instances,
+      );
+      if (!mounted) return;
+      setState(() {
+        _scene = scene;
+        _renderer = renderer;
+        _surface = gpu.gpuContext.createImageSurface(
+          1,
+          1,
+          format: windfoilSurfaceFormat(gpu.gpuContext),
+        );
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+    }
+  }
+
+  void _onTick(Duration elapsed) {
+    if (_renderer == null || _scene == null || _surface == null) return;
+    final now = elapsed.inMicroseconds / 1000.0;
+    final dt = _prevTs == 0 ? 1000 / 60 : now - _prevTs;
+    _prevTs = now;
+    _fpsDt = _fpsDt * 0.9 + dt * 0.1;
+
+    if (!_dragging && (_velX != 0 || _velY != 0) && dt > 0) {
+      _cam.panBy(_velX * dt, _velY * dt);
+      final decay = math.pow(0.8, dt / (1000 / 60));
+      _velX *= decay;
+      _velY *= decay;
+      if (_velX.abs() < 0.002 && _velY.abs() < 0.002) {
+        _velX = _velY = 0;
+      }
+    }
+
+    const attackMs = 300.0;
+    const smoothK = 0.3;
+    final s = now - _attackT >= attackMs ? 0.0 : 1.0 - (now - _attackT) / attackMs;
+    if (s > 0) {
+      final k = 1 - s * (1 - smoothK);
+      final kf = 1 - math.pow(1 - k, dt / (1000 / 60));
+      _view.x += (_cam.x - _view.x) * kf;
+      _view.y += (_cam.y - _view.y) * kf;
+      _view.z *= math.pow(_cam.z / _view.z, kf);
+    } else {
+      _view.x = _cam.x;
+      _view.y = _cam.y;
+      _view.z = _cam.z;
+    }
+
+    _renderFrame();
+    setState(() {});
+  }
+
+  void _renderFrame() {
+    final renderer = _renderer!;
+    final surface = _surface!;
+    final width = (_size.width * _dpr).round().clamp(1, 100000);
+    final height = (_size.height * _dpr).round().clamp(1, 100000);
+    if (surface.width != width || surface.height != height) {
+      surface.resize(width, height);
+    }
+
+    final frame = surface.acquireNextFrame();
+    final cmd = gpu.gpuContext.createCommandBuffer();
+    final br = background[0];
+    final bg = background[1];
+    final bb = background[2];
+    final ba = background[3];
+    final target = gpu.RenderTarget.singleColor(
+      gpu.ColorAttachment(
+        texture: frame.colorTexture,
+        loadAction: gpu.LoadAction.clear,
+        storeAction: gpu.StoreAction.store,
+        clearValue: vm.Vector4(br * ba, bg * ba, bb * ba, ba),
+      ),
+    );
+    final pass = cmd.createRenderPass(target);
+    renderer.render(
+      pass: pass,
+      frame: FrameUniforms(
+        width: width.toDouble(),
+        height: height.toDouble(),
+        cam: _view.uniform(width.toDouble(), height.toDouble()),
+      ),
+    );
+    frame.present(cmd);
+    cmd.submit();
+    _image = surface.currentImage;
+  }
+
+  void _recenter() {
+    final scene = _scene;
+    if (scene == null) return;
+    _velX = _velY = 0;
+    const rowsToShow = 10.0;
+    final rowH = 1.18 * maxSize;
+    _cam.z = _cam.clampZoom(_size.height * _dpr / (rowsToShow * rowH), _dpr);
+    final pad = 24 * _dpr;
+    _cam.x = scene.bounds.minX + (_size.width * _dpr / 2 - pad) / _cam.z;
+    _cam.y = scene.bounds.maxY - (_size.height * _dpr / 2 - pad) / _cam.z;
+    _view.copyFrom(_cam);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) {
+      return Scaffold(
+        backgroundColor: Color.fromARGB(
+          255,
+          (background[0] * 255).round(),
+          (background[1] * 255).round(),
+          (background[2] * 255).round(),
+        ),
+        body: Center(child: Text(_error!, style: const TextStyle(color: Colors.red))),
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _dpr = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 2.0);
+        _size = Size(constraints.maxWidth, constraints.maxHeight);
+        if (_scene != null && _view.z == 1 && _cam.z == 1) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _recenter());
+        }
+
+        final zoom = _view.z / _dpr;
+        final fps = math.min(120, (1000 / _fpsDt).round());
+
+        return Scaffold(
+          backgroundColor: Color.fromARGB(
+            255,
+            (background[0] * 255).round(),
+            (background[1] * 255).round(),
+            (background[2] * 255).round(),
+          ),
+          body: Stack(
+            children: [
+              Listener(
+                onPointerSignal: (event) {
+                  if (event is PointerScrollEvent) {
+                    final pos = event.localPosition * _dpr;
+                    _cam.zoomAt(pos.dx, pos.dy, math.exp(-event.scrollDelta.dy * 0.0015), _dpr);
+                  }
+                },
+                onPointerPanZoomUpdate: (event) {
+                  final pos = event.localPosition * _dpr;
+                  _cam.panBy(-event.panDelta.dx * _dpr, -event.panDelta.dy * _dpr);
+                  if (event.scale != 1) {
+                    _cam.zoomAt(pos.dx, pos.dy, event.scale, _dpr);
+                  }
+                },
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onScaleStart: (details) {
+                    _dragging = true;
+                    _velX = _velY = 0;
+                    _lastMoveT = _prevTs;
+                    _attackT = _prevTs;
+                    _lastPanPos = details.localFocalPoint;
+                    _pinchStartDistance = 0;
+                    _pinchMid = details.localFocalPoint;
+                  },
+                  onScaleUpdate: (details) {
+                    if (details.pointerCount >= 2) {
+                      if (_pinchStartDistance == 0) {
+                        _pinchStartDistance = 1;
+                        _pinchMid = details.localFocalPoint;
+                      }
+                      final focal = details.localFocalPoint * _dpr;
+                      final prevMid = _pinchMid * _dpr;
+                      _cam.panBy(focal.dx - prevMid.dx, focal.dy - prevMid.dy);
+                      _cam.zoomAt(focal.dx, focal.dy, details.scale, _dpr);
+                      _pinchMid = details.localFocalPoint;
+                    } else if (_lastPanPos != null) {
+                      final delta = details.localFocalPoint - _lastPanPos!;
+                      _cam.panBy(delta.dx * _dpr, delta.dy * _dpr);
+                      final dt = _prevTs - _lastMoveT;
+                      if (dt > 0) {
+                        _velX = _velX == 0
+                            ? (delta.dx * _dpr) / dt
+                            : _velX * 0.7 + ((delta.dx * _dpr) / dt) * 0.3;
+                        _velY = _velY == 0
+                            ? (delta.dy * _dpr) / dt
+                            : _velY * 0.7 + ((delta.dy * _dpr) / dt) * 0.3;
+                        _lastMoveT = _prevTs;
+                      }
+                      _lastPanPos = details.localFocalPoint;
+                    }
+                  },
+                  onScaleEnd: (_) {
+                    _dragging = false;
+                    _lastPanPos = null;
+                    _pinchStartDistance = 0;
+                    if (_prevTs - _lastMoveT > 80) {
+                      _velX = _velY = 0;
+                    }
+                  },
+                  child: CustomPaint(
+                    painter: _GpuImagePainter(_image),
+                    size: Size.infinite,
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 16,
+                top: 16,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Text(
+                      '$fps fps • ${_fmtZoom(zoom)}x',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 16,
+                top: 16,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const WidgetDemoPage()),
+                      ),
+                      child: const Text('Widgets'),
+                    ),
+                    TextButton(
+                      onPressed: _recenter,
+                      child: const Text('Recenter'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _GpuImagePainter extends CustomPainter {
+  _GpuImagePainter(this.image);
+
+  final ui.Image? image;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final img = image;
+    if (img == null) return;
+    canvas.drawImageRect(
+      img,
+      Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      Paint(),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _GpuImagePainter oldDelegate) => true;
+}
+
+class _Camera {
+  double x = 0;
+  double y = 0;
+  double z = 1;
+  double viewportW = 1;
+  double viewportH = 1;
+
+  void copyFrom(_Camera other) {
+    x = other.x;
+    y = other.y;
+    z = other.z;
+  }
+
+  double clampZoom(double value, double dpr) =>
+      value.clamp(0.005 * dpr, 100 * dpr);
+
+  void panBy(double dxDev, double dyDev) {
+    x -= dxDev / z;
+    y -= dyDev / z;
+  }
+
+  void zoomAt(double sx, double sy, double factor, double dpr) {
+    final wx = (sx - viewportW / 2) / z + x;
+    final wy = (sy - viewportH / 2) / z + y;
+    z = clampZoom(z * factor, dpr);
+    x = wx - (sx - viewportW / 2) / z;
+    y = wy - (sy - viewportH / 2) / z;
+  }
+
+  List<double> uniform(double width, double height) {
+    viewportW = width;
+    viewportH = height;
+    return [z, z, width / 2 - z * x, height / 2 - z * y];
+  }
+}
+
+String _fmtZoom(double z) {
+  if (z >= 100) return z.toStringAsFixed(0);
+  if (z >= 1) return z.toStringAsFixed(1).replaceAll(RegExp(r'\.0$'), '');
+  return z.toStringAsFixed(3);
+}

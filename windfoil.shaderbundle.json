@@ -1,0 +1,10 @@
+{
+  "WindfoilVertex": {
+    "type": "vertex",
+    "file": "shaders/windfoil.vert"
+  },
+  "WindfoilFragment": {
+    "type": "fragment",
+    "file": "shaders/windfoil.frag"
+  }
+}
