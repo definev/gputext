@@ -83,11 +83,17 @@ enum InlinePlaceholderAlignment {
 
 /// Resolves a glyph's band-table entry for a (font, char) pair.
 abstract class GlyphTable {
+  const GlyphTable();
+
   GlyphTableEntry? lookup(WindfoilFont font, String ch);
+
+  /// Lookup by raw glyph ID (COLR emoji layers); tables that only key by
+  /// character return null.
+  GlyphTableEntry? lookupGlyphId(WindfoilFont font, int glyphId) => null;
 }
 
 /// Adapter over the single-font table produced by buildGlyphAtlas.
-class SingleFontGlyphTable implements GlyphTable {
+class SingleFontGlyphTable extends GlyphTable {
   const SingleFontGlyphTable(this.font, this.table);
 
   final WindfoilFont font;
@@ -115,6 +121,7 @@ class TextRun extends InlineItem {
     this.height,
     this.decoration,
     this.fillRule = FillRule.nonzero,
+    this.source,
   });
 
   final String text;
@@ -131,11 +138,37 @@ class TextRun extends InlineItem {
 
   final InlineDecoration? decoration;
   final FillRule fillRule;
+
+  /// Opaque origin marker (the source TextSpan) so hit-testing can map a
+  /// glyph position back to its span (recognizers). Never inspected here.
+  final Object? source;
 }
 
 /// An inline widget's reserved box: unbreakable, contributes to line metrics
 /// per its alignment. `index` is the placeholder's preorder position in the
 /// span tree (matches WidgetSpan.extractFromInlineSpan child order).
+/// A native color-emoji cluster: one advance, N stacked COLR layer glyphs
+/// each with its palette color (null → the surrounding text color).
+class EmojiItem extends InlineItem {
+  const EmojiItem({
+    required this.font,
+    required this.fontSizePx,
+    required this.advanceUnits,
+    required this.layers,
+    this.textColor = const [0, 0, 0, 1],
+    this.source,
+  });
+
+  final WindfoilFont font;
+  final double fontSizePx;
+  final double advanceUnits; // font units
+  final List<ColrLayer> layers;
+  final List<double> textColor;
+  final Object? source;
+
+  double get width => advanceUnits / font.unitsPerEm * fontSizePx;
+}
+
 class PlaceholderItem extends InlineItem {
   const PlaceholderItem({
     required this.index,
@@ -186,6 +219,7 @@ class LineRun extends LineItem {
     required this.width,
     this.wordSpacingPx = 0,
     this.decoration,
+    this.source,
   });
 
   LineRun.fromRun(TextRun run, this.text, this.width)
@@ -195,6 +229,7 @@ class LineRun extends LineItem {
         letterSpacingPx = run.letterSpacingPx,
         wordSpacingPx = run.wordSpacingPx,
         decoration = run.decoration,
+        source = run.source,
         fillRule = run.fillRule;
 
   String text;
@@ -204,11 +239,21 @@ class LineRun extends LineItem {
   final double letterSpacingPx;
   final double wordSpacingPx;
   final InlineDecoration? decoration;
+  final Object? source;
   final FillRule fillRule;
   @override
   double width;
 
   bool get isSpace => text == ' ';
+}
+
+class LineEmoji extends LineItem {
+  LineEmoji(this.item);
+
+  final EmojiItem item;
+
+  @override
+  double get width => item.width;
 }
 
 class LinePlaceholder extends LineItem {
@@ -276,20 +321,32 @@ double _ascenderPx(WindfoilFont font, double sizePx) =>
 double _descenderPx(WindfoilFont font, double sizePx) =>
     -font.verticalMetrics.descender / font.unitsPerEm * sizePx;
 
+/// Split text into wrap tokens. Beyond spaces/newlines, each CJK character
+/// is its own token (CJK breaks between any two ideographs), and a break
+/// opportunity follows every hyphen ("well-known" → "well-" + "known").
 List<String> _splitWords(String text) {
   final words = <String>[];
   final buf = StringBuffer();
-  for (var i = 0; i < text.length; i++) {
-    final ch = text[i];
-    if (ch == '\n' || ch == ' ') {
-      if (buf.isNotEmpty) words.add(buf.toString());
-      words.add(ch);
+  void flush() {
+    if (buf.isNotEmpty) {
+      words.add(buf.toString());
       buf.clear();
-    } else {
-      buf.write(ch);
     }
   }
-  if (buf.isNotEmpty) words.add(buf.toString());
+
+  for (final rune in text.runes) {
+    if (rune == 0x0A || rune == 0x20) {
+      flush();
+      words.add(String.fromCharCode(rune));
+    } else if (isCjkBreakOpportunity(rune)) {
+      flush();
+      words.add(String.fromCharCode(rune));
+    } else {
+      buf.writeCharCode(rune);
+      if (rune == 0x2D) flush(); // break after hyphen
+    }
+  }
+  flush();
   return words;
 }
 
@@ -385,6 +442,23 @@ ParagraphLines breakLines(
   }
 
   for (final item in runs) {
+    if (item is EmojiItem) {
+      final w = item.width;
+      hardLineWidth += w;
+      if (w > minIntrinsic) minIntrinsic = w;
+      if (lineWidth + w > wrapWidth && line.items.isNotEmpty) {
+        commitLine();
+      }
+      line.items.add(LineEmoji(item));
+      lineWidth += w;
+      final a = _ascenderPx(item.font, item.fontSizePx);
+      final de = _descenderPx(item.font, item.fontSizePx);
+      final h = _lineHeightPx(item.font, item.fontSizePx, style.lineHeight);
+      if (a > line.ascent) line.ascent = a;
+      if (de > line.descent) line.descent = de;
+      if (h > line.height) line.height = h;
+      continue;
+    }
     if (item is PlaceholderItem) {
       final w = item.width;
       hardLineWidth += w;
@@ -539,12 +613,34 @@ class PlaceholderBox {
   final double height;
 }
 
+/// A text run's rect in layout space, tagged with its source span — the
+/// widget layer uses these to dispatch pointer events to span recognizers.
+class HitSpanBox {
+  const HitSpanBox({
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+    required this.source,
+  });
+
+  final double left;
+  final double top;
+  final double width;
+  final double height;
+  final Object source;
+
+  bool contains(double x, double y) =>
+      x >= left && x < left + width && y >= top && y < top + height;
+}
+
 class ParagraphInstances {
   ParagraphInstances({
     required this.instances,
     required this.inkBounds,
     this.placeholders = const [],
     this.decorations = const [],
+    this.hitBoxes = const [],
   });
 
   final Float32List instances;
@@ -558,6 +654,9 @@ class ParagraphInstances {
 
   /// Underline/overline/lineThrough strokes in layout space.
   final List<DecorationLine> decorations;
+
+  /// Per-run rects tagged with their source spans (recognizer hit-testing).
+  final List<HitSpanBox> hitBoxes;
 
   int get glyphCount => instances.length ~/ floatsPerInstance;
 }
@@ -576,6 +675,7 @@ ParagraphInstances emitInstances(
   final out = <double>[];
   final placeholders = <PlaceholderBox>[];
   final decorations = <DecorationLine>[];
+  final hitBoxes = <HitSpanBox>[];
   var y = top;
   var inkMinX = double.infinity, inkMinY = double.infinity;
   var inkMaxX = -double.infinity, inkMaxY = -double.infinity;
@@ -620,6 +720,44 @@ ParagraphInstances emitInstances(
     var stretched = 0;
 
     for (final item in line.items) {
+      if (item is LineEmoji) {
+        final e = item.item;
+        final scale = e.fontSizePx / e.font.unitsPerEm;
+        for (final layer in e.layers) {
+          final gl = table?.lookupGlyphId(e.font, layer.glyphId);
+          if (gl == null) continue;
+          final c = layer.color ?? e.textColor;
+          final a = c.length > 3 ? c[3] : 1.0;
+          out.addAll([
+            pen, baselineY, scale, 0.0,
+            gl.bbox[0], gl.bbox[1], gl.bbox[2], gl.bbox[3],
+            c[0], c[1], c[2], a,
+            gl.rowBase.toDouble(), gl.bandCount.toDouble(), gl.y0, gl.invH,
+          ]);
+          final gx0 = pen + gl.bbox[0] * scale;
+          final gx1 = pen + gl.bbox[2] * scale;
+          final gy0 = baselineY + gl.bbox[1] * scale;
+          final gy1 = baselineY + gl.bbox[3] * scale;
+          if (gx0 < inkMinX) inkMinX = gx0;
+          if (gx1 > inkMaxX) inkMaxX = gx1;
+          if (gy0 < inkMinY) inkMinY = gy0;
+          if (gy1 > inkMaxY) inkMaxY = gy1;
+        }
+        final src = e.source;
+        if (src != null && e.width > 0) {
+          hitBoxes.add(HitSpanBox(
+            left: pen,
+            top: y,
+            width: e.width,
+            height: line.ascent + line.descent,
+            source: src,
+          ));
+        }
+        pen += e.width;
+        prev = null;
+        prevFont = null;
+        continue;
+      }
       if (item is LinePlaceholder) {
         final p = item.item;
         final h = p.height;
@@ -685,6 +823,17 @@ ParagraphInstances emitInstances(
         stretched++;
       }
 
+      final src = run.source;
+      if (src != null && pen > penStart) {
+        hitBoxes.add(HitSpanBox(
+          left: penStart,
+          top: y,
+          width: pen - penStart,
+          height: line.ascent + line.descent,
+          source: src,
+        ));
+      }
+
       final deco = run.decoration;
       if (deco != null && deco.isActive && pen > penStart) {
         final m = run.font.decorationMetrics;
@@ -730,6 +879,7 @@ ParagraphInstances emitInstances(
         : null,
     placeholders: placeholders,
     decorations: decorations,
+    hitBoxes: hitBoxes,
   );
 }
 

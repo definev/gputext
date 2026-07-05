@@ -36,7 +36,6 @@ class WindfoilPipeline {
     required this.curvesSlot,
     required this.rowsSlot,
     required this.cornerBuffer,
-    required this.hostBuffer,
   });
 
   final gpu.RenderPipeline pipeline;
@@ -44,7 +43,6 @@ class WindfoilPipeline {
   final gpu.UniformSlot curvesSlot;
   final gpu.UniformSlot rowsSlot;
   final gpu.DeviceBuffer cornerBuffer;
-  final gpu.HostBuffer hostBuffer;
 
   static Future<WindfoilPipeline> create() async {
     gpu.ShaderLibrary? library;
@@ -120,7 +118,6 @@ class WindfoilPipeline {
       curvesSlot: frag.getUniformSlot('curvesTex'),
       rowsSlot: frag.getUniformSlot('rowsTex'),
       cornerBuffer: cornerBuffer,
-      hostBuffer: gpu.gpuContext.createHostBuffer(),
     );
   }
 
@@ -145,7 +142,16 @@ class WindfoilPipeline {
       frame.cam[2],
       frame.cam[3],
     ]);
-    final frameView = hostBuffer.emplace(frameData.buffer.asByteData());
+    // Each render gets its own immutable uniform buffer. A shared HostBuffer
+    // arena here is a use-after-recycle hazard: submit() only ENQUEUES GPU
+    // work, so reset()+emplace from a later same-frame render (e.g. a nested
+    // WindfoilRichText inside a WidgetSpan, which renders during its parent's
+    // paint) would overwrite this FrameInfo before Metal executes the draw —
+    // the parent's surface then renders with the child's camera.
+    final frameBuffer =
+        gpu.gpuContext.createDeviceBufferWithCopy(frameData.buffer.asByteData());
+    final frameView = gpu.BufferView(frameBuffer,
+        offsetInBytes: 0, lengthInBytes: frameBuffer.sizeInBytes);
 
     pass.bindPipeline(pipeline);
     pass.setColorBlendEnable(true);
@@ -174,7 +180,6 @@ class WindfoilPipeline {
       slot: 1,
     );
     pass.draw(4, instanceCount: instanceCount);
-    hostBuffer.reset();
   }
 
   int instanceCountOf(Float32List instances) =>

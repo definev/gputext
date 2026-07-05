@@ -17,6 +17,8 @@ class SharedGlyphAtlas implements GlyphTable {
   final _rows = <int>[];
   final _table = <(WindfoilFont, String), GlyphTableEntry>{};
   final _blank = <(WindfoilFont, String)>{}; // cmap misses / empty outlines
+  final _gidTable = <(WindfoilFont, int), GlyphTableEntry>{};
+  final _blankGids = <(WindfoilFont, int)>{};
   var _generation = 0;
 
   /// Bumped whenever curve/row data grows (texture re-upload trigger).
@@ -58,8 +60,38 @@ class SharedGlyphAtlas implements GlyphTable {
     return grew;
   }
 
+  /// Band a glyph referenced by ID (COLR layers have no code point).
+  bool ensureGlyphId(WindfoilFont font, int glyphId) {
+    final key = (font, glyphId);
+    if (_gidTable.containsKey(key) || _blankGids.contains(key)) return false;
+    final g = font.glyphOutlineById(glyphId);
+    if (g == null) {
+      _blankGids.add(key);
+      return false;
+    }
+    final pieces = <double>[];
+    for (var i = 0; i < g.quads.length; i += 6) {
+      pushMonotonePieces(g.quads.sublist(i, i + 6), pieces);
+    }
+    final header = bandPieces(pieces, g.bbox[1], g.bbox[3], _curves, _rows);
+    _gidTable[key] = GlyphTableEntry(
+      rowBase: header.rowBase,
+      bandCount: header.bandCount,
+      y0: header.y0,
+      invH: header.invH,
+      advance: g.advance,
+      bbox: g.bbox,
+    );
+    _generation++;
+    return true;
+  }
+
   @override
   GlyphTableEntry? lookup(WindfoilFont font, String ch) => _table[(font, ch)];
+
+  @override
+  GlyphTableEntry? lookupGlyphId(WindfoilFont font, int glyphId) =>
+      _gidTable[(font, glyphId)];
 
   Float32List curvesData() => Float32List.fromList(_curves);
 

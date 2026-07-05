@@ -24,6 +24,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/Lato-Regular.ttf
+    - assets/TwemojiMozilla.ttf
     - build/shaderbundles/
   fonts:
     - family: Lato

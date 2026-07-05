@@ -1,0 +1,7 @@
+TwemojiMozilla.ttf — "Twemoji Mozilla" COLR/CPAL color font
+Built by Mozilla from Twitter's Twemoji artwork.
+https://github.com/mozilla/twemoji-colr (v0.7.0)
+
+Emoji artwork: Copyright Twitter, Inc and other contributors,
+licensed under CC-BY 4.0: https://creativecommons.org/licenses/by/4.0/
+Font packaging: Apache License 2.0 (Mozilla).

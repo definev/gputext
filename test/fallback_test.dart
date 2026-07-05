@@ -90,8 +90,8 @@ void main() {
     final children = out.children!;
     final widgets = children.whereType<WidgetSpan>().toList();
     expect(widgets.length, 2); // one per ideograph (wrap points)
-    expect(((widgets[0].child) as Text).data, '中');
-    expect(((widgets[1].child) as Text).data, '文');
+    expect((((widgets[0].child) as Text).textSpan! as TextSpan).text, '中');
+    expect((((widgets[1].child) as Text).textSpan! as TextSpan).text, '文');
     expect((children.first as TextSpan).text, 'go ');
     expect((children.last as TextSpan).text, ' now');
     // Delegated style carries size + color for parity.
@@ -106,6 +106,21 @@ void main() {
       text: 'go 中文 now',
     );
     expect(identical(expandUncoveredSpans(span, engine), span), isTrue);
+  });
+
+  test('native CJK runs wrap between ideographs (no spaces needed)', () {
+    if (wide == null) return;
+    final cjkRun = wf.TextRun(
+      text: '你好世界你好世界',
+      font: wide!,
+      fontSizePx: 16,
+      color: const [0, 0, 0, 1],
+    );
+    final oneChar = 16.0; // full-width advance = 1em at 16px (2048/2048)
+    final para = wf.breakLines([cjkRun], oneChar * 3 + 1,
+        wf.ParagraphStyle(maxWidth: oneChar * 3 + 1));
+    expect(para.lines.length, greaterThanOrEqualTo(3)); // wraps mid-"word"
+    expect(para.minIntrinsicWidth, lessThanOrEqualTo(oneChar + 0.1));
   });
 
   testWidgets('uncovered CJK renders as delegated inline Text',

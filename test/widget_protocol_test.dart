@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -198,6 +199,63 @@ void main() {
     );
     final size = tester.getSize(find.byType(WindfoilRichText));
     expect(size.height, greaterThanOrEqualTo(40));
+  });
+
+  testWidgets('TextSpan recognizers receive taps on their runs',
+      (tester) async {
+    var linkTaps = 0;
+    final recognizer = TapGestureRecognizer()..onTap = () => linkTaps++;
+    addTearDown(recognizer.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Center(
+          child: SizedBox(
+            width: 400,
+            child: WindfoilRichText(
+              text: TextSpan(style: style, children: [
+                const TextSpan(text: 'x '),
+                TextSpan(
+                  text: 'a long tappable link run of text',
+                  style: const TextStyle(color: Color(0xFF1144CC)),
+                  recognizer: recognizer,
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+    final rect = tester.getRect(find.byType(WindfoilRichText));
+    // The box may be wider than the text (tight constraints); the link
+    // dominates the line, so its glyphs span the horizontal center.
+    await tester.tapAt(Offset(rect.left + 120, rect.top + 10)); // in link
+    await tester.pump();
+    expect(linkTaps, 1);
+    await tester.tapAt(Offset(rect.left + 4, rect.top + 10)); // in 'x '
+    await tester.pump();
+    expect(linkTaps, 1);
+  });
+
+  testWidgets('identical paragraphs share one layout via the engine cache',
+      (tester) async {
+    final engine = Windfoil.instance;
+    final hitsBefore = engine.debugLayoutCacheHits;
+    const span = TextSpan(
+        style: style,
+        text: 'cached paragraph content that wraps across some lines');
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Column(children: [
+          SizedBox(width: 250, child: WindfoilRichText(text: span)),
+          SizedBox(width: 250, child: WindfoilRichText(text: span)),
+        ]),
+      ),
+    );
+    expect(engine.debugLayoutCacheHits, greaterThan(hitsBefore));
+    final rects = tester
+        .widgetList(find.byType(WindfoilRichText))
+        .toList(growable: false);
+    expect(rects.length, 2);
   });
 
   testWidgets('empty text still reports one line of height', (tester) async {

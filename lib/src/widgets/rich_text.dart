@@ -106,7 +106,7 @@ class WindfoilRichText extends StatelessWidget {
     return ListenableBuilder(
       listenable: Windfoil.instance,
       builder: (context, _) {
-        var effective = expandEmojiSpans(text);
+        var effective = expandEmojiSpans(text, Windfoil.instance);
         effective = expandUncoveredSpans(effective, Windfoil.instance);
         return _RawWindfoilRichText(
           text: text,
@@ -280,6 +280,8 @@ class RenderWindfoilParagraph extends RenderBox
   double _boxWidth = 0; // alignment box = reported width
   double _lastWrapWidth = double.infinity;
   double _lastMaxWidth = double.infinity;
+  List<wf.HitSpanBox> _hitBoxes = const [];
+  bool _hasRecognizers = false;
   bool _paraDirty = false; // paint-only span change pending re-break
   int _contentGen = 0; // bumped on any content change (layout or paint-only)
 
@@ -311,7 +313,10 @@ class RenderWindfoilParagraph extends RenderBox
         return;
       case RenderComparison.metadata:
         _text = value;
+        _paraDirty = true; // hit boxes reference source spans — refresh
+        _contentGen++;
         markNeedsSemanticsUpdate();
+        markNeedsPaint();
       case RenderComparison.paint:
         _text = value;
         _paraDirty = true;
@@ -532,9 +537,44 @@ class RenderWindfoilParagraph extends RenderBox
     return para;
   }
 
+  /// Cache key for flatten+break results (paragraphs without inline
+  /// children only — placeholder dimensions vary per widget). Relies on
+  /// TextSpan's deep ==/hashCode; fontGeneration invalidates on font churn.
+  Object? _layoutCacheKey(BoxConstraints constraints) {
+    if (childCount > 0) return null;
+    return (
+      _text,
+      _textScaler,
+      constraints.maxWidth,
+      _softWrap,
+      _overflow,
+      _maxLines,
+      _engine.fontGeneration,
+    );
+  }
+
   ({wf.ParagraphLines? para, List<wf.InlineItem>? runs, Size size,
       double boxWidth, double wrapWidth}) _computeLayout(
       BoxConstraints constraints, List<PlaceholderDimensions> dims) {
+    final key = _layoutCacheKey(constraints);
+    if (key != null) {
+      final cached = _engine.layoutCacheGet(key);
+      if (cached != null) {
+        final para = cached.$2;
+        final wrapWidth = _softWrap && constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : double.infinity;
+        final width = ui.clampDouble(para.maxIntrinsicWidth,
+            constraints.minWidth, constraints.maxWidth);
+        return (
+          para: para,
+          runs: cached.$1,
+          size: constraints.constrain(Size(width, para.height)),
+          boxWidth: width,
+          wrapWidth: wrapWidth,
+        );
+      }
+    }
     final runs = flattenSpan(_text, _textScaler, _engine,
         placeholderDimensions: dims);
     if (runs == null || runs.isEmpty) {
@@ -558,6 +598,7 @@ class RenderWindfoilParagraph extends RenderBox
         ? constraints.maxWidth
         : double.infinity;
     final para = _break(runs, wrapWidth, constraints.maxWidth);
+    if (key != null) _engine.layoutCachePut(key, (runs, para));
     // TextPainter's width rule: report the unwrapped intrinsic width clamped
     // to the constraints, and align lines against THAT box (never against an
     // unbounded constraint).
@@ -591,17 +632,24 @@ class RenderWindfoilParagraph extends RenderBox
     _paraDirty = false;
     _contentGen++;
     size = r.size;
-    if (childCount > 0) {
-      final para = r.para;
-      final boxes = para == null
-          ? const <wf.PlaceholderBox>[]
-          : wf.emitInstances(para, r.boxWidth, _resolvedAlign, null)
-              .placeholders;
-      positionInlineChildren([
-        for (final b in boxes)
-          ui.TextBox.fromLTRBD(b.left, b.top, b.left + b.width,
-              b.top + b.height, _textDirection),
-      ]);
+    bool hasRecognizer(Object? source) =>
+        source is TextSpan && source.recognizer != null;
+    _hasRecognizers = r.runs?.any((i) =>
+            (i is wf.TextRun && hasRecognizer(i.source)) ||
+            (i is wf.EmojiItem && hasRecognizer(i.source))) ??
+        false;
+    _hitBoxes = const [];
+    final para = r.para;
+    if ((childCount > 0 || _hasRecognizers) && para != null) {
+      final walk = wf.emitInstances(para, r.boxWidth, _resolvedAlign, null);
+      _hitBoxes = walk.hitBoxes;
+      if (childCount > 0) {
+        positionInlineChildren([
+          for (final b in walk.placeholders)
+            ui.TextBox.fromLTRBD(b.left, b.top, b.left + b.width,
+                b.top + b.height, _textDirection),
+        ]);
+      }
     }
   }
 
@@ -658,6 +706,24 @@ class RenderWindfoilParagraph extends RenderBox
       hitTestInlineChildren(result, position);
 
   @override
+  void handleEvent(PointerEvent event, covariant BoxHitTestEntry entry) {
+    assert(debugHandleEvent(event, entry));
+    if (event is! PointerDownEvent) return;
+    for (final b in _hitBoxes) {
+      if (b.contains(entry.localPosition.dx, entry.localPosition.dy)) {
+        final src = b.source;
+        if (src is TextSpan) {
+          final recognizer = src.recognizer;
+          if (recognizer != null) {
+            recognizer.addPointer(event);
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  @override
   void applyPaintTransform(RenderBox child, Matrix4 transform) =>
       defaultApplyPaintTransform(child, transform);
 
@@ -686,11 +752,18 @@ class RenderWindfoilParagraph extends RenderBox
     if (para == null) return;
     if (_emitted == null || _emittedGen != _contentGen) {
       for (final line in para.lines) {
-        for (final run in line.items.whereType<wf.LineRun>()) {
-          _engine.atlas.ensureGlyphs(run.font, run.text);
+        for (final item in line.items) {
+          if (item is wf.LineRun) {
+            _engine.atlas.ensureGlyphs(item.font, item.text);
+          } else if (item is wf.LineEmoji) {
+            for (final layer in item.item.layers) {
+              _engine.atlas.ensureGlyphId(item.item.font, layer.glyphId);
+            }
+          }
         }
       }
       _emitted = wf.emitInstances(para, _boxWidth, _resolvedAlign, _engine.atlas);
+      _hitBoxes = _emitted!.hitBoxes;
       _instanceBuffer = null;
       _emittedGen = _contentGen;
       _cacheKey = null;

@@ -8,7 +8,8 @@ import 'package:flutter/painting.dart';
 import 'dart:ui' as ui show PlaceholderAlignment;
 
 import '../engine/engine.dart';
-import '../font.dart' show WindfoilFont, isZeroWidthCodePoint;
+import '../font.dart'
+    show WindfoilFont, applyBasicLigatures, isZeroWidthCodePoint;
 import '../paragraph.dart' as wf;
 
 wf.InlinePlaceholderAlignment _mapAlignment(ui.PlaceholderAlignment a) =>
@@ -91,7 +92,14 @@ List<wf.InlineItem>? flattenSpan(
               wordSpacingPx: style?.wordSpacing ?? 0,
               height: style?.height,
               decoration: _mapDecoration(style),
+              source: s,
             );
+
+        // Common Latin ligatures (fi/fl/ffi/ffl); skipped when letterSpacing
+        // is set — tracked-out text shouldn't ligate.
+        final ligated = (style?.letterSpacing ?? 0) == 0
+            ? applyBasicLigatures(text, primary)
+            : text;
 
         // Per-character font fallback: split the text into same-font
         // subruns. Whitespace and zero-width characters stay with the
@@ -105,7 +113,24 @@ List<wf.InlineItem>? flattenSpan(
           sub.clear();
         }
 
-        for (final rune in text.runes) {
+        final emojiFont = engine.emojiFont;
+        for (final rune in ligated.runes) {
+          // Native color emoji: COLR layers render through the shader.
+          if (emojiFont != null && !isZeroWidthCodePoint(rune)) {
+            final layers = emojiFont.colrForCodePoint(rune);
+            if (layers != null) {
+              flushSub();
+              items.add(wf.EmojiItem(
+                font: emojiFont,
+                fontSizePx: textScaler.scale(style?.fontSize ?? 14.0),
+                advanceUnits: emojiFont.advanceOf(String.fromCharCode(rune)),
+                layers: layers,
+                textColor: [color.r, color.g, color.b, color.a],
+                source: s,
+              ));
+              continue;
+            }
+          }
           var target = current;
           if (!isZeroWidthCodePoint(rune) &&
               rune != 0x20 &&

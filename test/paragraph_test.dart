@@ -296,6 +296,29 @@ void main() {
     expect(identical(heavy, bold), isTrue); // nearest weight wins
   });
 
+  test('GPOS pair kerning is read (supersedes the legacy kern table)', () {
+    expect(font.kerningOf('A', 'V'), lessThan(0));
+    expect(font.kerningOf('T', 'o'), lessThan(0));
+    expect(font.kerningOf('L', 'T'), lessThan(0));
+    expect(font.kerningOf('a', 'b'), 0);
+  });
+
+  test('basic ligatures substitute when the font maps them', () {
+    if (!font.hasGlyph('ﬁ')) return;
+    expect(applyBasicLigatures('first', font), 'ﬁrst');
+    expect(applyBasicLigatures('flow', font), 'ﬂow');
+    expect(applyBasicLigatures('nope', font), 'nope');
+  });
+
+  test('hyphens create break opportunities', () {
+    final wellW = measureText('well-', font, 16);
+    final para = wf.breakLines(
+        [run('well-known')], wellW + 1, wf.ParagraphStyle(maxWidth: wellW + 1));
+    expect(para.lines.length, 2);
+    expect((para.lines[0].items.last as wf.LineRun).text, 'well-');
+    expect((para.lines[1].items.first as wf.LineRun).text, 'known');
+  });
+
   test('flattenSpan maps decorations, height, and wordSpacing', () {
     Windfoil.instance.registerFont('Lato', font);
     final items = flattenSpan(

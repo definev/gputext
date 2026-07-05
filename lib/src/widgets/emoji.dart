@@ -114,11 +114,19 @@ List<EmojiSegment> splitEmojiSegments(String text) {
   return segs;
 }
 
-/// Rewrite every emoji cluster inside the span tree into a baseline-aligned
-/// WidgetSpan carrying an engine-rendered Text. Returns the original span
-/// unchanged (identical) when the tree contains no emoji.
-InlineSpan expandEmojiSpans(InlineSpan root) {
+/// Rewrite emoji clusters into baseline-aligned WidgetSpans carrying
+/// engine-rendered Text — EXCEPT single-code-point clusters the engine's
+/// COLR emoji font covers, which stay in the text and render natively
+/// through the coverage shader (the flattener emits EmojiItems for them).
+/// Returns the original span unchanged (identical) when nothing needs
+/// delegation.
+InlineSpan expandEmojiSpans(InlineSpan root, WindfoilEngine engine) {
   var changed = false;
+
+  bool nativeEligible(String cluster) {
+    final cps = cluster.runes.where((r) => r != _vs16).toList();
+    return cps.length == 1 && engine.nativeEmojiCovers(cps.first);
+  }
 
   InlineSpan transform(InlineSpan s, double inheritedSize) {
     if (s is! TextSpan) return s;
@@ -141,21 +149,34 @@ InlineSpan expandEmojiSpans(InlineSpan root) {
       );
     }
 
+    final segments = splitEmojiSegments(text);
+    if (segments.every((seg) => !seg.isEmoji || nativeEligible(seg.text))) {
+      // Everything renders natively — keep the span as plain text.
+      if (!changed) return s;
+      return TextSpan(
+        text: text,
+        style: s.style,
+        children: children,
+        recognizer: s.recognizer,
+        semanticsLabel: s.semanticsLabel,
+      );
+    }
+
     changed = true;
     final pieces = <InlineSpan>[
-      for (final seg in splitEmojiSegments(text))
-        if (seg.isEmoji)
+      for (final seg in segments)
+        if (seg.isEmoji && !nativeEligible(seg.text))
           WidgetSpan(
             alignment: PlaceholderAlignment.baseline,
             baseline: TextBaseline.alphabetic,
-            child: Text(
-              seg.text,
+            child: Text.rich(
+              TextSpan(text: seg.text, recognizer: s.recognizer),
               textScaler: TextScaler.noScaling, // extract() scales children
               style: TextStyle(fontSize: size),
             ),
           )
         else
-          TextSpan(text: seg.text),
+          TextSpan(text: seg.text, recognizer: s.recognizer),
       ...?children,
     ];
     return TextSpan(style: s.style, children: pieces);
@@ -203,6 +224,7 @@ InlineSpan expandUncoveredSpans(InlineSpan root, WindfoilEngine engine) {
     final coverage = <int, bool>{};
     bool covered(int cp) {
       if (isZeroWidthCodePoint(cp) || cp == 0x20 || cp == 0x0A) return true;
+      if (engine.nativeEmojiCovers(cp)) return true;
       return coverage.putIfAbsent(
         cp,
         () =>
@@ -233,7 +255,7 @@ InlineSpan expandUncoveredSpans(InlineSpan root, WindfoilEngine engine) {
     final buf = StringBuffer();
     void flushText() {
       if (buf.isNotEmpty) {
-        pieces.add(TextSpan(text: buf.toString()));
+        pieces.add(TextSpan(text: buf.toString(), recognizer: s.recognizer));
         buf.clear();
       }
     }
@@ -250,8 +272,8 @@ InlineSpan expandUncoveredSpans(InlineSpan root, WindfoilEngine engine) {
       pieces.add(WidgetSpan(
         alignment: PlaceholderAlignment.baseline,
         baseline: TextBaseline.alphabetic,
-        child: Text(
-          segment,
+        child: Text.rich(
+          TextSpan(text: segment, recognizer: s.recognizer),
           textScaler: TextScaler.noScaling, // extract() scales children
           style: delegatedStyle,
         ),

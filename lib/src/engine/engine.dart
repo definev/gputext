@@ -18,6 +18,7 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 
 import '../atlas.dart';
 import '../font.dart';
+import '../paragraph.dart' as wf;
 import 'pipeline.dart';
 import 'shared_atlas.dart';
 
@@ -35,8 +36,10 @@ abstract final class Windfoil {
     Map<String, String> fontAssets = const {},
     String? defaultFamily,
     List<String> fallbackFamilies = const [],
+    String? emojiFontAsset,
   }) =>
-      instance._initializeWith(fontAssets, defaultFamily, fallbackFamilies);
+      instance._initializeWith(
+          fontAssets, defaultFamily, fallbackFamilies, emojiFontAsset);
 
   /// False when flutter_gpu/Impeller is unavailable; windfoil widgets lay
   /// out but paint blank, so apps can fall back to stock RichText.
@@ -59,6 +62,42 @@ class WindfoilEngine extends ChangeNotifier {
   AtlasTextures? _textures;
   var _texturesGeneration = -1;
 
+  // Shared paragraph-layout cache: identical (span, style, width) paragraphs
+  // across widgets — think list items — reuse one flatten+break result.
+  // Entries are read-only after insertion; keys embed [fontGeneration] so
+  // font registration invalidates naturally.
+  static const _layoutCacheCapacity = 256;
+  final _layoutCache =
+      <Object, (List<wf.InlineItem>, wf.ParagraphLines)>{};
+  var _fontGeneration = 0;
+
+  /// Bumped whenever font resolution could change (register/fallbacks).
+  int get fontGeneration => _fontGeneration;
+
+  @visibleForTesting
+  int debugLayoutCacheHits = 0;
+  @visibleForTesting
+  int debugLayoutCacheMisses = 0;
+
+  (List<wf.InlineItem>, wf.ParagraphLines)? layoutCacheGet(Object key) {
+    final v = _layoutCache.remove(key);
+    if (v != null) {
+      _layoutCache[key] = v; // LRU touch
+      debugLayoutCacheHits++;
+    } else {
+      debugLayoutCacheMisses++;
+    }
+    return v;
+  }
+
+  void layoutCachePut(
+      Object key, (List<wf.InlineItem>, wf.ParagraphLines) value) {
+    _layoutCache[key] = value;
+    if (_layoutCache.length > _layoutCacheCapacity) {
+      _layoutCache.remove(_layoutCache.keys.first);
+    }
+  }
+
   bool get fontsReady => _fonts.isNotEmpty;
   bool get gpuReady => _pipeline != null;
   bool get unsupported => _unsupported;
@@ -73,14 +112,50 @@ class WindfoilEngine extends ChangeNotifier {
     Map<String, String> fontAssets,
     String? defaultFamily,
     List<String> fallbackFamilies,
+    String? emojiFontAsset,
   ) async {
     for (final e in fontAssets.entries) {
       await loadFontAsset(e.key, e.value);
     }
     if (defaultFamily != null) _defaultFamily = defaultFamily;
     if (fallbackFamilies.isNotEmpty) setFallbackFamilies(fallbackFamilies);
+    if (emojiFontAsset != null) await loadEmojiFontAsset(emojiFontAsset);
     await ensureInitialized();
   }
+
+  WindfoilFont? _emojiFont;
+
+  /// COLR v0 font used to render single-code-point emoji natively through
+  /// the coverage shader; null → all emoji delegate to the platform.
+  WindfoilFont? get emojiFont => _emojiFont;
+
+  /// Register (or clear, with null) the native color-emoji font.
+  void registerEmojiFont(WindfoilFont? font) {
+    assert(font == null || font.hasColorGlyphs,
+        'Emoji font must carry COLR v0 color glyphs');
+    _emojiFont = font;
+    _fontGeneration++;
+    notifyListeners();
+  }
+
+  Future<WindfoilFont> loadEmojiFontAsset(String assetKey) async {
+    ByteData data;
+    try {
+      data = await rootBundle.load(assetKey);
+    } catch (_) {
+      data = await rootBundle.load('packages/windfoil_flutter/$assetKey');
+    }
+    final font = WindfoilFont.parse(data.buffer.asUint8List(
+      data.offsetInBytes,
+      data.lengthInBytes,
+    ));
+    registerEmojiFont(font);
+    return font;
+  }
+
+  /// True when the registered emoji font has a color glyph for `cp`.
+  bool nativeEmojiCovers(int cp) =>
+      _emojiFont?.colrForCodePoint(cp) != null;
 
   /// Engine-wide fallback chain, tried after a style's own family list.
   List<String> get fallbackFamilies => List.unmodifiable(_fallbackFamilies);
@@ -89,6 +164,7 @@ class WindfoilEngine extends ChangeNotifier {
     _fallbackFamilies
       ..clear()
       ..addAll(families);
+    _fontGeneration++;
     notifyListeners();
   }
 
@@ -160,6 +236,7 @@ class WindfoilEngine extends ChangeNotifier {
       ..removeWhere((v) => v.weight == w && v.italic == italic)
       ..add(_FontVariant(w, italic, font));
     _defaultFamily ??= family;
+    _fontGeneration++;
     notifyListeners();
   }
 

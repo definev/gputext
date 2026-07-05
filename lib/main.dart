@@ -69,6 +69,9 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
   Offset? _lastPanPos;
   double _pinchStartDistance = 0;
   Offset _pinchMid = Offset.zero;
+  // ScaleUpdateDetails.scale is cumulative since onScaleStart, not incremental;
+  // track the last value seen so each tick can derive its own per-tick ratio.
+  double _prevScale = 1;
 
   ui.Image? _image;
   // Superseded surface+image generations, tagged with the frame number whose
@@ -290,17 +293,15 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
           body: Stack(
             children: [
               Listener(
+                // Trackpad two-finger pan/pinch arrives as PointerPanZoomUpdateEvents,
+                // which GestureDetector's ScaleGestureRecognizer already consumes below
+                // (pointerCount is >=2 for a trackpad panZoom) — don't also handle them
+                // here, or the two handlers apply the same pan twice and cancel out.
                 onPointerSignal: (event) {
                   if (event is PointerScrollEvent) {
                     final pos = event.localPosition * _dpr;
-                    _cam.zoomAt(pos.dx, pos.dy, math.exp(-event.scrollDelta.dy * 0.0015), _dpr);
-                  }
-                },
-                onPointerPanZoomUpdate: (event) {
-                  final pos = event.localPosition * _dpr;
-                  _cam.panBy(-event.panDelta.dx * _dpr, -event.panDelta.dy * _dpr);
-                  if (event.scale != 1) {
-                    _cam.zoomAt(pos.dx, pos.dy, event.scale, _dpr);
+                    _cam.zoomAt(pos.dx, pos.dy, math.exp(-event.scrollDelta.dy * 0.0015), _dpr,
+                        _size.width * _dpr, _size.height * _dpr);
                   }
                 },
                 child: GestureDetector(
@@ -313,18 +314,22 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
                     _lastPanPos = details.localFocalPoint;
                     _pinchStartDistance = 0;
                     _pinchMid = details.localFocalPoint;
+                    _prevScale = 1;
                   },
                   onScaleUpdate: (details) {
                     if (details.pointerCount >= 2) {
                       if (_pinchStartDistance == 0) {
                         _pinchStartDistance = 1;
                         _pinchMid = details.localFocalPoint;
+                        _prevScale = details.scale;
                       }
                       final focal = details.localFocalPoint * _dpr;
                       final prevMid = _pinchMid * _dpr;
                       _cam.panBy(focal.dx - prevMid.dx, focal.dy - prevMid.dy);
-                      _cam.zoomAt(focal.dx, focal.dy, details.scale, _dpr);
+                      _cam.zoomAt(focal.dx, focal.dy, details.scale / _prevScale, _dpr,
+                          _size.width * _dpr, _size.height * _dpr);
                       _pinchMid = details.localFocalPoint;
+                      _prevScale = details.scale;
                     } else if (_lastPanPos != null) {
                       final delta = details.localFocalPoint - _lastPanPos!;
                       _cam.panBy(delta.dx * _dpr, delta.dy * _dpr);
@@ -425,8 +430,6 @@ class _Camera {
   double x = 0;
   double y = 0;
   double z = 1;
-  double viewportW = 1;
-  double viewportH = 1;
 
   void copyFrom(_Camera other) {
     x = other.x;
@@ -442,7 +445,8 @@ class _Camera {
     y -= dyDev / z;
   }
 
-  void zoomAt(double sx, double sy, double factor, double dpr) {
+  void zoomAt(double sx, double sy, double factor, double dpr, double viewportW,
+      double viewportH) {
     final wx = (sx - viewportW / 2) / z + x;
     final wy = (sy - viewportH / 2) / z + y;
     z = clampZoom(z * factor, dpr);
@@ -451,8 +455,6 @@ class _Camera {
   }
 
   List<double> uniform(double width, double height) {
-    viewportW = width;
-    viewportH = height;
     return [z, z, width / 2 - z * x, height / 2 - z * y];
   }
 }
