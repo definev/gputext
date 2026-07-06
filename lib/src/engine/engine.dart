@@ -62,13 +62,15 @@ class WindfoilEngine extends ChangeNotifier {
   AtlasTextures? _textures;
   var _texturesGeneration = -1;
 
-  // Shared paragraph-layout cache: identical (span, style, width) paragraphs
-  // across widgets — think list items — reuse one flatten+break result.
-  // Entries are read-only after insertion; keys embed [fontGeneration] so
-  // font registration invalidates naturally.
+  // Shared paragraph-prepare cache: identical (span, scaler) paragraphs
+  // across widgets — think list items — reuse one flatten+prepare result.
+  // Prepared paragraphs are width-INDEPENDENT (pretext-style prepare/layout
+  // split): resizes, dry layouts, and intrinsic passes all hit one entry and
+  // only rerun the cheap line walker. Entries are read-only after insertion;
+  // keys embed [fontGeneration] so font registration invalidates naturally.
   static const _layoutCacheCapacity = 256;
   final _layoutCache =
-      <Object, (List<wf.InlineItem>, wf.ParagraphLines)>{};
+      <Object, (List<wf.InlineItem>, wf.PreparedParagraph)>{};
   var _fontGeneration = 0;
 
   /// Bumped whenever font resolution could change (register/fallbacks).
@@ -79,7 +81,7 @@ class WindfoilEngine extends ChangeNotifier {
   @visibleForTesting
   int debugLayoutCacheMisses = 0;
 
-  (List<wf.InlineItem>, wf.ParagraphLines)? layoutCacheGet(Object key) {
+  (List<wf.InlineItem>, wf.PreparedParagraph)? layoutCacheGet(Object key) {
     final v = _layoutCache.remove(key);
     if (v != null) {
       _layoutCache[key] = v; // LRU touch
@@ -91,7 +93,7 @@ class WindfoilEngine extends ChangeNotifier {
   }
 
   void layoutCachePut(
-      Object key, (List<wf.InlineItem>, wf.ParagraphLines) value) {
+      Object key, (List<wf.InlineItem>, wf.PreparedParagraph) value) {
     _layoutCache[key] = value;
     if (_layoutCache.length > _layoutCacheCapacity) {
       _layoutCache.remove(_layoutCache.keys.first);

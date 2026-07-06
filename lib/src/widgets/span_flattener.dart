@@ -9,7 +9,11 @@ import 'dart:ui' as ui show PlaceholderAlignment;
 
 import '../engine/engine.dart';
 import '../font.dart'
-    show WindfoilFont, applyBasicLigatures, isZeroWidthCodePoint;
+    show
+        WindfoilFont,
+        WindfoilFontFeatures,
+        WindfoilFontVariations,
+        isZeroWidthCodePoint;
 import '../paragraph.dart' as wf;
 
 wf.InlinePlaceholderAlignment _mapAlignment(ui.PlaceholderAlignment a) =>
@@ -24,6 +28,29 @@ wf.InlinePlaceholderAlignment _mapAlignment(ui.PlaceholderAlignment a) =>
       ui.PlaceholderAlignment.middle => wf.InlinePlaceholderAlignment.middle,
       ui.PlaceholderAlignment.bottom => wf.InlinePlaceholderAlignment.bottom,
     };
+
+/// Design-space coordinates implied by a style: TextStyle.fontVariations,
+/// plus CSS-style fallbacks mapping fontWeight onto 'wght' and italic onto
+/// 'ital'/'slnt' when the font exposes those axes. Explicit fontVariations
+/// win. Non-variable fonts pass through untouched, so this is safe to apply
+/// to any resolved font (variant() ignores unknown axes and clamps ranges).
+WindfoilFont _withVariations(WindfoilFont font, TextStyle? style) {
+  if (font.variationAxes.isEmpty) return font;
+  final coords = <String, double>{};
+  final weight = style?.fontWeight;
+  if (weight != null) coords['wght'] = weight.value.toDouble();
+  if (style?.fontStyle == FontStyle.italic) {
+    if (font.hasVariationAxis('ital')) {
+      coords['ital'] = 1;
+    } else {
+      coords['slnt'] = -14; // CSS oblique default; clamped to the axis range
+    }
+  }
+  for (final v in style?.fontVariations ?? const <FontVariation>[]) {
+    coords[v.axis] = v.value;
+  }
+  return font.variant(coords);
+}
 
 wf.InlineDecoration? _mapDecoration(TextStyle? style) {
   final deco = style?.decoration;
@@ -68,15 +95,16 @@ List<wf.InlineItem>? flattenSpan(
     if (s is TextSpan) {
       final text = s.text;
       if (text != null && text.isNotEmpty) {
-        final primary = engine.resolveFont(
+        final resolved = engine.resolveFont(
           style?.fontFamily,
           weight: style?.fontWeight,
           fontStyle: style?.fontStyle,
         );
-        if (primary == null) {
+        if (resolved == null) {
           missingFont = true;
           return;
         }
+        final primary = _withVariations(resolved, style);
         final families = <String?>[
           style?.fontFamily,
           ...?style?.fontFamilyFallback,
@@ -95,11 +123,17 @@ List<wf.InlineItem>? flattenSpan(
               source: s,
             );
 
-        // Common Latin ligatures (fi/fl/ffi/ffl); skipped when letterSpacing
-        // is set — tracked-out text shouldn't ligate.
-        final ligated = (style?.letterSpacing ?? 0) == 0
-            ? applyBasicLigatures(text, primary)
-            : text;
+        // GSUB features (ligatures, tabular figures, stylistic sets, ...)
+        // from TextStyle.fontFeatures; tracked-out text drops the default
+        // ligature features, the same rule the basic-ligature pass applied.
+        final ligated = primary.applyFeatures(
+          text,
+          features: {
+            for (final f in style?.fontFeatures ?? const <FontFeature>[])
+              f.feature: f.value,
+          },
+          defaultLigatures: (style?.letterSpacing ?? 0) == 0,
+        );
 
         // Per-character font fallback: split the text into same-font
         // subruns. Whitespace and zero-width characters stay with the
@@ -136,15 +170,18 @@ List<wf.InlineItem>? flattenSpan(
               rune != 0x20 &&
               rune != 0x0A) {
             final ch = String.fromCharCode(rune);
-            target = primary.hasGlyph(ch)
-                ? primary
-                : (engine.resolveFontForChar(
-                      ch,
-                      families: families,
-                      weight: style?.fontWeight,
-                      fontStyle: style?.fontStyle,
-                    ) ??
-                    primary);
+            if (primary.hasGlyph(ch)) {
+              target = primary;
+            } else {
+              final fallback = engine.resolveFontForChar(
+                ch,
+                families: families,
+                weight: style?.fontWeight,
+                fontStyle: style?.fontStyle,
+              );
+              target =
+                  fallback == null ? primary : _withVariations(fallback, style);
+            }
           }
           if (!identical(target, current)) {
             flushSub();

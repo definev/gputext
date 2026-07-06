@@ -71,6 +71,7 @@ class WindfoilRichText extends StatelessWidget {
     this.transformAdaptive = true,
     this.scaleHint,
     this.filterQuality = FilterQuality.low,
+    this.lineBreaker = wf.LineBreaker.greedy,
   })  : assert(maxLines == null || maxLines > 0),
         assert(selectionRegistrar == null,
             'WindfoilRichText does not support text selection (v1)');
@@ -82,6 +83,11 @@ class WindfoilRichText extends StatelessWidget {
   final TextOverflow overflow;
   final TextScaler textScaler;
   final int? maxLines;
+
+  /// Strategy that chooses where lines break (greedy by default). Pass
+  /// [wf.KnuthPlassLineBreaker] for TeX-style optimal justified paragraphs;
+  /// alignment, ellipsis, and maxLines apply on top of any strategy.
+  final wf.LineBreaker lineBreaker;
 
   /// Accepted for RichText signature compatibility; ignored in v1.
   final Locale? locale;
@@ -125,6 +131,7 @@ class WindfoilRichText extends StatelessWidget {
           transformAdaptive: transformAdaptive,
           scaleHint: scaleHint,
           filterQuality: filterQuality,
+          lineBreaker: lineBreaker,
         );
       },
     );
@@ -158,6 +165,7 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
     this.transformAdaptive = true,
     this.scaleHint,
     this.filterQuality = FilterQuality.low,
+    this.lineBreaker = wf.LineBreaker.greedy,
   })  : assert(maxLines == null || maxLines > 0),
         assert(selectionRegistrar == null,
             'WindfoilRichText does not support text selection (v1)'),
@@ -194,6 +202,7 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
   final Listenable? scaleHint;
 
   final FilterQuality filterQuality;
+  final wf.LineBreaker lineBreaker;
 
   @override
   RenderWindfoilParagraph createRenderObject(BuildContext context) {
@@ -211,6 +220,7 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
       transformAdaptive: transformAdaptive,
       scaleHint: scaleHint,
       filterQuality: filterQuality,
+      lineBreaker: lineBreaker,
     );
   }
 
@@ -230,7 +240,8 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
           View.of(context).devicePixelRatio
       ..transformAdaptive = transformAdaptive
       ..scaleHint = scaleHint
-      ..filterQuality = filterQuality;
+      ..filterQuality = filterQuality
+      ..lineBreaker = lineBreaker;
   }
 
   @override
@@ -247,30 +258,20 @@ class RenderWindfoilParagraph extends RenderBox
         ContainerRenderObjectMixin<RenderBox, TextParentData>,
         RenderInlineChildrenContainerDefaults {
   RenderWindfoilParagraph({
-    required InlineSpan text,
-    required String semanticsLabel,
-    required TextAlign textAlign,
-    required TextDirection textDirection,
-    required bool softWrap,
-    required TextOverflow overflow,
-    required TextScaler textScaler,
-    required int? maxLines,
-    required double devicePixelRatio,
-    required bool transformAdaptive,
-    required Listenable? scaleHint,
-    required FilterQuality filterQuality,
-  })  : _text = text,
-        _semanticsLabel = semanticsLabel,
-        _textAlign = textAlign,
-        _textDirection = textDirection,
-        _softWrap = softWrap,
-        _overflow = overflow,
-        _textScaler = textScaler,
-        _maxLines = maxLines,
-        _devicePixelRatio = devicePixelRatio,
-        _transformAdaptive = transformAdaptive,
-        _scaleHint = scaleHint,
-        _filterQuality = filterQuality;
+    required this._text,
+    required this._semanticsLabel,
+    required this._textAlign,
+    required this._textDirection,
+    required this._softWrap,
+    required this._overflow,
+    required this._textScaler,
+    required this._maxLines,
+    required this._devicePixelRatio,
+    required this._transformAdaptive,
+    required this._scaleHint,
+    required this._filterQuality,
+    required this._lineBreaker,
+  });
 
   final WindfoilEngine _engine = Windfoil.instance;
 
@@ -375,6 +376,13 @@ class RenderWindfoilParagraph extends RenderBox
   set maxLines(int? value) {
     if (_maxLines == value) return;
     _maxLines = value;
+    _needsRelayout();
+  }
+
+  wf.LineBreaker _lineBreaker;
+  set lineBreaker(wf.LineBreaker value) {
+    if (_lineBreaker == value) return;
+    _lineBreaker = value;
     _needsRelayout();
   }
 
@@ -503,7 +511,7 @@ class RenderWindfoilParagraph extends RenderBox
         TextAlign.left => wf.TextAlign.left,
         TextAlign.right => wf.TextAlign.right,
         TextAlign.center => wf.TextAlign.center,
-        TextAlign.justify => wf.TextAlign.left, // v1: justify degrades to left
+        TextAlign.justify => wf.TextAlign.justify,
         TextAlign.start => _textDirection == TextDirection.rtl
             ? wf.TextAlign.right
             : wf.TextAlign.left,
@@ -517,11 +525,13 @@ class RenderWindfoilParagraph extends RenderBox
         align: _resolvedAlign,
         maxLines: _maxLines,
         addEllipsis: _overflow == TextOverflow.ellipsis,
+        lineBreaker: _lineBreaker,
       );
 
   wf.ParagraphLines _break(
-      List<wf.InlineItem> runs, double wrapWidth, double maxWidth) {
-    final para = wf.breakLines(runs, wrapWidth, _styleFor(wrapWidth));
+      wf.PreparedParagraph prepared, double wrapWidth, double maxWidth) {
+    final para =
+        wf.layoutPreparedLines(prepared, wrapWidth, _styleFor(wrapWidth));
     // softWrap:false + ellipsis truncates each overlong line at the box edge.
     if (_overflow == TextOverflow.ellipsis &&
         !_softWrap &&
@@ -537,47 +547,39 @@ class RenderWindfoilParagraph extends RenderBox
     return para;
   }
 
-  /// Cache key for flatten+break results (paragraphs without inline
-  /// children only — placeholder dimensions vary per widget). Relies on
+  /// Cache key for flatten+prepare results (paragraphs without inline
+  /// children only — placeholder dimensions vary per widget). Prepared
+  /// paragraphs are width-independent, so the key carries no constraints:
+  /// resize relayouts and all intrinsic passes reuse one entry. Relies on
   /// TextSpan's deep ==/hashCode; fontGeneration invalidates on font churn.
-  Object? _layoutCacheKey(BoxConstraints constraints) {
+  Object? _prepareCacheKey() {
     if (childCount > 0) return null;
-    return (
-      _text,
-      _textScaler,
-      constraints.maxWidth,
-      _softWrap,
-      _overflow,
-      _maxLines,
-      _engine.fontGeneration,
-    );
+    return (_text, _textScaler, _engine.fontGeneration);
+  }
+
+  /// Flatten + prepare (measure) the span, through the engine's shared
+  /// cache. Returns a null paragraph while fonts are loading or for empty
+  /// text (`runs` distinguishes the two, matching flattenSpan).
+  (List<wf.InlineItem>?, wf.PreparedParagraph?) _flattenAndPrepare(
+      List<PlaceholderDimensions> dims) {
+    final key = _prepareCacheKey();
+    if (key != null) {
+      final cached = _engine.layoutCacheGet(key);
+      if (cached != null) return (cached.$1, cached.$2);
+    }
+    final runs = flattenSpan(_text, _textScaler, _engine,
+        placeholderDimensions: dims);
+    if (runs == null || runs.isEmpty) return (runs, null);
+    final prepared = wf.prepareParagraph(runs);
+    if (key != null) _engine.layoutCachePut(key, (runs, prepared));
+    return (runs, prepared);
   }
 
   ({wf.ParagraphLines? para, List<wf.InlineItem>? runs, Size size,
       double boxWidth, double wrapWidth}) _computeLayout(
       BoxConstraints constraints, List<PlaceholderDimensions> dims) {
-    final key = _layoutCacheKey(constraints);
-    if (key != null) {
-      final cached = _engine.layoutCacheGet(key);
-      if (cached != null) {
-        final para = cached.$2;
-        final wrapWidth = _softWrap && constraints.maxWidth.isFinite
-            ? constraints.maxWidth
-            : double.infinity;
-        final width = ui.clampDouble(para.maxIntrinsicWidth,
-            constraints.minWidth, constraints.maxWidth);
-        return (
-          para: para,
-          runs: cached.$1,
-          size: constraints.constrain(Size(width, para.height)),
-          boxWidth: width,
-          wrapWidth: wrapWidth,
-        );
-      }
-    }
-    final runs = flattenSpan(_text, _textScaler, _engine,
-        placeholderDimensions: dims);
-    if (runs == null || runs.isEmpty) {
+    final (runs, prepared) = _flattenAndPrepare(dims);
+    if (prepared == null) {
       // Fonts not loaded yet, or genuinely empty text: report one line height
       // when we can resolve the root style's font, else collapse.
       var height = 0.0;
@@ -597,8 +599,7 @@ class RenderWindfoilParagraph extends RenderBox
     final wrapWidth = _softWrap && constraints.maxWidth.isFinite
         ? constraints.maxWidth
         : double.infinity;
-    final para = _break(runs, wrapWidth, constraints.maxWidth);
-    if (key != null) _engine.layoutCachePut(key, (runs, para));
+    final para = _break(prepared, wrapWidth, constraints.maxWidth);
     // TextPainter's width rule: report the unwrapped intrinsic width clamped
     // to the constraints, and align lines against THAT box (never against an
     // unbounded constraint).
@@ -659,22 +660,15 @@ class RenderWindfoilParagraph extends RenderBox
 
   @override
   double computeMinIntrinsicWidth(double height) {
-    final runs = flattenSpan(_text, _textScaler, _engine,
-        placeholderDimensions: _dryDims(double.infinity));
-    if (runs == null || runs.isEmpty) return 0;
-    return wf
-        .breakLines(runs, double.infinity, _styleFor(double.infinity))
-        .minIntrinsicWidth;
+    // Straight off the prepared arrays — no line breaking at all.
+    final (_, prepared) = _flattenAndPrepare(_dryDims(double.infinity));
+    return prepared?.minIntrinsicWidth ?? 0;
   }
 
   @override
   double computeMaxIntrinsicWidth(double height) {
-    final runs = flattenSpan(_text, _textScaler, _engine,
-        placeholderDimensions: _dryDims(double.infinity));
-    if (runs == null || runs.isEmpty) return 0;
-    return wf
-        .breakLines(runs, double.infinity, _styleFor(double.infinity))
-        .maxIntrinsicWidth;
+    final (_, prepared) = _flattenAndPrepare(_dryDims(double.infinity));
+    return prepared?.maxIntrinsicWidth ?? 0;
   }
 
   @override
@@ -741,10 +735,9 @@ class RenderWindfoilParagraph extends RenderBox
     if (_paraDirty) {
       // Paint-only span change (e.g. colors): re-break at the same widths;
       // metrics are unchanged by construction of RenderComparison.paint.
-      final runs = flattenSpan(_text, _textScaler, _engine,
-          placeholderDimensions: _layoutDims);
-      if (runs != null && runs.isNotEmpty) {
-        _para = _break(runs, _lastWrapWidth, _lastMaxWidth);
+      final (_, prepared) = _flattenAndPrepare(_layoutDims);
+      if (prepared != null) {
+        _para = _break(prepared, _lastWrapWidth, _lastMaxWidth);
       }
       _paraDirty = false;
     }

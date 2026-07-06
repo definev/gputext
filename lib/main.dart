@@ -11,6 +11,8 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 
 import 'src/engine/engine.dart';
 import 'src/font.dart';
+import 'justification_demo.dart';
+import 'pretext_demo.dart';
 import 'src/renderer.dart';
 import 'src/scene.dart';
 import 'widget_demo.dart';
@@ -36,11 +38,16 @@ class WindfoilApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Dev hook (demo only): open the widget compare page directly.
+    // Dev hook (demo only): open a specific demo page directly.
     final page = io.Platform.environment['WINDFOIL_DEMO'];
     return MaterialApp(
       theme: ThemeData(useMaterial3: true),
-      home: page == 'widgets' ? const WidgetDemoPage() : const WindfoilDemoPage(),
+      home: switch (page) {
+        'widgets' => const WidgetDemoPage(),
+        'pretext' => const PretextDemoPage(),
+        'justify' => const JustificationDemoPage(),
+        _ => const WindfoilDemoPage(),
+      },
     );
   }
 }
@@ -168,7 +175,9 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
 
     const attackMs = 300.0;
     const smoothK = 0.3;
-    final s = now - _attackT >= attackMs ? 0.0 : 1.0 - (now - _attackT) / attackMs;
+    final s = now - _attackT >= attackMs
+        ? 0.0
+        : 1.0 - (now - _attackT) / attackMs;
     if (s > 0) {
       final k = 1 - s * (1 - smoothK);
       final kf = 1 - math.pow(1 - k, dt / (1000 / 60));
@@ -268,7 +277,9 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
           (background[1] * 255).round(),
           (background[2] * 255).round(),
         ),
-        body: Center(child: Text(_error!, style: const TextStyle(color: Colors.red))),
+        body: Center(
+          child: Text(_error!, style: const TextStyle(color: Colors.red)),
+        ),
       );
     }
 
@@ -300,8 +311,14 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
                 onPointerSignal: (event) {
                   if (event is PointerScrollEvent) {
                     final pos = event.localPosition * _dpr;
-                    _cam.zoomAt(pos.dx, pos.dy, math.exp(-event.scrollDelta.dy * 0.0015), _dpr,
-                        _size.width * _dpr, _size.height * _dpr);
+                    _cam.zoomAt(
+                      pos.dx,
+                      pos.dy,
+                      math.exp(-event.scrollDelta.dy * 0.0015),
+                      _dpr,
+                      _size.width * _dpr,
+                      _size.height * _dpr,
+                    );
                   }
                 },
                 child: GestureDetector(
@@ -326,8 +343,14 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
                       final focal = details.localFocalPoint * _dpr;
                       final prevMid = _pinchMid * _dpr;
                       _cam.panBy(focal.dx - prevMid.dx, focal.dy - prevMid.dy);
-                      _cam.zoomAt(focal.dx, focal.dy, details.scale / _prevScale, _dpr,
-                          _size.width * _dpr, _size.height * _dpr);
+                      _cam.zoomAt(
+                        focal.dx,
+                        focal.dy,
+                        details.scale / _prevScale,
+                        _dpr,
+                        _size.width * _dpr,
+                        _size.height * _dpr,
+                      );
                       _pinchMid = details.localFocalPoint;
                       _prevScale = details.scale;
                     } else if (_lastPanPos != null) {
@@ -369,7 +392,10 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
                     child: Text(
                       '$fps fps • ${_fmtZoom(zoom)}x',
                       style: const TextStyle(color: Colors.white, fontSize: 13),
@@ -380,21 +406,40 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
               Positioned(
                 right: 16,
                 top: 16,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                            builder: (_) => const WidgetDemoPage()),
+                child: SafeArea(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const PretextDemoPage(),
+                          ),
+                        ),
+                        child: const Text('Pretext'),
                       ),
-                      child: const Text('Widgets'),
-                    ),
-                    TextButton(
-                      onPressed: _recenter,
-                      child: const Text('Recenter'),
-                    ),
-                  ],
+                      TextButton(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const JustificationDemoPage(),
+                          ),
+                        ),
+                        child: const Text('Justification'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const WidgetDemoPage(),
+                          ),
+                        ),
+                        child: const Text('Widgets'),
+                      ),
+                      TextButton(
+                        onPressed: _recenter,
+                        child: const Text('Recenter'),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -445,8 +490,14 @@ class _Camera {
     y -= dyDev / z;
   }
 
-  void zoomAt(double sx, double sy, double factor, double dpr, double viewportW,
-      double viewportH) {
+  void zoomAt(
+    double sx,
+    double sy,
+    double factor,
+    double dpr,
+    double viewportW,
+    double viewportH,
+  ) {
     final wx = (sx - viewportW / 2) / z + x;
     final wy = (sy - viewportH / 2) / z + y;
     z = clampZoom(z * factor, dpr);

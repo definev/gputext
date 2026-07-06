@@ -1,51 +1,43 @@
 // Paragraph layout: styled runs + inline placeholders → wrapped lines
 // (metrics only) → glyph instances + placeholder boxes.
 //
-// Split in two phases so widget layout stays pure CPU with font metrics only:
-//   breakLines()    — greedy word-wrap, per-line hhea metrics, intrinsic widths.
-//   emitInstances() — 16-float shader instances + ink bounds + placeholder
-//                     boxes. Pass a null GlyphTable for a metrics-only pen
-//                     walk (placeholder positioning at layout time).
-// layoutParagraph() is the one-shot convenience the demo scene uses.
+// Split in two phases, pretext-style (github.com/chenglou/pretext), so
+// widget layout stays pure CPU with font metrics only:
+//   prepareParagraph()    — width-INDEPENDENT analysis + measurement
+//                           (text/prepare.dart): segment the runs, weld
+//                           unbreakable clusters, measure once.
+//   layoutPreparedLines() — cheap per-width pass: stream the greedy line
+//                           walker (text/line_break.dart) and materialize
+//                           LineMetrics/LineRun items per line.
+//   emitInstances()       — 16-float shader instances + ink bounds +
+//                           placeholder boxes. Pass a null GlyphTable for a
+//                           metrics-only pen walk (placeholder positioning
+//                           at layout time).
+// breakLines() is the one-shot prepare+layout convenience; callers that
+// relayout the same content at many widths should prepare once and call
+// layoutPreparedLines() per width.
 //
 // This file stays VM-pure (no dart:ui / Flutter imports) so scenes can be
 // built headless; InlinePlaceholderAlignment mirrors ui.PlaceholderAlignment.
 
 import 'dart:typed_data';
 
+import 'package:characters/characters.dart';
+
 import 'bands.dart';
 import 'font.dart';
 import 'layout.dart';
+import 'text/analysis.dart' show SegmentBreakKind;
+import 'text/inline_items.dart';
+import 'text/line_break.dart';
+import 'text/line_breaker.dart';
+import 'text/prepare.dart';
+
+export 'text/inline_items.dart';
+export 'text/line_breaker.dart';
+export 'text/prepare.dart' show PreparedParagraph, prepareParagraph;
 
 enum TextAlign { left, center, right, justify }
-
-/// Mirror of ui.TextDecorationStyle (VM-pure).
-enum InlineDecorationStyle { solid, doubleLine, dotted, dashed, wavy }
-
-/// Which decoration guides a run draws, and how.
-class InlineDecoration {
-  const InlineDecoration({
-    this.underline = false,
-    this.overline = false,
-    this.lineThrough = false,
-    this.color,
-    this.style = InlineDecorationStyle.solid,
-    this.thickness = 1,
-  });
-
-  final bool underline;
-  final bool overline;
-  final bool lineThrough;
-
-  /// RGBA 0..1; null → the run's text color.
-  final List<double>? color;
-  final InlineDecorationStyle style;
-
-  /// Multiplier on the font's decoration thickness.
-  final double thickness;
-
-  bool get isActive => underline || overline || lineThrough;
-}
 
 /// One resolved decoration stroke in layout space; `y` is the stroke center.
 class DecorationLine {
@@ -68,17 +60,6 @@ class DecorationLine {
 
   /// lineThrough paints over the glyphs; under/overline paint beneath them.
   final bool aboveText;
-}
-
-/// Mirror of ui.PlaceholderAlignment (kept local so this file has no
-/// dart:ui dependency).
-enum InlinePlaceholderAlignment {
-  baseline,
-  aboveBaseline,
-  belowBaseline,
-  top,
-  middle,
-  bottom,
 }
 
 /// Resolves a glyph's band-table entry for a (font, char) pair.
@@ -104,90 +85,6 @@ class SingleFontGlyphTable extends GlyphTable {
       identical(f, font) ? table[ch] : null;
 }
 
-/// One inline content item: a styled text run or an embedded-widget
-/// placeholder.
-sealed class InlineItem {
-  const InlineItem();
-}
-
-class TextRun extends InlineItem {
-  const TextRun({
-    required this.text,
-    required this.font,
-    required this.fontSizePx,
-    required this.color,
-    this.letterSpacingPx = 0,
-    this.wordSpacingPx = 0,
-    this.height,
-    this.decoration,
-    this.fillRule = FillRule.nonzero,
-    this.source,
-  });
-
-  final String text;
-  final WindfoilFont font;
-  final double fontSizePx;
-  final List<double> color;
-  final double letterSpacingPx;
-  final double wordSpacingPx;
-
-  /// Line-height multiplier (TextStyle.height semantics): when set, the run
-  /// contributes height*fontSizePx of line extent, distributed between
-  /// ascent and descent proportionally to the font's natural metrics.
-  final double? height;
-
-  final InlineDecoration? decoration;
-  final FillRule fillRule;
-
-  /// Opaque origin marker (the source TextSpan) so hit-testing can map a
-  /// glyph position back to its span (recognizers). Never inspected here.
-  final Object? source;
-}
-
-/// An inline widget's reserved box: unbreakable, contributes to line metrics
-/// per its alignment. `index` is the placeholder's preorder position in the
-/// span tree (matches WidgetSpan.extractFromInlineSpan child order).
-/// A native color-emoji cluster: one advance, N stacked COLR layer glyphs
-/// each with its palette color (null → the surrounding text color).
-class EmojiItem extends InlineItem {
-  const EmojiItem({
-    required this.font,
-    required this.fontSizePx,
-    required this.advanceUnits,
-    required this.layers,
-    this.textColor = const [0, 0, 0, 1],
-    this.source,
-  });
-
-  final WindfoilFont font;
-  final double fontSizePx;
-  final double advanceUnits; // font units
-  final List<ColrLayer> layers;
-  final List<double> textColor;
-  final Object? source;
-
-  double get width => advanceUnits / font.unitsPerEm * fontSizePx;
-}
-
-class PlaceholderItem extends InlineItem {
-  const PlaceholderItem({
-    required this.index,
-    required this.width,
-    required this.height,
-    required this.alignment,
-    this.baselineOffset,
-  });
-
-  final int index;
-  final double width;
-  final double height;
-  final InlinePlaceholderAlignment alignment;
-
-  /// Distance from the placeholder's top to its baseline; only meaningful for
-  /// [InlinePlaceholderAlignment.baseline] (falls back to height).
-  final double? baselineOffset;
-}
-
 class ParagraphStyle {
   const ParagraphStyle({
     this.maxWidth = double.infinity,
@@ -195,6 +92,7 @@ class ParagraphStyle {
     this.lineHeight = 1.0,
     this.maxLines,
     this.addEllipsis = false,
+    this.lineBreaker = LineBreaker.greedy,
   });
 
   final double maxWidth;
@@ -202,6 +100,12 @@ class ParagraphStyle {
   final double lineHeight;
   final int? maxLines;
   final bool addEllipsis;
+
+  /// Strategy that chooses where lines end (greedy by default; e.g.
+  /// [KnuthPlassLineBreaker] for optimal justified paragraphs). Alignment,
+  /// ellipsis, maxLines, and justify space distribution are applied on top
+  /// of whatever breaks the strategy returns.
+  final LineBreaker lineBreaker;
 }
 
 sealed class LineItem {
@@ -321,216 +225,299 @@ double _ascenderPx(WindfoilFont font, double sizePx) =>
 double _descenderPx(WindfoilFont font, double sizePx) =>
     -font.verticalMetrics.descender / font.unitsPerEm * sizePx;
 
-/// Split text into wrap tokens. Beyond spaces/newlines, each CJK character
-/// is its own token (CJK breaks between any two ideographs), and a break
-/// opportunity follows every hyphen ("well-known" → "well-" + "known").
-List<String> _splitWords(String text) {
-  final words = <String>[];
-  final buf = StringBuffer();
-  void flush() {
-    if (buf.isNotEmpty) {
-      words.add(buf.toString());
-      buf.clear();
-    }
+void _growMetrics(LineMetrics l, TextRun run, double styleLineHeight) {
+  var a = _ascenderPx(run.font, run.fontSizePx);
+  var d = _descenderPx(run.font, run.fontSizePx);
+  var h = _lineHeightPx(run.font, run.fontSizePx, styleLineHeight);
+  final hm = run.height;
+  if (hm != null && a + d > 0) {
+    // TextStyle.height semantics: the run's line extent becomes
+    // height*fontSize, split proportionally to the natural ascent/descent.
+    final target = hm * run.fontSizePx * styleLineHeight;
+    final f = target / (a + d);
+    a *= f;
+    d *= f;
+    h = target;
   }
-
-  for (final rune in text.runes) {
-    if (rune == 0x0A || rune == 0x20) {
-      flush();
-      words.add(String.fromCharCode(rune));
-    } else if (isCjkBreakOpportunity(rune)) {
-      flush();
-      words.add(String.fromCharCode(rune));
-    } else {
-      buf.writeCharCode(rune);
-      if (rune == 0x2D) flush(); // break after hyphen
-    }
-  }
-  flush();
-  return words;
+  if (a > l.ascent) l.ascent = a;
+  if (d > l.descent) l.descent = d;
+  if (h > l.height) l.height = h;
 }
 
+void _growPlaceholderMetrics(LineMetrics l, PlaceholderItem p) {
+  switch (p.alignment) {
+    case InlinePlaceholderAlignment.baseline:
+      final a = p.baselineOffset ?? p.height;
+      if (a > l.ascent) l.ascent = a;
+      final d = p.height - a;
+      if (d > l.descent) l.descent = d;
+    case InlinePlaceholderAlignment.aboveBaseline:
+      if (p.height > l.ascent) l.ascent = p.height;
+    case InlinePlaceholderAlignment.belowBaseline:
+      if (p.height > l.descent) l.descent = p.height;
+    case InlinePlaceholderAlignment.top:
+    case InlinePlaceholderAlignment.middle:
+    case InlinePlaceholderAlignment.bottom:
+      l._deferred.add(p); // needs the line's final text metrics
+  }
+}
+
+/// Resolve deferred box-relative placeholders and the final line box height.
+void _commitLineMetrics(LineMetrics line) {
+  // Box-relative placeholders grow the line box only if they don't fit.
+  for (final p in line._deferred) {
+    final box = line.ascent + line.descent;
+    switch (p.alignment) {
+      case InlinePlaceholderAlignment.top:
+        if (p.height > box) line.descent = p.height - line.ascent;
+      case InlinePlaceholderAlignment.bottom:
+        if (p.height > box) line.ascent = p.height - line.descent;
+      case InlinePlaceholderAlignment.middle:
+        final extra = p.height - box;
+        if (extra > 0) {
+          line.ascent += extra / 2;
+          line.descent += extra / 2;
+        }
+      default:
+        break;
+    }
+  }
+  final box = line.ascent + line.descent;
+  if (box > line.height) line.height = box;
+}
+
+/// One-shot prepare + layout. Callers that relayout the same content at many
+/// widths (resize) should call [prepareParagraph] once and
+/// [layoutPreparedLines] per width instead.
 ParagraphLines breakLines(
   List<InlineItem> runs,
   double wrapWidth,
   ParagraphStyle style,
+) =>
+    layoutPreparedLines(prepareParagraph(runs), wrapWidth, style);
+
+/// The cheap per-width half of the split: stream the line walker over the
+/// prepared arrays and materialize LineMetrics. Pure arithmetic + string
+/// slicing; no font-table measurement happens here.
+ParagraphLines layoutPreparedLines(
+  PreparedParagraph prepared,
+  double wrapWidth,
+  ParagraphStyle style,
 ) {
   final lines = <LineMetrics>[];
-  var line = LineMetrics();
-  var lineWidth = 0.0; // includes trailing spaces
-  var minIntrinsic = 0.0;
-  var maxIntrinsic = 0.0;
-  var hardLineWidth = 0.0; // current unwrapped (hard-break) segment width
-  TextRun? current; // style source for empty-line metrics
-
-  void growMetrics(LineMetrics l, TextRun run) {
-    var a = _ascenderPx(run.font, run.fontSizePx);
-    var d = _descenderPx(run.font, run.fontSizePx);
-    var h = _lineHeightPx(run.font, run.fontSizePx, style.lineHeight);
-    final hm = run.height;
-    if (hm != null && a + d > 0) {
-      // TextStyle.height semantics: the run's line extent becomes
-      // height*fontSize, split proportionally to the natural ascent/descent.
-      final target = hm * run.fontSizePx * style.lineHeight;
-      final f = target / (a + d);
-      a *= f;
-      d *= f;
-      h = target;
-    }
-    if (a > l.ascent) l.ascent = a;
-    if (d > l.descent) l.descent = d;
-    if (h > l.height) l.height = h;
-  }
-
-  void growPlaceholderMetrics(LineMetrics l, PlaceholderItem p) {
-    switch (p.alignment) {
-      case InlinePlaceholderAlignment.baseline:
-        final a = p.baselineOffset ?? p.height;
-        if (a > l.ascent) l.ascent = a;
-        final d = p.height - a;
-        if (d > l.descent) l.descent = d;
-      case InlinePlaceholderAlignment.aboveBaseline:
-        if (p.height > l.ascent) l.ascent = p.height;
-      case InlinePlaceholderAlignment.belowBaseline:
-        if (p.height > l.descent) l.descent = p.height;
-      case InlinePlaceholderAlignment.top:
-      case InlinePlaceholderAlignment.middle:
-      case InlinePlaceholderAlignment.bottom:
-        l._deferred.add(p); // needs the line's final text metrics
-    }
-  }
-
-  void commitLine({bool hard = false}) {
-    line.hardBreak = hard;
-    // Box-relative placeholders grow the line box only if they don't fit.
-    for (final p in line._deferred) {
-      final box = line.ascent + line.descent;
-      switch (p.alignment) {
-        case InlinePlaceholderAlignment.top:
-          if (p.height > box) line.descent = p.height - line.ascent;
-        case InlinePlaceholderAlignment.bottom:
-          if (p.height > box) line.ascent = p.height - line.descent;
-        case InlinePlaceholderAlignment.middle:
-          final extra = p.height - box;
-          if (extra > 0) {
-            line.ascent += extra / 2;
-            line.descent += extra / 2;
-          }
-        default:
-          break;
-      }
-    }
-    final box = line.ascent + line.descent;
-    if (box > line.height) line.height = box;
-
-    // Trailing spaces don't count toward the alignment box.
-    var w = lineWidth;
-    for (var i = line.items.length - 1; i >= 0; i--) {
-      final item = line.items[i];
-      if (item is LineRun && item.isSpace) {
-        w -= item.width;
-      } else {
-        break;
-      }
-    }
-    line.width = w;
-    final cur = current;
-    if (line.items.isEmpty && cur != null) growMetrics(line, cur);
-    lines.add(line);
-    line = LineMetrics();
-    lineWidth = 0.0;
-  }
-
-  for (final item in runs) {
-    if (item is EmojiItem) {
-      final w = item.width;
-      hardLineWidth += w;
-      if (w > minIntrinsic) minIntrinsic = w;
-      if (lineWidth + w > wrapWidth && line.items.isNotEmpty) {
-        commitLine();
-      }
-      line.items.add(LineEmoji(item));
-      lineWidth += w;
-      final a = _ascenderPx(item.font, item.fontSizePx);
-      final de = _descenderPx(item.font, item.fontSizePx);
-      final h = _lineHeightPx(item.font, item.fontSizePx, style.lineHeight);
-      if (a > line.ascent) line.ascent = a;
-      if (de > line.descent) line.descent = de;
-      if (h > line.height) line.height = h;
-      continue;
-    }
-    if (item is PlaceholderItem) {
-      final w = item.width;
-      hardLineWidth += w;
-      if (w > minIntrinsic) minIntrinsic = w;
-      if (lineWidth + w > wrapWidth && line.items.isNotEmpty) {
-        commitLine();
-      }
-      line.items.add(LinePlaceholder(item));
-      lineWidth += w;
-      growPlaceholderMetrics(line, item);
-      continue;
-    }
-    final run = item as TextRun;
-    current = run;
-    for (final word in _splitWords(run.text)) {
-      if (word == '\n') {
-        commitLine(hard: true);
-        if (hardLineWidth > maxIntrinsic) maxIntrinsic = hardLineWidth;
-        hardLineWidth = 0.0;
-        continue;
-      }
-      if (word == ' ') {
-        final w =
-            _measure(run.font, ' ', run.fontSizePx, run.letterSpacingPx) +
-                run.wordSpacingPx;
-        hardLineWidth += w;
-        if (lineWidth + w > wrapWidth && line.items.isNotEmpty) {
-          commitLine();
-          continue; // drop the space at the wrap point
-        }
-        line.items.add(LineRun.fromRun(run, ' ', w));
-        lineWidth += w;
-        growMetrics(line, run);
-        continue;
-      }
-      final w = _measure(run.font, word, run.fontSizePx, run.letterSpacingPx);
-      hardLineWidth += w;
-      if (w > minIntrinsic) minIntrinsic = w;
-      if (lineWidth + w > wrapWidth && line.items.isNotEmpty) {
-        commitLine();
-      }
-      line.items.add(LineRun.fromRun(run, word, w));
-      lineWidth += w;
-      growMetrics(line, run);
-    }
-  }
-  if (line.items.isNotEmpty || lines.isEmpty) commitLine(hard: true);
-  if (hardLineWidth > maxIntrinsic) maxIntrinsic = hardLineWidth;
-
   final maxLines = style.maxLines;
-  final exceeded = maxLines != null && lines.length > maxLines;
-  final kept = exceeded ? lines.sublist(0, maxLines) : lines;
+  var exceeded = false;
+  final lb = prepared.lineBreak;
+
+  outer:
+  for (var ci = 0; ci < lb.chunks.length; ci++) {
+    final chunk = lb.chunks[ci];
+    // Blank lines ('\n\n') are framework-level; strategies only see chunks
+    // with content.
+    final ranges = chunk.start == chunk.end
+        ? <LineRange>[
+            LineRange(
+              width: 0,
+              startSegment: chunk.start,
+              startGrapheme: 0,
+              endSegment: chunk.consumedEnd,
+              endGrapheme: 0,
+              hardBreak: true,
+              chunkIndex: ci,
+            ),
+          ]
+        : style.lineBreaker.breakChunk(
+            lb,
+            ci,
+            wrapWidth,
+            maxLines: maxLines == null ? null : maxLines - lines.length,
+          );
+    for (final range in ranges) {
+      if (maxLines != null && lines.length >= maxLines) {
+        exceeded = true;
+        break outer;
+      }
+      lines.add(_materializeLine(prepared, range, style));
+    }
+  }
+
+  if (lines.isEmpty) {
+    // Empty paragraph: one empty line styled by the last run, like an empty
+    // TextField line.
+    final line = LineMetrics()..hardBreak = true;
+    final styleItem = prepared.fallbackStyleItem;
+    if (styleItem >= 0 && prepared.items[styleItem] is TextRun) {
+      _growMetrics(
+          line, prepared.items[styleItem] as TextRun, style.lineHeight);
+    }
+    _commitLineMetrics(line);
+    lines.add(line);
+  }
 
   var ellipsized = false;
-  if (exceeded && style.addEllipsis && kept.isNotEmpty) {
-    _ellipsize(kept.last, wrapWidth);
+  if (exceeded && style.addEllipsis) {
+    _ellipsize(lines.last, wrapWidth);
     ellipsized = true;
   }
 
   var height = 0.0;
-  for (final l in kept) {
+  for (final l in lines) {
     height += l.height;
   }
 
   return ParagraphLines(
-    lines: kept,
-    minIntrinsicWidth: minIntrinsic,
-    maxIntrinsicWidth: maxIntrinsic,
+    lines: lines,
+    minIntrinsicWidth: prepared.minIntrinsicWidth,
+    maxIntrinsicWidth: prepared.maxIntrinsicWidth,
     height: height,
     didExceedMaxLines: exceeded,
     ellipsized: ellipsized,
   );
+}
+
+LineMetrics _materializeLine(
+  PreparedParagraph p,
+  LineRange range,
+  ParagraphStyle style,
+) {
+  final line = LineMetrics()..hardBreak = range.hardBreak;
+  final lb = p.lineBreak;
+
+  // The end cursor is exclusive; endGrapheme > 0 means the end segment is
+  // partially on this line.
+  final lastSeg =
+      range.endGrapheme > 0 ? range.endSegment : range.endSegment - 1;
+
+  for (var seg = range.startSegment;
+      seg <= lastSeg && seg < p.segmentCount;
+      seg++) {
+    final kind = lb.kinds[seg];
+    if (kind == SegmentBreakKind.hardBreak ||
+        kind == SegmentBreakKind.softHyphen ||
+        kind == SegmentBreakKind.zeroWidthBreak) {
+      continue;
+    }
+    final pieces = p.segmentPieces[seg];
+    if (pieces.isEmpty) continue;
+
+    if (pieces.first.isAtomic) {
+      final item = p.items[pieces.first.itemIndex];
+      if (item is EmojiItem) {
+        line.items.add(LineEmoji(item));
+        final a = _ascenderPx(item.font, item.fontSizePx);
+        final d = _descenderPx(item.font, item.fontSizePx);
+        final h = _lineHeightPx(item.font, item.fontSizePx, style.lineHeight);
+        if (a > line.ascent) line.ascent = a;
+        if (d > line.descent) line.descent = d;
+        if (h > line.height) line.height = h;
+      } else if (item is PlaceholderItem) {
+        line.items.add(LinePlaceholder(item));
+        _growPlaceholderMetrics(line, item);
+      }
+      continue;
+    }
+
+    if (kind == SegmentBreakKind.space || kind == SegmentBreakKind.tab) {
+      final ch = kind == SegmentBreakKind.space ? ' ' : '\t';
+      for (final piece in pieces) {
+        final run = p.items[piece.itemIndex] as TextRun;
+        final count = piece.endInSegment - piece.startInSegment;
+        final per = count > 0 ? piece.width / count : 0.0;
+        for (var k = 0; k < count; k++) {
+          line.items.add(LineRun.fromRun(run, ch, per));
+        }
+        _growMetrics(line, run, style.lineHeight);
+      }
+      continue;
+    }
+
+    // text / glue segments.
+    final segText = p.segmentTexts[seg];
+    final gStart = seg == range.startSegment ? range.startGrapheme : 0;
+    final gEnd = (seg == range.endSegment && range.endGrapheme > 0)
+        ? range.endGrapheme
+        : -1;
+
+    if (gStart == 0 && gEnd < 0) {
+      for (final piece in pieces) {
+        final run = p.items[piece.itemIndex] as TextRun;
+        line.items.add(LineRun.fromRun(
+          run,
+          segText.substring(piece.startInSegment, piece.endInSegment),
+          piece.width,
+        ));
+        _growMetrics(line, run, style.lineHeight);
+      }
+      continue;
+    }
+
+    // Partial segment (an overlong word broken mid-segment): slice by
+    // grapheme boundaries, grouping consecutive graphemes per piece.
+    final offs = p.graphemeEndOffsets[seg]!;
+    final adv = lb.graphemeAdvances[seg]!;
+    final gLast = gEnd < 0 ? adv.length : gEnd;
+    var g = gStart;
+    while (g < gLast) {
+      final startOff = g == 0 ? 0 : offs[g - 1];
+      final piece = pieces.firstWhere(
+          (pc) => startOff >= pc.startInSegment && startOff < pc.endInSegment);
+      var w = 0.0;
+      var end = g;
+      while (end < gLast) {
+        final so = end == 0 ? 0 : offs[end - 1];
+        if (so < piece.startInSegment || so >= piece.endInSegment) break;
+        w += adv[end];
+        end++;
+      }
+      final run = p.items[piece.itemIndex] as TextRun;
+      line.items.add(
+          LineRun.fromRun(run, segText.substring(startOff, offs[end - 1]), w));
+      _growMetrics(line, run, style.lineHeight);
+      g = end;
+    }
+  }
+
+  // A soft wrap that lands right after a soft-hyphen segment chose that
+  // hyphen: materialize the visible '-' (its width is already in
+  // range.width).
+  if (!range.hardBreak && range.endGrapheme == 0 && range.endSegment > 0) {
+    final shySeg = range.endSegment - 1;
+    if (shySeg < p.segmentCount &&
+        lb.kinds[shySeg] == SegmentBreakKind.softHyphen) {
+      final pieces = p.segmentPieces[shySeg];
+      if (pieces.isNotEmpty) {
+        final run = p.items[pieces.first.itemIndex] as TextRun;
+        line.items.add(LineRun.fromRun(run, '-', lb.widths[shySeg]));
+        _growMetrics(line, run, style.lineHeight);
+      }
+    }
+  }
+
+  if (line.items.isEmpty) {
+    // Blank line ('\n\n') or invisible-only content: style it like the run
+    // that owns the break.
+    final styleItem = lb.chunks[range.chunkIndex].styleItemIndex;
+    if (styleItem >= 0 && p.items[styleItem] is TextRun) {
+      _growMetrics(line, p.items[styleItem] as TextRun, style.lineHeight);
+    }
+  }
+
+  _commitLineMetrics(line);
+
+  // Trailing spaces don't count toward the alignment box. The walker width
+  // includes them (they hang), so strip trailing space items here — this
+  // also handles whitespace runs spanning style boundaries.
+  var w = range.width;
+  for (var i = line.items.length - 1; i >= 0; i--) {
+    final item = line.items[i];
+    if (item is LineRun && item.isSpace) {
+      w -= item.width;
+    } else {
+      break;
+    }
+  }
+  line.width = w;
+  return line;
 }
 
 /// Baseline-to-baseline line advance for a font/size (public: widgets use it
@@ -544,7 +531,8 @@ void ellipsizeLine(LineMetrics line, double maxWidth) =>
 
 /// Trim the line's tail and append an ellipsis in the last text run's style
 /// so the line fits `maxWidth` (best effort — a lone ellipsis is never
-/// removed). Placeholders at the cut are dropped whole.
+/// removed). Placeholders at the cut are dropped whole. Trimming is
+/// grapheme-safe (never splits a surrogate pair or emoji cluster).
 void _ellipsize(LineMetrics line, double maxWidth) {
   final lastRun = line.items.whereType<LineRun>().lastOrNull;
   if (lastRun == null && line.items.isEmpty) return;
@@ -576,11 +564,11 @@ void _ellipsize(LineMetrics line, double maxWidth) {
 
   while (line.items.isNotEmpty && total() > maxWidth) {
     final r = line.items.last;
-    if (r is! LineRun || r.text.length <= 1) {
+    if (r is! LineRun || r.text.characters.length <= 1) {
       line.items.removeLast();
       continue;
     }
-    r.text = r.text.substring(0, r.text.length - 1);
+    r.text = r.text.characters.skipLast(1).toString();
     r.width = _measure(r.font, r.text, r.fontSizePx, r.letterSpacingPx);
   }
   // Strip a trailing space left at the cut.
@@ -708,7 +696,9 @@ ParagraphInstances emitInstances(
         if (it is LineRun && it.isSpace) stretchable++;
       }
       final extra = boxWidth - line.width;
-      if (stretchable > 0 && extra > 0 && extra.isFinite) {
+      // May be negative: optimal-fit breakers (Knuth-Plass) compress spaces
+      // slightly below natural width, like TeX's shrinkability.
+      if (stretchable > 0 && extra != 0 && extra.isFinite) {
         spaceExtra = extra / stretchable;
       }
     }

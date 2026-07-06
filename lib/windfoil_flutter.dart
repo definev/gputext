@@ -8,6 +8,8 @@ library;
 
 export 'src/engine/engine.dart' show Windfoil, WindfoilEngine;
 export 'src/font.dart' show WindfoilFont, FillRule, VerticalMetrics;
+export 'src/text/line_breaker.dart'
+    show LineBreaker, GreedyLineBreaker, KnuthPlassLineBreaker;
 export 'src/widgets/rich_text.dart'
     show WindfoilRichText, RenderWindfoilParagraph;
 export 'src/widgets/text.dart' show WindfoilText;

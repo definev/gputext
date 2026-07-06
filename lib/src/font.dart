@@ -1,5 +1,8 @@
 import 'dart:typed_data';
 
+part 'font_features.dart';
+part 'font_variations.dart';
+
 enum FillRule { nonzero, evenOdd }
 
 /// Substitute the common Latin ligatures (ffi, ffl, fi, fl) with their
@@ -160,10 +163,18 @@ class WindfoilFont {
     required this._lsbs,
     required this._glyphOffsets,
     required this._kern,
-    required List<_PairPosSub> gposKern,
-    _ColrData? colr,
-  })  : _gposKern = gposKern,
-        _colr = colr;
+    required this._gposKern,
+    this._colr,
+    this._fvar,
+    this._avar,
+    this._gvar,
+    this._hvar,
+    this._mvar,
+    this._gsub,
+    this.variationCoordinates = const {},
+    this._normCoords,
+    this._base,
+  });
 
   final int unitsPerEm;
   final VerticalMetrics verticalMetrics;
@@ -179,6 +190,26 @@ class WindfoilFont {
   final Map<(int, int), double> _kern;
   final List<_PairPosSub> _gposKern;
   final _ColrData? _colr;
+  final _Fvar? _fvar;
+  final _Avar? _avar;
+  final _Gvar? _gvar;
+  final _Hvar? _hvar;
+  final _Mvar? _mvar;
+  final _Gsub? _gsub;
+
+  /// Design-space coordinates this instance was created with (non-default
+  /// axes only); empty for the base instance. See
+  /// [WindfoilFontVariations.variant].
+  final Map<String, double> variationCoordinates;
+
+  /// Normalized (F2Dot14-rounded, avar-mapped) coordinates; null on the base.
+  final Float64List? _normCoords;
+
+  /// Base font this variant was instanced from; null on the base.
+  final WindfoilFont? _base;
+
+  /// Variant instances by canonical coordinate key (base font only).
+  final Map<String, WindfoilFont> _variantCache = {};
 
   static WindfoilFont parse(Uint8List bytes) {
     final data = ByteData.sublistView(bytes);
@@ -312,6 +343,46 @@ class WindfoilFont {
       }
     }
 
+    // Variation tables stand or fall together — without fvar axes none of
+    // the delta tables can be interpreted.
+    _Fvar? fvar;
+    _Avar? avar;
+    _Gvar? gvar;
+    _Hvar? hvar;
+    _Mvar? mvar;
+    if (tables.containsKey('fvar')) {
+      try {
+        fvar = _Fvar.parse(data, tableOffset('fvar'));
+        final axisCount = fvar.axes.length;
+        if (tables.containsKey('avar')) {
+          avar = _Avar.parse(data, tableOffset('avar'), axisCount);
+        }
+        if (tables.containsKey('gvar')) {
+          gvar = _Gvar.parse(data, tableOffset('gvar'));
+        }
+        if (tables.containsKey('HVAR')) {
+          hvar = _Hvar.parse(data, tableOffset('HVAR'));
+        }
+        if (tables.containsKey('MVAR')) {
+          mvar = _Mvar.parse(data, tableOffset('MVAR'));
+        }
+      } catch (_) {
+        fvar = null;
+        avar = null;
+        gvar = null;
+        hvar = null;
+        mvar = null; // malformed variations → static default instance only
+      }
+    }
+    _Gsub? gsub;
+    if (tables.containsKey('GSUB')) {
+      try {
+        gsub = _Gsub.parse(data, tableOffset('GSUB'));
+      } catch (_) {
+        gsub = null; // malformed GSUB → cmap-riding basic ligatures only
+      }
+    }
+
     return WindfoilFont._(
       unitsPerEm: unitsPerEm,
       verticalMetrics: VerticalMetrics(
@@ -336,6 +407,12 @@ class WindfoilFont {
       kern: kern,
       gposKern: gposKern,
       colr: colr,
+      fvar: fvar,
+      avar: avar,
+      gvar: gvar,
+      hvar: hvar,
+      mvar: mvar,
+      gsub: gsub,
     );
   }
 
@@ -509,7 +586,14 @@ class WindfoilFont {
 
   int? _glyphId(String ch) {
     if (ch.isEmpty) return null;
-    return _cmap[ch.runes.first];
+    final cp = ch.runes.first;
+    final mapped = _cmap[cp];
+    if (mapped != null) return mapped;
+    // Plane-15 PUA proxies minted by applyFeatures for substituted glyphs.
+    if (cp >= _glyphProxyBase && cp - _glyphProxyBase < _numGlyphs) {
+      return cp - _glyphProxyBase;
+    }
+    return null;
   }
 
   bool hasGlyph(String ch) => _glyphId(ch) != null;
@@ -558,23 +642,14 @@ class WindfoilFont {
   /// Outline of a glyph by ID (COLR layers reference glyph IDs directly).
   GlyphOutline? glyphOutlineById(int id) {
     if (id < 0 || id >= _numGlyphs) return null;
-    final glyfOffset = _tables['glyf']!.offset;
-    final start = _glyphOffsets[id];
-    final end = _glyphOffsets[id + 1];
-    if (start == end) return null;
-
-    final r = _ByteReader(_bytes)..seek(glyfOffset + start);
-    final numberOfContours = r.readI16();
-    r.readI16(); // xMin
-    r.readI16(); // yMin
-    r.readI16(); // xMax
-    r.readI16(); // yMax
+    final pts = _glyphPointsById(id);
+    if (pts == null || pts.xs.isEmpty) return null;
 
     final quads = <double>[];
-    if (numberOfContours >= 0) {
-      _parseSimpleGlyph(r, numberOfContours, quads);
-    } else {
-      _parseCompositeGlyph(r, glyfOffset, quads);
+    var start = 0;
+    for (final end in pts.endPts) {
+      _contourToQuads(pts.xs, pts.ys, pts.flags, start, end, quads);
+      start = end + 1;
     }
 
     if (quads.isEmpty) return null;
@@ -597,12 +672,49 @@ class WindfoilFont {
     );
   }
 
-  void _parseSimpleGlyph(_ByteReader r, int numberOfContours, List<double> out) {
+  /// Decoded outline points (font units, Y-up) with this instance's gvar
+  /// deltas applied; composites are flattened recursively. Null for empty
+  /// glyphs.
+  _GlyphPointData? _glyphPointsById(int id, [int depth = 0]) {
+    if (id < 0 || id >= _numGlyphs || depth > 6) return null;
+    final start = _glyphOffsets[id];
+    final end = _glyphOffsets[id + 1];
+    if (start == end) return null;
+    final glyfOffset = _tables['glyf']!.offset;
+    final r = _ByteReader(_bytes)..seek(glyfOffset + start);
+    final numberOfContours = r.readI16();
+    r.readI16(); // xMin
+    r.readI16(); // yMin
+    r.readI16(); // xMax
+    r.readI16(); // yMax
+    if (numberOfContours >= 0) {
+      final pts = _decodeSimplePoints(r, numberOfContours);
+      final coords = _normCoords;
+      final gvar = _gvar;
+      if (coords != null && gvar != null && pts.xs.isNotEmpty) {
+        final deltas = gvar.deltasFor(id, coords,
+            pointCount: pts.xs.length,
+            xs: pts.xs,
+            ys: pts.ys,
+            endPts: pts.endPts);
+        if (deltas != null) {
+          for (var i = 0; i < pts.xs.length; i++) {
+            pts.xs[i] += deltas.$1[i];
+            pts.ys[i] += deltas.$2[i];
+          }
+        }
+      }
+      return pts;
+    }
+    return _compositePoints(r, id, depth);
+  }
+
+  _GlyphPointData _decodeSimplePoints(_ByteReader r, int numberOfContours) {
     final endPts = List<int>.generate(numberOfContours, (_) => r.readU16());
     final instructionLength = r.readU16();
     r.seek(r.position + instructionLength);
 
-    final pointCount = endPts.last + 1;
+    final pointCount = endPts.isEmpty ? 0 : endPts.last + 1;
     final flags = List<int>.filled(pointCount, 0);
     var i = 0;
     while (i < pointCount) {
@@ -642,11 +754,7 @@ class WindfoilFont {
       ys[p] = y;
     }
 
-    var start = 0;
-    for (final end in endPts) {
-      _contourToQuads(xs, ys, flags, start, end, out);
-      start = end + 1;
-    }
+    return _GlyphPointData(xs, ys, flags, endPts);
   }
 
   void _contourToQuads(
@@ -727,21 +835,15 @@ class WindfoilFont {
     ]);
   }
 
-  void _parseCompositeGlyph(
-    _ByteReader r,
-    int glyfOffset,
-    List<double> out,
-  ) {
+  _GlyphPointData? _compositePoints(_ByteReader r, int id, int depth) {
+    // Read every component record first so composite gvar deltas (one point
+    // per component) can adjust the XY offsets before children are placed.
+    final comps = <_ComponentRecord>[];
     while (true) {
       final flags = r.readU16();
       final glyphIndex = r.readU16();
-      var e = 1.0;
-      var f = 0.0;
-      var e2 = 0.0;
-      var f2 = 1.0;
       double arg1;
       double arg2;
-
       if (flags & 0x01 != 0) {
         arg1 = r.readI16().toDouble();
         arg2 = r.readI16().toDouble();
@@ -750,53 +852,90 @@ class WindfoilFont {
         arg2 = r.readI8().toDouble();
       }
 
+      var a = 1.0; // xscale
+      var b = 0.0; // scale01
+      var c = 0.0; // scale10
+      var d = 1.0; // yscale
       if (flags & 0x0008 != 0) {
         // WE_HAVE_A_SCALE: single uniform scale
-        final scale = r.readI16() / 16384.0;
-        e = scale;
-        f2 = scale;
+        a = d = r.readI16() / 16384.0;
       } else if (flags & 0x0040 != 0) {
         // WE_HAVE_AN_X_AND_YSCALE
-        e = r.readI16() / 16384.0;
-        f2 = r.readI16() / 16384.0;
+        a = r.readI16() / 16384.0;
+        d = r.readI16() / 16384.0;
       } else if (flags & 0x0080 != 0) {
         // WE_HAVE_A_TWO_BY_TWO
-        e = r.readI16() / 16384.0;
-        f = r.readI16() / 16384.0;
-        e2 = r.readI16() / 16384.0;
-        f2 = r.readI16() / 16384.0;
+        a = r.readI16() / 16384.0;
+        b = r.readI16() / 16384.0;
+        c = r.readI16() / 16384.0;
+        d = r.readI16() / 16384.0;
       }
-
-      final start = _glyphOffsets[glyphIndex];
-      final end = _glyphOffsets[glyphIndex + 1];
-      if (start != end) {
-        final cr = _ByteReader(_bytes)..seek(glyfOffset + start);
-        final numberOfContours = cr.readI16();
-        cr.readI16();
-        cr.readI16();
-        cr.readI16();
-        cr.readI16();
-        final sub = <double>[];
-        if (numberOfContours >= 0) {
-          _parseSimpleGlyph(cr, numberOfContours, sub);
-        } else {
-          _parseCompositeGlyph(cr, glyfOffset, sub);
-        }
-        // Sub-glyph points are already Y-flipped; the font-space Y offset
-        // must be flipped too so the composite lands correctly.
-        final dy = -arg2;
-        for (var i = 0; i < sub.length; i += 2) {
-          final x = sub[i];
-          final y = sub[i + 1];
-          sub[i] = e * x + e2 * y + arg1;
-          sub[i + 1] = f * x + f2 * y + dy;
-        }
-        out.addAll(sub);
-      }
-
+      comps.add(_ComponentRecord(glyphIndex, flags, arg1, arg2, a, b, c, d));
       if (flags & 0x0020 == 0) break;
     }
+
+    final coords = _normCoords;
+    final gvar = _gvar;
+    if (coords != null && gvar != null && comps.isNotEmpty) {
+      final deltas = gvar.deltasFor(id, coords, pointCount: comps.length);
+      if (deltas != null) {
+        for (var i = 0; i < comps.length; i++) {
+          // Only XY-offset placements vary; point-matched ones don't move.
+          if (comps[i].flags & 0x0002 != 0) {
+            comps[i].arg1 += deltas.$1[i];
+            comps[i].arg2 += deltas.$2[i];
+          }
+        }
+      }
+    }
+
+    final xs = <double>[];
+    final ys = <double>[];
+    final flags = <int>[];
+    final endPts = <int>[];
+    for (final comp in comps) {
+      final child = _glyphPointsById(comp.glyphIndex, depth + 1);
+      if (child == null) continue;
+      final base = xs.length;
+      for (var i = 0; i < child.xs.length; i++) {
+        final x = child.xs[i];
+        final y = child.ys[i];
+        xs.add(comp.a * x + comp.c * y + comp.arg1);
+        ys.add(comp.b * x + comp.d * y + comp.arg2);
+      }
+      flags.addAll(child.flags);
+      for (final e in child.endPts) {
+        endPts.add(base + e);
+      }
+    }
+    if (xs.isEmpty) return null;
+    return _GlyphPointData(xs, ys, flags, endPts);
   }
+}
+
+/// A decoded glyph outline at the point level: font units, Y-up, flags bit 0
+/// = on-curve. Contours are [endPts] ranges, TrueType-style.
+class _GlyphPointData {
+  _GlyphPointData(this.xs, this.ys, this.flags, this.endPts);
+
+  final List<double> xs;
+  final List<double> ys;
+  final List<int> flags;
+  final List<int> endPts;
+}
+
+class _ComponentRecord {
+  _ComponentRecord(this.glyphIndex, this.flags, this.arg1, this.arg2, this.a,
+      this.b, this.c, this.d);
+
+  final int glyphIndex;
+  final int flags;
+  double arg1; // x offset (mutable: composite gvar deltas apply here)
+  double arg2; // y offset
+  final double a; // xscale:  x' = a·x + c·y + arg1
+  final double b; // scale01: y' = b·x + d·y + arg2
+  final double c; // scale10
+  final double d; // yscale
 }
 
 extension on _ByteReader {
@@ -822,14 +961,14 @@ int _popcount8(int v) {
 }
 
 /// Coverage table: glyph → coverage index (null when not covered).
-class _GposCoverage {
-  _GposCoverage(this.starts, this.ends, this.indexBase);
+class _Coverage {
+  _Coverage(this.starts, this.ends, this.indexBase);
 
   final List<int> starts;
   final List<int> ends;
   final List<int> indexBase;
 
-  static _GposCoverage parse(ByteData d, int off) {
+  static _Coverage parse(ByteData d, int off) {
     final fmt = d.getUint16(off, Endian.big);
     final starts = <int>[], ends = <int>[], base = <int>[];
     if (fmt == 1) {
@@ -851,7 +990,7 @@ class _GposCoverage {
     } else {
       throw const FormatException('coverage format');
     }
-    return _GposCoverage(starts, ends, base);
+    return _Coverage(starts, ends, base);
   }
 
   int? indexOf(int g) {
@@ -928,7 +1067,7 @@ sealed class _PairPosSub {
 class _PairPos1 extends _PairPosSub {
   _PairPos1(this.coverage, this.seconds, this.advances);
 
-  final _GposCoverage coverage;
+  final _Coverage coverage;
   final List<Uint16List> seconds; // per first-glyph pair set, sorted
   final List<Float32List> advances;
 
@@ -956,7 +1095,7 @@ class _PairPos2 extends _PairPosSub {
   _PairPos2(this.coverage, this.classDef1, this.classDef2, this.class2Count,
       this.xAdvance);
 
-  final _GposCoverage coverage;
+  final _Coverage coverage;
   final _GposClassDef classDef1;
   final _GposClassDef classDef2;
   final int class2Count;
@@ -984,7 +1123,7 @@ _PairPosSub? _parsePairPosSubtable(ByteData d, int off) {
   final xAdvOff = _popcount8(vf1 & 0x0003) * 2; // XPlacement/YPlacement first
 
   if (fmt == 1) {
-    final coverage = _GposCoverage.parse(d, coverageOff);
+    final coverage = _Coverage.parse(d, coverageOff);
     final pairSetCount = d.getUint16(off + 8, Endian.big);
     final seconds = <Uint16List>[];
     final advances = <Float32List>[];
@@ -1005,7 +1144,7 @@ _PairPosSub? _parsePairPosSubtable(ByteData d, int off) {
     return _PairPos1(coverage, seconds, advances);
   }
   if (fmt == 2) {
-    final coverage = _GposCoverage.parse(d, coverageOff);
+    final coverage = _Coverage.parse(d, coverageOff);
     final classDef1 = _GposClassDef.parse(d, off + d.getUint16(off + 8, Endian.big));
     final classDef2 = _GposClassDef.parse(d, off + d.getUint16(off + 10, Endian.big));
     final class1Count = d.getUint16(off + 12, Endian.big);

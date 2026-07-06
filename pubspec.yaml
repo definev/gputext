@@ -7,6 +7,7 @@ environment:
   sdk: ^3.13.0-252.0.dev
 
 dependencies:
+  characters: ^1.4.0
   flutter:
     sdk: flutter
   flutter_gpu:
@@ -25,6 +26,7 @@ flutter:
   assets:
     - assets/Lato-Regular.ttf
     - assets/TwemojiMozilla.ttf
+    - assets/Google_Sans_Flex/GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf
     - build/shaderbundles/
   fonts:
     - family: Lato

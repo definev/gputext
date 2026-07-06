@@ -311,9 +311,14 @@ void main() {
   });
 
   test('hyphens create break opportunities', () {
+    // Wide enough for either half but not the whole word: the break must
+    // land after the hyphen. (Narrower widths now grapheme-break 'known'
+    // like Flutter, instead of overflowing.)
     final wellW = measureText('well-', font, 16);
+    final knownW = measureText('known', font, 16);
+    final wrapW = (wellW > knownW ? wellW : knownW) + 1;
     final para = wf.breakLines(
-        [run('well-known')], wellW + 1, wf.ParagraphStyle(maxWidth: wellW + 1));
+        [run('well-known')], wrapW, wf.ParagraphStyle(maxWidth: wrapW));
     expect(para.lines.length, 2);
     expect((para.lines[0].items.last as wf.LineRun).text, 'well-');
     expect((para.lines[1].items.first as wf.LineRun).text, 'known');
