@@ -46,7 +46,7 @@ TextSpan _widgetSpanSample() => TextSpan(
   style: const TextStyle(fontFamily: 'Lato', fontSize: 16, color: _ink),
   children: [
     const TextSpan(text: 'Inline widgets: an icon '),
-     WidgetSpan(
+    WidgetSpan(
       alignment: PlaceholderAlignment.bottom,
       child: Icon(Icons.surfing, size: 20, color: _accentBlue),
     ),
@@ -131,6 +131,61 @@ TextSpan _decorationSample() => const TextSpan(
   ],
 );
 
+TextSpan _paintSample() => TextSpan(
+  style: const TextStyle(fontFamily: 'Lato', fontSize: 16, color: _ink),
+  children: [
+    const TextSpan(text: 'Highlights: '),
+    const TextSpan(
+      text: 'marked text',
+      style: TextStyle(backgroundColor: Color(0x5FE8B14C)),
+    ),
+    const TextSpan(text: ' and '),
+    const TextSpan(
+      text: 'inverse',
+      style: TextStyle(color: _paper, backgroundColor: _accentBlue),
+    ),
+    const TextSpan(text: ', shadows: '),
+    const TextSpan(
+      text: 'soft drop',
+      style: TextStyle(
+        fontSize: 22,
+        shadows: [
+          Shadow(offset: Offset(2, 2), blurRadius: 4, color: Color(0x66000000)),
+        ],
+      ),
+    ),
+    const TextSpan(text: ' + '),
+    const TextSpan(
+      text: 'hard red',
+      style: TextStyle(
+        fontSize: 22,
+        shadows: [Shadow(offset: Offset(1.5, 1.5), color: _accentRed)],
+      ),
+    ),
+    const TextSpan(text: ', and a '),
+    TextSpan(
+      text: 'foreground paint',
+      style: TextStyle(foreground: Paint()..color = _accentBlue),
+    ),
+    const TextSpan(text: '.'),
+  ],
+);
+
+TextSpan _strutSample() => const TextSpan(
+  style: TextStyle(fontFamily: 'Lato', fontSize: 13, color: _ink),
+  text:
+      'Small 13px text on a 28px strut: every line of this wrapped '
+      'paragraph advances by the strut height, giving airy, consistent '
+      'leading without changing the glyph size.',
+);
+
+TextSpan _fadeSample() => const TextSpan(
+  style: TextStyle(fontFamily: 'Lato', fontSize: 15, color: _ink),
+  text:
+      'This single line is far too long for its box and fades out at '
+      'the trailing edge instead of clipping hard.',
+);
+
 TextSpan _emojiSample() => const TextSpan(
   style: TextStyle(fontFamily: 'Lato', fontSize: 16, color: _ink),
   children: [
@@ -174,7 +229,8 @@ TextSpan _kernLigaSample() => const TextSpan(
 
 TextSpan _cjkWrapSample() => const TextSpan(
   style: TextStyle(fontFamily: 'Lato', fontSize: 16, color: _ink),
-  text: '中文排版可以在任意两个汉字之间换行即使整段没有空格也能正确折行 — '
+  text:
+      '中文排版可以在任意两个汉字之间换行即使整段没有空格也能正确折行 — '
       'and hyphenated state-of-the-art well-known compounds '
       'break after their hyphens.',
 );
@@ -219,7 +275,8 @@ TextSpan _darkSample() => const TextSpan(
       ),
     ),
     TextSpan(
-      text: ' hold their color, and emoji 🌚 ride along. The quick brown '
+      text:
+          ' hold their color, and emoji 🌚 ride along. The quick brown '
           'fox jumps over the lazy dog, 0123456789.',
     ),
   ],
@@ -280,8 +337,8 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
     });
     _registerWideFallback();
     _scroll = ScrollController(
-      initialScrollOffset: double.tryParse(
-              Platform.environment['WINDFOIL_DEMO_SCROLL'] ?? '') ??
+      initialScrollOffset:
+          double.tryParse(Platform.environment['WINDFOIL_DEMO_SCROLL'] ?? '') ??
           0,
     );
     final z = double.tryParse(Platform.environment['WINDFOIL_DEMO_ZOOM'] ?? '');
@@ -306,8 +363,11 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
     super.dispose();
   }
 
-  Widget _pair(String caption, Widget Function(bool windfoil) builder,
-      {Color? background}) {
+  Widget _pair(
+    String caption,
+    Widget Function(bool windfoil) builder, {
+    Color? background,
+  }) {
     Widget cell(String title, Widget child) => Expanded(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -359,145 +419,199 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
     return Scaffold(
       backgroundColor: const Color(0xFFE9E3D5),
       appBar: AppBar(title: const Text('RichText vs WindfoilRichText')),
-      body: ListView(
-        controller: _scroll,
-        children: [
-          _pair(
-            'Mixed-style paragraph, word wrap',
-            (windfoil) => windfoil
-                ? WindfoilRichText(text: _sampleSpan())
-                : RichText(text: _sampleSpan()),
-          ),
-          _pair(
-            'maxLines: 2, overflow: ellipsis, center-aligned',
-            (windfoil) => windfoil
-                ? WindfoilRichText(
-                    text: _sampleSpan(),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                  )
-                : RichText(
-                    text: _sampleSpan(),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                  ),
-          ),
-          _pair(
-            'WidgetSpan: icon (middle), chip (baseline), box (bottom)',
-            (windfoil) => windfoil
-                ? WindfoilRichText(text: _widgetSpanSample())
-                : RichText(text: _widgetSpanSample()),
-          ),
-          _pair(
-            'Emoji: clusters, tones, flags, ZWJ, keycaps',
-            (windfoil) => windfoil
-                ? WindfoilRichText(text: _emojiSample())
-                : RichText(text: _emojiSample()),
-          ),
-          _pair(
-            'Font fallback: native (wide TTF) + platform delegation (SMP)',
-            (windfoil) => windfoil
-                ? WindfoilRichText(text: _fallbackSample())
-                : RichText(text: _fallbackSample()),
-          ),
-          _pair(
-            'Decorations, justify, wordSpacing, height',
-            (windfoil) => windfoil
-                ? WindfoilRichText(
-                    text: _decorationSample(),
-                    textAlign: TextAlign.justify,
-                  )
-                : RichText(
-                    text: _decorationSample(),
-                    textAlign: TextAlign.justify,
-                  ),
-          ),
-          _pair(
-            'Dark mode: premultiplied compositing on a dark surface',
-            background: _darkSurface,
-            (windfoil) => windfoil
-                ? WindfoilRichText(text: _darkSample())
-                : RichText(text: _darkSample()),
-          ),
-          _pair(
-            'Links: TextSpan.recognizer (tap to count)',
-            (windfoil) => windfoil
-                ? WindfoilRichText(text: _linkSample(_linkRight, _rightTaps))
-                : RichText(text: _linkSample(_linkLeft, _leftTaps)),
-          ),
-          _pair(
-            'GPOS kerning + fi/fl/ffi/ffl ligatures',
-            (windfoil) => windfoil
-                ? WindfoilRichText(text: _kernLigaSample())
-                : RichText(text: _kernLigaSample()),
-          ),
-          _pair(
-            'CJK + hyphen line breaking (narrow column, no spaces)',
-            (windfoil) => Align(
-              alignment: Alignment.topLeft,
-              child: SizedBox(
-                width: 340,
-                child: windfoil
-                    ? WindfoilRichText(text: _cjkWrapSample())
-                    : RichText(text: _cjkWrapSample()),
-              ),
+      body: SelectionArea(
+        child: ListView(
+          controller: _scroll,
+          children: [
+            _pair(
+              'Mixed-style paragraph, word wrap',
+              (windfoil) => windfoil
+                  ? WindfoilRichText(text: _sampleSpan())
+                  : RichText(text: _sampleSpan()),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-            child: Text(
-              'Layout cache: '
-              '${Windfoil.instance.debugLayoutCacheHits} hits / '
-              '${Windfoil.instance.debugLayoutCacheMisses} misses '
-              '(identical paragraphs share one flatten+break)',
-              style: Theme.of(context)
-                  .textTheme
-                  .labelSmall
-                  ?.copyWith(color: Colors.black45),
+            _pair(
+              'maxLines: 2, overflow: ellipsis, center-aligned',
+              (windfoil) => windfoil
+                  ? WindfoilRichText(
+                      text: _sampleSpan(),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                    )
+                  : RichText(
+                      text: _sampleSpan(),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                    ),
             ),
-          ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(12, 12, 12, 0),
-            child: Text('Pinch/scroll to zoom — windfoil re-renders crisp'),
-          ),
-          SizedBox(
-            height: 300,
-            child: Container(
-              margin: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.black26),
-              ),
-              child: ClipRect(
-                child: InteractiveViewer(
-                  transformationController: _zoom,
-                  maxScale: 64,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: RichText(text: _sampleSpan()),
+            _pair(
+              'WidgetSpan: icon (middle), chip (baseline), box (bottom)',
+              (windfoil) => windfoil
+                  ? WindfoilRichText(text: _widgetSpanSample())
+                  : RichText(text: _widgetSpanSample()),
+            ),
+            _pair(
+              'Emoji: clusters, tones, flags, ZWJ, keycaps',
+              (windfoil) => windfoil
+                  ? WindfoilRichText(text: _emojiSample())
+                  : RichText(text: _emojiSample()),
+            ),
+            _pair(
+              'Font fallback: native (wide TTF) + platform delegation (SMP)',
+              (windfoil) => windfoil
+                  ? WindfoilRichText(text: _fallbackSample())
+                  : RichText(text: _fallbackSample()),
+            ),
+            _pair(
+              'Decorations, justify, wordSpacing, height',
+              (windfoil) => windfoil
+                  ? WindfoilRichText(
+                      text: _decorationSample(),
+                      textAlign: TextAlign.justify,
+                    )
+                  : RichText(
+                      text: _decorationSample(),
+                      textAlign: TextAlign.justify,
+                    ),
+            ),
+            _pair(
+              'Dark mode: premultiplied compositing on a dark surface',
+              background: _darkSurface,
+              (windfoil) => windfoil
+                  ? WindfoilRichText(text: _darkSample())
+                  : RichText(text: _darkSample()),
+            ),
+            _pair(
+              'Links: TextSpan.recognizer (tap to count)',
+              (windfoil) => windfoil
+                  ? WindfoilRichText(text: _linkSample(_linkRight, _rightTaps))
+                  : RichText(text: _linkSample(_linkLeft, _leftTaps)),
+            ),
+            _pair(
+              'GPOS kerning + fi/fl/ffi/ffl ligatures',
+              (windfoil) => windfoil
+                  ? WindfoilRichText(text: _kernLigaSample())
+                  : RichText(text: _kernLigaSample()),
+            ),
+            _pair(
+              'backgroundColor, shadows, foreground paint',
+              (windfoil) => windfoil
+                  ? WindfoilRichText(text: _paintSample())
+                  : RichText(text: _paintSample()),
+            ),
+            _pair(
+              'StrutStyle (28px floor under 13px text) + TextOverflow.fade',
+              (windfoil) {
+                const strut = StrutStyle(fontFamily: 'Lato', fontSize: 28);
+                final fade = SizedBox(
+                  width: 280,
+                  height: 22,
+                  child: windfoil
+                      ? WindfoilRichText(
+                          text: _fadeSample(),
+                          overflow: TextOverflow.fade,
+                          softWrap: false,
+                          maxLines: 1,
+                        )
+                      : RichText(
+                          text: _fadeSample(),
+                          overflow: TextOverflow.fade,
+                          softWrap: false,
+                          maxLines: 1,
                         ),
-                      ),
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: WindfoilRichText(
-                            text: _sampleSpan(),
-                            scaleHint: _zoom,
+                );
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    windfoil
+                        ? WindfoilRichText(
+                            text: _strutSample(),
+                            strutStyle: strut,
+                          )
+                        : RichText(text: _strutSample(), strutStyle: strut),
+                    const SizedBox(height: 8),
+                    fade,
+                  ],
+                );
+              },
+            ),
+            _pair(
+              'SelectionArea: drag to select, double-click a word, ⌘A',
+              // Text.rich on the stock side — bare RichText doesn't register
+              // with SelectionArea; WindfoilRichText does (Text.rich behavior).
+              (windfoil) => SelectionArea(
+                child: windfoil
+                    ? WindfoilRichText(text: _paintSample())
+                    : Text.rich(_paintSample()),
+              ),
+            ),
+            _pair(
+              'CJK + hyphen line breaking (narrow column, no spaces)',
+              (windfoil) => Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 340,
+                  child: windfoil
+                      ? WindfoilRichText(text: _cjkWrapSample())
+                      : RichText(text: _cjkWrapSample()),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+              child: Text(
+                'Layout cache: '
+                // ignore: invalid_use_of_visible_for_testing_member
+                '${Windfoil.instance.debugLayoutCacheHits} hits / '
+                // ignore: invalid_use_of_visible_for_testing_member
+                '${Windfoil.instance.debugLayoutCacheMisses} misses '
+                '(identical paragraphs share one flatten+break)',
+                style: Theme.of(context).textTheme.labelSmall
+                    ?.copyWith(color: Colors.black45),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(12, 12, 12, 0),
+              child: Text('Pinch/scroll to zoom — windfoil re-renders crisp'),
+            ),
+            SizedBox(
+              height: 300,
+              child: Container(
+                margin: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.black26),
+                ),
+                child: ClipRect(
+                  child: InteractiveViewer(
+                    transformationController: _zoom,
+                    maxScale: 64,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: RichText(text: _sampleSpan()),
                           ),
                         ),
-                      ),
-                    ],
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: WindfoilRichText(
+                              text: _sampleSpan(),
+                              scaleHint: _zoom,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

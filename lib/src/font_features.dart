@@ -20,10 +20,16 @@ const int _glyphProxyBase = 0xF0000;
 const int _glyphProxyMax = 0xFFFFD;
 
 class _ShapeSlot {
-  _ShapeSlot(this.gid, this.rune);
+  _ShapeSlot(this.gid, this.rune, this.origStart, this.origEnd);
 
   int gid; // -1 → not covered by this font's cmap (pass-through)
   int? rune; // original code point; null once merged/expanded away
+
+  /// UTF-16 range in the ORIGINAL text this slot descends from — ligatures
+  /// widen it, multiple-substitution outputs split it. Drives the cluster
+  /// map selection needs to copy original characters out of shaped text.
+  int origStart;
+  int origEnd;
 }
 
 class _Gsub {
@@ -161,9 +167,14 @@ class _MultipleSub extends _GsubSubtable {
       return 1;
     }
     final rune = slots[i].rune;
+    final origStart = slots[i].origStart;
+    final origEnd = slots[i].origEnd;
     slots.replaceRange(i, i + 1, [
+      // The first output carries the source range; the rest collapse to its
+      // end so cluster-map boundaries stay monotonic.
       for (var k = 0; k < seq.length; k++)
-        _ShapeSlot(seq[k], k == 0 ? rune : null),
+        _ShapeSlot(seq[k], k == 0 ? rune : null,
+            k == 0 ? origStart : origEnd, origEnd),
     ]);
     return seq.length;
   }
@@ -207,7 +218,8 @@ class _LigatureSub extends _GsubSubtable {
       }
       slots[i]
         ..gid = lig
-        ..rune = null; // multi-source: no single origin code point
+        ..rune = null // multi-source: no single origin code point
+        ..origEnd = slots[i + components.length].origEnd;
       slots.removeRange(i + 1, i + 1 + components.length);
       return 1;
     }
@@ -299,8 +311,21 @@ extension WindfoilFontFeatures on WindfoilFont {
     String text, {
     Map<String, int> features = const {},
     bool defaultLigatures = true,
+  }) =>
+      applyFeaturesMapped(text,
+              features: features, defaultLigatures: defaultLigatures)
+          .$1;
+
+  /// [applyFeatures] plus the cluster map selection needs: the second value
+  /// maps every UTF-16 boundary of the SHAPED text to its offset in the
+  /// original text (monotonic; map[0] == 0, map[shaped.length] ==
+  /// text.length). Null means identity (nothing substituted).
+  (String, Int32List?) applyFeaturesMapped(
+    String text, {
+    Map<String, int> features = const {},
+    bool defaultLigatures = true,
   }) {
-    if (text.isEmpty) return text;
+    if (text.isEmpty) return (text, null);
     final enabled = <String, int>{
       'ccmp': 1,
       'locl': 1,
@@ -318,8 +343,8 @@ extension WindfoilFontFeatures on WindfoilFont {
     final gsub = _gsub;
     if (gsub == null) {
       return enabled.containsKey('liga')
-          ? applyBasicLigatures(text, this)
-          : text;
+          ? _basicLigaturesMapped(text, this)
+          : (text, null);
     }
 
     final chosen = <int, int>{}; // lookup index → feature value
@@ -330,11 +355,15 @@ extension WindfoilFontFeatures on WindfoilFont {
         chosen.putIfAbsent(li, () => value);
       }
     });
-    if (chosen.isEmpty) return text;
+    if (chosen.isEmpty) return (text, null);
 
-    final slots = <_ShapeSlot>[
-      for (final rune in text.runes) _ShapeSlot(_cmap[rune] ?? -1, rune),
-    ];
+    final slots = <_ShapeSlot>[];
+    var off = 0;
+    for (final rune in text.runes) {
+      final units = rune >= 0x10000 ? 2 : 1;
+      slots.add(_ShapeSlot(_cmap[rune] ?? -1, rune, off, off + units));
+      off += units;
+    }
     var changed = false;
     for (final li in chosen.keys.toList()..sort()) {
       final lookup = li < gsub.lookups.length ? gsub.lookups[li] : null;
@@ -359,22 +388,71 @@ extension WindfoilFontFeatures on WindfoilFont {
         }
       }
     }
-    if (!changed) return text;
+    if (!changed) return (text, null);
 
     final out = StringBuffer();
+    final map = <int>[0];
     for (final slot in slots) {
       final rune = slot.rune;
+      int emitted;
       if (rune != null && (slot.gid < 0 || _cmap[rune] == slot.gid)) {
-        out.writeCharCode(rune); // unchanged → keep the original character
-        continue;
+        emitted = rune; // unchanged → keep the original character
+      } else {
+        final proxy = _glyphProxyBase + slot.gid;
+        if (slot.gid >= 0 && proxy <= _glyphProxyMax) {
+          emitted = proxy;
+        } else if (rune != null) {
+          emitted = rune; // out of proxy range → render unsubstituted
+        } else {
+          continue; // dropped slot: its range folds into the next boundary
+        }
       }
-      final proxy = _glyphProxyBase + slot.gid;
-      if (slot.gid >= 0 && proxy <= _glyphProxyMax) {
-        out.writeCharCode(proxy);
-      } else if (rune != null) {
-        out.writeCharCode(rune); // out of proxy range → render unsubstituted
+      out.writeCharCode(emitted);
+      final units = emitted >= 0x10000 ? 2 : 1;
+      final identity =
+          rune == emitted && slot.origEnd - slot.origStart == units;
+      for (var j = 1; j <= units; j++) {
+        // Interior boundaries of a substituted cluster sit at its start;
+        // only the final boundary advances to the cluster's source end.
+        map.add(j == units
+            ? slot.origEnd
+            : (identity ? slot.origStart + j : slot.origStart));
       }
     }
-    return out.toString();
+    return (out.toString(), Int32List.fromList(map));
   }
+}
+
+/// Map-building twin of [applyBasicLigatures] for fonts without a usable
+/// GSUB: substitutes fi/fl/ffi/ffl with their precomposed code points and
+/// records the shaped→original boundary map.
+(String, Int32List?) _basicLigaturesMapped(String text, WindfoilFont font) {
+  final patterns = <(String, String)>[
+    if (font.hasGlyph('ﬃ')) ('ffi', 'ﬃ'),
+    if (font.hasGlyph('ﬄ')) ('ffl', 'ﬄ'),
+    if (font.hasGlyph('ﬁ')) ('fi', 'ﬁ'),
+    if (font.hasGlyph('ﬂ')) ('fl', 'ﬂ'),
+  ];
+  if (patterns.isEmpty) return (text, null);
+  final out = StringBuffer();
+  final map = <int>[0];
+  var changed = false;
+  var i = 0;
+  outer:
+  while (i < text.length) {
+    for (final (from, to) in patterns) {
+      if (text.startsWith(from, i)) {
+        out.write(to);
+        map.add(i + from.length);
+        i += from.length;
+        changed = true;
+        continue outer;
+      }
+    }
+    out.writeCharCode(text.codeUnitAt(i));
+    i++;
+    map.add(i);
+  }
+  if (!changed) return (text, null);
+  return (out.toString(), Int32List.fromList(map));
 }

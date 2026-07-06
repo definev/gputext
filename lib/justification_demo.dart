@@ -422,9 +422,7 @@ class _Resources {
   // model widths and painted advances identical (a ligature glyph is atomic,
   // so no soft hyphen can land inside one either).
   _Resources(this.font)
-    : baseText = [
-        for (final p in _paragraphs) applyBasicLigatures(p, font),
-      ],
+    : baseText = [for (final p in _paragraphs) applyBasicLigatures(p, font)],
       hyphenatedText = [
         for (final p in _paragraphs)
           _hyphenateParagraph(applyBasicLigatures(p, font)),
@@ -710,8 +708,10 @@ class _WindfoilColumn extends StatelessWidget {
           if (showIndicators)
             Positioned.fill(
               child: CustomPaint(
-                painter:
-                    _RiverOverlayPainter(frame: frame, spaceWidth: spaceWidth),
+                painter: _RiverOverlayPainter(
+                  frame: frame,
+                  spaceWidth: spaceWidth,
+                ),
               ),
             ),
           Padding(
@@ -844,16 +844,14 @@ class _JustificationDemoPageState extends State<JustificationDemoPage> {
           // strategy the model ran, so overlays and metrics line up.
           const greedy = LineBreaker.greedy;
           const optimal = KnuthPlassLineBreaker();
-          final baseFrame = _buildColumn(
-            [for (final p in res.base) _layoutWith(greedy, p, innerWidth)],
-            res.spaceWidth,
-          );
+          final baseFrame = _buildColumn([
+            for (final p in res.base) _layoutWith(greedy, p, innerWidth),
+          ], res.spaceWidth);
           final hyphenFrame = _buildColumn([
             for (final p in res.hyphenated) _layoutWith(greedy, p, innerWidth),
           ], res.spaceWidth);
           final optimalFrame = _buildColumn([
-            for (final p in res.hyphenated)
-              _layoutWith(optimal, p, innerWidth),
+            for (final p in res.hyphenated) _layoutWith(optimal, p, innerWidth),
           ], res.spaceWidth);
 
           return ListView(
@@ -886,54 +884,56 @@ class _JustificationDemoPageState extends State<JustificationDemoPage> {
                   ),
                 ],
               ),
-              Wrap(
-                spacing: 16,
-                runSpacing: 16,
-                alignment: WrapAlignment.center,
-                runAlignment: WrapAlignment.center,
-                children: [
-                  _column(
-                    '1 · Windfoil justify',
-                    'default greedy breaker, no hyphenation '
-                        '(the browser-CSS baseline)',
-                    baseFrame.metrics,
-                    _WindfoilColumn(
-                      frame: baseFrame,
-                      width: _colWidth,
-                      showIndicators: _showIndicators,
-                      spaceWidth: res.spaceWidth,
-                      paragraphTexts: res.baseText,
-                      breaker: greedy,
+              SelectionArea(
+                child: Wrap(
+                  spacing: 16,
+                  runSpacing: 16,
+                  alignment: WrapAlignment.center,
+                  runAlignment: WrapAlignment.center,
+                  children: [
+                    _column(
+                      '1 · Windfoil justify',
+                      'default greedy breaker, no hyphenation '
+                          '(the browser-CSS baseline)',
+                      baseFrame.metrics,
+                      _WindfoilColumn(
+                        frame: baseFrame,
+                        width: _colWidth,
+                        showIndicators: _showIndicators,
+                        spaceWidth: res.spaceWidth,
+                        paragraphTexts: res.baseText,
+                        breaker: greedy,
+                      ),
                     ),
-                  ),
-                  _column(
-                    '2 · Greedy + hyphenation',
-                    'default breaker over soft-hyphenated text',
-                    hyphenFrame.metrics,
-                    _WindfoilColumn(
-                      frame: hyphenFrame,
-                      width: _colWidth,
-                      showIndicators: _showIndicators,
-                      spaceWidth: res.spaceWidth,
-                      paragraphTexts: res.hyphenatedText,
-                      breaker: greedy,
+                    _column(
+                      '2 · Greedy + hyphenation',
+                      'default breaker over soft-hyphenated text',
+                      hyphenFrame.metrics,
+                      _WindfoilColumn(
+                        frame: hyphenFrame,
+                        width: _colWidth,
+                        showIndicators: _showIndicators,
+                        spaceWidth: res.spaceWidth,
+                        paragraphTexts: res.hyphenatedText,
+                        breaker: greedy,
+                      ),
                     ),
-                  ),
-                  _column(
-                    '3 · Knuth-Plass optimal',
-                    'lineBreaker: KnuthPlassLineBreaker() over the same '
-                        'hyphenated text',
-                    optimalFrame.metrics,
-                    _WindfoilColumn(
-                      frame: optimalFrame,
-                      width: _colWidth,
-                      showIndicators: _showIndicators,
-                      spaceWidth: res.spaceWidth,
-                      paragraphTexts: res.hyphenatedText,
-                      breaker: optimal,
+                    _column(
+                      '3 · Knuth-Plass optimal',
+                      'lineBreaker: KnuthPlassLineBreaker() over the same '
+                          'hyphenated text',
+                      optimalFrame.metrics,
+                      _WindfoilColumn(
+                        frame: optimalFrame,
+                        width: _colWidth,
+                        showIndicators: _showIndicators,
+                        spaceWidth: res.spaceWidth,
+                        paragraphTexts: res.hyphenatedText,
+                        breaker: optimal,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ],
           );

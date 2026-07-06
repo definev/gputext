@@ -4,8 +4,10 @@
 // whose dimensions come from the render object's child layout; the preorder
 // placeholder index matches WidgetSpan.extractFromInlineSpan child order.
 
-import 'package:flutter/painting.dart';
+import 'dart:typed_data';
 import 'dart:ui' as ui show PlaceholderAlignment;
+
+import 'package:flutter/painting.dart';
 
 import '../engine/engine.dart';
 import '../font.dart'
@@ -109,9 +111,41 @@ List<wf.InlineItem>? flattenSpan(
           style?.fontFamily,
           ...?style?.fontFamilyFallback,
         ];
-        final color = style?.color ?? const Color(0xFF000000);
+        // A foreground Paint's color wins over TextStyle.color (they are
+        // mutually exclusive in Flutter); shaders are beyond the instanced
+        // renderer and fall back to the paint's flat color.
+        final color = style?.foreground?.color ??
+            style?.color ??
+            const Color(0xFF000000);
+        final bg = style?.backgroundColor ?? style?.background?.color;
+        final background =
+            bg == null ? null : <double>[bg.r, bg.g, bg.b, bg.a];
+        final styleShadows = style?.shadows;
+        final shadows = styleShadows == null || styleShadows.isEmpty
+            ? null
+            : [
+                for (final sh in styleShadows)
+                  wf.InlineShadow(
+                    dx: sh.offset.dx,
+                    dy: sh.offset.dy,
+                    blurRadius: sh.blurRadius,
+                    color: [
+                      sh.color.r,
+                      sh.color.g,
+                      sh.color.b,
+                      sh.color.a,
+                    ],
+                  ),
+              ];
+        final evenLeading = switch (style?.leadingDistribution) {
+          TextLeadingDistribution.even => true,
+          TextLeadingDistribution.proportional => false,
+          null => null,
+        };
 
-        wf.TextRun makeRun(String subText, WindfoilFont font) => wf.TextRun(
+        wf.TextRun makeRun(String subText, WindfoilFont font,
+                String? sourceText, Int32List? sourceMap) =>
+            wf.TextRun(
               text: subText,
               font: font,
               fontSizePx: textScaler.scale(style?.fontSize ?? 14.0),
@@ -120,13 +154,19 @@ List<wf.InlineItem>? flattenSpan(
               wordSpacingPx: style?.wordSpacing ?? 0,
               height: style?.height,
               decoration: _mapDecoration(style),
+              background: background,
+              shadows: shadows,
+              evenLeading: evenLeading,
+              sourceText: sourceText,
+              sourceMap: sourceMap,
               source: s,
             );
 
         // GSUB features (ligatures, tabular figures, stylistic sets, ...)
         // from TextStyle.fontFeatures; tracked-out text drops the default
         // ligature features, the same rule the basic-ligature pass applied.
-        final ligated = primary.applyFeatures(
+        // The cluster map ties shaped offsets back to `text` for selection.
+        final (ligated, clusterMap) = primary.applyFeaturesMapped(
           text,
           features: {
             for (final f in style?.fontFeatures ?? const <FontFeature>[])
@@ -139,16 +179,42 @@ List<wf.InlineItem>? flattenSpan(
         // subruns. Whitespace and zero-width characters stay with the
         // surrounding font; uncovered characters keep the primary font
         // (.notdef) — build-time expansion delegates those to the platform.
+        // Splits happen at shaped-rune boundaries, which are always cluster
+        // boundaries, so slicing the map per subrun is safe.
         final sub = StringBuffer();
         var current = primary;
+        var shapedPos = 0; // UTF-16 offset in `ligated`
+        var subStart = 0; // shaped offset where `sub` began
         void flushSub() {
-          if (sub.isEmpty) return;
-          items.add(makeRun(sub.toString(), current));
+          if (sub.isEmpty) {
+            subStart = shapedPos;
+            return;
+          }
+          final shapedText = sub.toString();
+          String? sourceText;
+          Int32List? sourceMap;
+          if (clusterMap != null) {
+            final a = clusterMap[subStart];
+            final b = clusterMap[shapedPos];
+            final sliced = Int32List(shapedText.length + 1);
+            var identity = true;
+            for (var i = 0; i <= shapedText.length; i++) {
+              sliced[i] = clusterMap[subStart + i] - a;
+              if (sliced[i] != i) identity = false;
+            }
+            if (!identity) {
+              sourceText = text.substring(a, b);
+              sourceMap = sliced;
+            }
+          }
+          items.add(makeRun(shapedText, current, sourceText, sourceMap));
           sub.clear();
+          subStart = shapedPos;
         }
 
         final emojiFont = engine.emojiFont;
         for (final rune in ligated.runes) {
+          final units = rune >= 0x10000 ? 2 : 1;
           // Native color emoji: COLR layers render through the shader.
           if (emojiFont != null && !isZeroWidthCodePoint(rune)) {
             final layers = emojiFont.colrForCodePoint(rune);
@@ -160,8 +226,12 @@ List<wf.InlineItem>? flattenSpan(
                 advanceUnits: emojiFont.advanceOf(String.fromCharCode(rune)),
                 layers: layers,
                 textColor: [color.r, color.g, color.b, color.a],
+                background: background,
+                sourceText: String.fromCharCode(rune),
                 source: s,
               ));
+              shapedPos += units;
+              subStart = shapedPos;
               continue;
             }
           }
@@ -188,6 +258,7 @@ List<wf.InlineItem>? flattenSpan(
             current = target;
           }
           sub.writeCharCode(rune);
+          shapedPos += units;
         }
         flushSub();
       }

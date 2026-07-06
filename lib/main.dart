@@ -13,6 +13,7 @@ import 'src/engine/engine.dart';
 import 'src/font.dart';
 import 'justification_demo.dart';
 import 'pretext_demo.dart';
+import 'variable_font_demo.dart';
 import 'src/renderer.dart';
 import 'src/scene.dart';
 import 'widget_demo.dart';
@@ -42,12 +43,17 @@ class WindfoilApp extends StatelessWidget {
     final page = io.Platform.environment['WINDFOIL_DEMO'];
     return MaterialApp(
       theme: ThemeData(useMaterial3: true),
-      home: switch (page) {
-        'widgets' => const WidgetDemoPage(),
-        'pretext' => const PretextDemoPage(),
-        'justify' => const JustificationDemoPage(),
-        _ => const WindfoilDemoPage(),
-      },
+      home: Builder(
+        builder: (context) => SelectionArea(
+          child: switch (page) {
+            'widgets' => const WidgetDemoPage(),
+            'pretext' => const PretextDemoPage(),
+            'justify' => const JustificationDemoPage(),
+            'vars' => const VariableFontDemoPage(),
+            _ => const WindfoilDemoPage(),
+          },
+        ),
+      ),
     );
   }
 }
@@ -254,6 +260,21 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
     _image = surface.currentImage;
   }
 
+  void _openDemo(Widget page) {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+  }
+
+  Widget _demoButton(String label, Widget page) => TextButton(
+    onPressed: () => _openDemo(page),
+    style: TextButton.styleFrom(
+      foregroundColor: Colors.white,
+      minimumSize: Size.zero,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    ),
+    child: Text(label, style: const TextStyle(fontSize: 13)),
+  );
+
   void _recenter() {
     final scene = _scene;
     if (scene == null) return;
@@ -386,19 +407,55 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
               Positioned(
                 left: 16,
                 top: 16,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.45),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    child: Text(
-                      '$fps fps • ${_fmtZoom(zoom)}x',
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                child: SafeArea(
+                  child: IntrinsicWidth(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.45),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            child: Text(
+                              '$fps fps • ${_fmtZoom(zoom)}x',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.45),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _demoButton('Pretext', const PretextDemoPage()),
+                              _demoButton(
+                                'Justification',
+                                const JustificationDemoPage(),
+                              ),
+                              _demoButton('Widgets', const WidgetDemoPage()),
+                              _demoButton(
+                                'Variable fonts',
+                                const VariableFontDemoPage(),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -407,38 +464,13 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
                 right: 16,
                 top: 16,
                 child: SafeArea(
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const PretextDemoPage(),
-                          ),
-                        ),
-                        child: const Text('Pretext'),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const JustificationDemoPage(),
-                          ),
-                        ),
-                        child: const Text('Justification'),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const WidgetDemoPage(),
-                          ),
-                        ),
-                        child: const Text('Widgets'),
-                      ),
-                      TextButton(
-                        onPressed: _recenter,
-                        child: const Text('Recenter'),
-                      ),
-                    ],
+                  child: TextButton(
+                    onPressed: _recenter,
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      backgroundColor: Colors.black.withValues(alpha: 0.45),
+                    ),
+                    child: const Text('Recenter'),
                   ),
                 ),
               ),

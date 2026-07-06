@@ -274,7 +274,9 @@ class WindfoilFont {
     r.readI16(); // caretSlopeRise
     r.readI16(); // caretSlopeRun
     r.readI16(); // caretOffset
-    for (var i = 0; i < 4; i++) r.readI16();
+    for (var i = 0; i < 4; i++) {
+      r.readI16();
+    }
     r.readI16(); // metricDataFormat
     final numOfLongHorMetrics = r.readU16();
 
@@ -336,8 +338,7 @@ class WindfoilFont {
     _ColrData? colr;
     if (tables.containsKey('COLR') && tables.containsKey('CPAL')) {
       try {
-        colr = _ColrData.parse(
-            data, tableOffset('COLR'), tableOffset('CPAL'));
+        colr = _ColrData.parse(data, tableOffset('COLR'), tableOffset('CPAL'));
       } catch (_) {
         colr = null; // malformed color tables → monochrome glyphs only
       }
@@ -481,14 +482,22 @@ class WindfoilFont {
     sr.readU16(); // rangeShift
 
     final endCodes = <int>[];
-    for (var i = 0; i < segCount; i++) endCodes.add(sr.readU16());
+    for (var i = 0; i < segCount; i++) {
+      endCodes.add(sr.readU16());
+    }
     sr.readU16(); // reservedPad
     final startCodes = <int>[];
-    for (var i = 0; i < segCount; i++) startCodes.add(sr.readU16());
+    for (var i = 0; i < segCount; i++) {
+      startCodes.add(sr.readU16());
+    }
     final idDeltas = <int>[];
-    for (var i = 0; i < segCount; i++) idDeltas.add(sr.readI16());
+    for (var i = 0; i < segCount; i++) {
+      idDeltas.add(sr.readI16());
+    }
     final idRangeOffsets = <int>[];
-    for (var i = 0; i < segCount; i++) idRangeOffsets.add(sr.readU16());
+    for (var i = 0; i < segCount; i++) {
+      idRangeOffsets.add(sr.readU16());
+    }
 
     final glyphIdArrayPos = sr.position;
     final map = <int, int>{};
@@ -692,11 +701,14 @@ class WindfoilFont {
       final coords = _normCoords;
       final gvar = _gvar;
       if (coords != null && gvar != null && pts.xs.isNotEmpty) {
-        final deltas = gvar.deltasFor(id, coords,
-            pointCount: pts.xs.length,
-            xs: pts.xs,
-            ys: pts.ys,
-            endPts: pts.endPts);
+        final deltas = gvar.deltasFor(
+          id,
+          coords,
+          pointCount: pts.xs.length,
+          xs: pts.xs,
+          ys: pts.ys,
+          endPts: pts.endPts,
+        );
         if (deltas != null) {
           for (var i = 0; i < pts.xs.length; i++) {
             pts.xs[i] += deltas.$1[i];
@@ -801,7 +813,10 @@ class WindfoilFont {
     // Find first on-curve point.
     var firstOn = 0;
     for (var i = 0; i < m; i++) {
-      if (eon[i]) { firstOn = i; break; }
+      if (eon[i]) {
+        firstOn = i;
+        break;
+      }
     }
 
     var cx = ex[firstOn];
@@ -814,12 +829,14 @@ class WindfoilFont {
       final idx = (firstOn + j) % m;
       if (eon[idx]) {
         _lineToQuad(cx, cy, ex[idx], ey[idx], out);
-        cx = ex[idx]; cy = ey[idx];
+        cx = ex[idx];
+        cy = ey[idx];
         j++;
       } else {
         final nidx = (firstOn + j + 1) % m;
         out.addAll([cx, cy, ex[idx], ey[idx], ex[nidx], ey[nidx]]);
-        cx = ex[nidx]; cy = ey[nidx];
+        cx = ex[nidx];
+        cy = ey[nidx];
         j += 2;
       }
     }
@@ -829,10 +846,14 @@ class WindfoilFont {
     }
   }
 
-  void _lineToQuad(double x0, double y0, double x1, double y1, List<double> out) {
-    out.addAll([
-      x0, y0, (x0 + x1) / 2, (y0 + y1) / 2, x1, y1,
-    ]);
+  void _lineToQuad(
+    double x0,
+    double y0,
+    double x1,
+    double y1,
+    List<double> out,
+  ) {
+    out.addAll([x0, y0, (x0 + x1) / 2, (y0 + y1) / 2, x1, y1]);
   }
 
   _GlyphPointData? _compositePoints(_ByteReader r, int id, int depth) {
@@ -925,8 +946,16 @@ class _GlyphPointData {
 }
 
 class _ComponentRecord {
-  _ComponentRecord(this.glyphIndex, this.flags, this.arg1, this.arg2, this.a,
-      this.b, this.c, this.d);
+  _ComponentRecord(
+    this.glyphIndex,
+    this.flags,
+    this.arg1,
+    this.arg2,
+    this.a,
+    this.b,
+    this.c,
+    this.d,
+  );
 
   final int glyphIndex;
   final int flags;
@@ -1092,8 +1121,13 @@ class _PairPos1 extends _PairPosSub {
 }
 
 class _PairPos2 extends _PairPosSub {
-  _PairPos2(this.coverage, this.classDef1, this.classDef2, this.class2Count,
-      this.xAdvance);
+  _PairPos2(
+    this.coverage,
+    this.classDef1,
+    this.classDef2,
+    this.class2Count,
+    this.xAdvance,
+  );
 
   final _Coverage coverage;
   final _GposClassDef classDef1;
@@ -1145,8 +1179,14 @@ _PairPosSub? _parsePairPosSubtable(ByteData d, int off) {
   }
   if (fmt == 2) {
     final coverage = _Coverage.parse(d, coverageOff);
-    final classDef1 = _GposClassDef.parse(d, off + d.getUint16(off + 8, Endian.big));
-    final classDef2 = _GposClassDef.parse(d, off + d.getUint16(off + 10, Endian.big));
+    final classDef1 = _GposClassDef.parse(
+      d,
+      off + d.getUint16(off + 8, Endian.big),
+    );
+    final classDef2 = _GposClassDef.parse(
+      d,
+      off + d.getUint16(off + 10, Endian.big),
+    );
     final class1Count = d.getUint16(off + 12, Endian.big);
     final class2Count = d.getUint16(off + 14, Endian.big);
     final recSize = size1 + size2;
@@ -1226,8 +1266,14 @@ class ColrLayer {
 }
 
 class _ColrData {
-  _ColrData(this.baseGids, this.firstLayer, this.layerCounts, this.layerGids,
-      this.layerPalette, this.palette);
+  _ColrData(
+    this.baseGids,
+    this.firstLayer,
+    this.layerCounts,
+    this.layerGids,
+    this.layerPalette,
+    this.palette,
+  );
 
   final Uint16List baseGids; // sorted
   final Uint16List firstLayer;
@@ -1265,8 +1311,7 @@ class _ColrData {
     final numPaletteEntries = d.getUint16(cpal + 2, Endian.big);
     final colorRecordsOff = cpal + d.getUint32(cpal + 8, Endian.big);
     final numPalettes = d.getUint16(cpal + 4, Endian.big);
-    final firstIndex =
-        numPalettes > 0 ? d.getUint16(cpal + 12, Endian.big) : 0;
+    final firstIndex = numPalettes > 0 ? d.getUint16(cpal + 12, Endian.big) : 0;
     final palette = <List<double>>[];
     for (var i = 0; i < numPaletteEntries; i++) {
       final o = colorRecordsOff + (firstIndex + i) * 4;
@@ -1277,7 +1322,13 @@ class _ColrData {
       palette.add([r / 255, g / 255, b / 255, a / 255]);
     }
     return _ColrData(
-        baseGids, firstLayer, layerCounts, layerGids, layerPalette, palette);
+      baseGids,
+      firstLayer,
+      layerCounts,
+      layerGids,
+      layerPalette,
+      palette,
+    );
   }
 
   List<ColrLayer>? layersFor(int gid) {

@@ -25,13 +25,28 @@
 // (still windfoil-rendered), and expandUncoveredSpans delegates characters
 // no registered font covers to inline engine Text (platform fallback).
 //
-// Remaining limits (asserted in debug, degrade gracefully in release):
-// no selection or bidi/RTL shaping.
+// Accessibility and pointer parity: link spans are exposed as individually
+// actionable semantics nodes (assembleSemanticsNode), and hit-testing puts
+// the TextSpan itself on the result so MouseTracker drives
+// mouseCursor/onEnter/onExit and recognizers get their events.
+//
+// Selection: SelectionArea/SelectableRegion is supported via per-fragment
+// Selectables (split at placeholders, like RenderParagraph) working in
+// SOURCE-text offsets — copied content is the pre-shaping characters even
+// when ligatures render as single proxy glyphs. RenderParagraph-style
+// geometry APIs (getPositionForOffset, getOffsetForCaret,
+// getBoxesForSelection, getWordBoundary, getLineBoundary) are exposed on
+// the render object.
+//
+// Remaining limits: no bidi/RTL shaping (selection order is logical ==
+// visual); locale is accepted but not used for shaping; foreground Paint
+// contributes its flat color only (no shaders).
 
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
@@ -72,9 +87,7 @@ class WindfoilRichText extends StatelessWidget {
     this.scaleHint,
     this.filterQuality = FilterQuality.low,
     this.lineBreaker = wf.LineBreaker.greedy,
-  })  : assert(maxLines == null || maxLines > 0),
-        assert(selectionRegistrar == null,
-            'WindfoilRichText does not support text selection (v1)');
+  }) : assert(maxLines == null || maxLines > 0);
 
   final InlineSpan text;
   final TextAlign textAlign;
@@ -89,13 +102,19 @@ class WindfoilRichText extends StatelessWidget {
   /// alignment, ellipsis, and maxLines apply on top of any strategy.
   final wf.LineBreaker lineBreaker;
 
-  /// Accepted for RichText signature compatibility; ignored in v1.
+  /// Accepted for RichText signature compatibility; ignored in v1
+  /// (no locale-specific shaping yet).
   final Locale? locale;
+
+  /// Selection registrar. Unlike RichText, a null registrar falls back to
+  /// the enclosing [SelectionContainer] (Text.rich behavior), so a plain
+  /// WindfoilRichText participates in SelectionArea without extra plumbing.
+  final SelectionRegistrar? selectionRegistrar;
+  final Color? selectionColor;
+
   final StrutStyle? strutStyle;
   final TextWidthBasis textWidthBasis;
   final TextHeightBehavior? textHeightBehavior;
-  final SelectionRegistrar? selectionRegistrar;
-  final Color? selectionColor;
 
   /// Re-render glyphs at the effective ancestor-transform scale so text stays
   /// crisp inside zooming containers.
@@ -109,6 +128,8 @@ class WindfoilRichText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final registrar =
+        selectionRegistrar ?? SelectionContainer.maybeOf(context);
     return ListenableBuilder(
       listenable: Windfoil.instance,
       builder: (context, _) {
@@ -127,7 +148,12 @@ class WindfoilRichText extends StatelessWidget {
           strutStyle: strutStyle,
           textWidthBasis: textWidthBasis,
           textHeightBehavior: textHeightBehavior,
-          selectionColor: selectionColor,
+          selectionRegistrar: registrar,
+          selectionColor: registrar == null
+              ? selectionColor
+              : selectionColor ??
+                  DefaultSelectionStyle.of(context).selectionColor ??
+                  DefaultSelectionStyle.defaultColor,
           transformAdaptive: transformAdaptive,
           scaleHint: scaleHint,
           filterQuality: filterQuality,
@@ -167,8 +193,6 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
     this.filterQuality = FilterQuality.low,
     this.lineBreaker = wf.LineBreaker.greedy,
   })  : assert(maxLines == null || maxLines > 0),
-        assert(selectionRegistrar == null,
-            'WindfoilRichText does not support text selection (v1)'),
         super(
             children:
                 WidgetSpan.extractFromInlineSpan(effectiveText, textScaler));
@@ -185,13 +209,15 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
   final TextScaler textScaler;
   final int? maxLines;
 
-  /// Accepted for RichText signature compatibility; ignored in v1.
+  /// Accepted for RichText signature compatibility; ignored in v1
+  /// (no locale-specific shaping or selection yet).
   final Locale? locale;
+  final SelectionRegistrar? selectionRegistrar;
+  final Color? selectionColor;
+
   final StrutStyle? strutStyle;
   final TextWidthBasis textWidthBasis;
   final TextHeightBehavior? textHeightBehavior;
-  final SelectionRegistrar? selectionRegistrar;
-  final Color? selectionColor;
 
   /// Re-render glyphs at the effective ancestor-transform scale so text stays
   /// crisp inside zooming containers.
@@ -208,7 +234,9 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
   RenderWindfoilParagraph createRenderObject(BuildContext context) {
     return RenderWindfoilParagraph(
       text: effectiveText,
-      semanticsLabel: text.toPlainText(),
+      // Placeholders excluded: object-replacement chars are noise to screen
+      // readers, and WidgetSpan children contribute their own semantics.
+      semanticsLabel: text.toPlainText(includePlaceholders: false),
       textAlign: textAlign,
       textDirection: textDirection ?? Directionality.of(context),
       softWrap: softWrap,
@@ -221,7 +249,12 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
       scaleHint: scaleHint,
       filterQuality: filterQuality,
       lineBreaker: lineBreaker,
-    );
+      strutStyle: strutStyle,
+      textWidthBasis: textWidthBasis,
+      textHeightBehavior: textHeightBehavior,
+    )
+      ..registrar = selectionRegistrar
+      ..selectionColor = selectionColor;
   }
 
   @override
@@ -229,7 +262,7 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
       BuildContext context, RenderWindfoilParagraph renderObject) {
     renderObject
       ..text = effectiveText
-      ..semanticsLabel = text.toPlainText()
+      ..semanticsLabel = text.toPlainText(includePlaceholders: false)
       ..textAlign = textAlign
       ..textDirection = textDirection ?? Directionality.of(context)
       ..softWrap = softWrap
@@ -241,7 +274,12 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
       ..transformAdaptive = transformAdaptive
       ..scaleHint = scaleHint
       ..filterQuality = filterQuality
-      ..lineBreaker = lineBreaker;
+      ..lineBreaker = lineBreaker
+      ..strutStyle = strutStyle
+      ..textWidthBasis = textWidthBasis
+      ..textHeightBehavior = textHeightBehavior
+      ..registrar = selectionRegistrar
+      ..selectionColor = selectionColor;
   }
 
   @override
@@ -271,18 +309,24 @@ class RenderWindfoilParagraph extends RenderBox
     required this._scaleHint,
     required this._filterQuality,
     required this._lineBreaker,
+    this._strutStyle,
+    this._textWidthBasis = TextWidthBasis.parent,
+    this._textHeightBehavior,
   });
 
   final WindfoilEngine _engine = Windfoil.instance;
 
   // ---- layout artifacts ----
   wf.ParagraphLines? _para;
+  List<wf.InlineItem>? _items;
+  wf.ParagraphGeometry? _geometryCache;
+  int _geometryGen = -1;
   List<PlaceholderDimensions> _layoutDims = const [];
   double _boxWidth = 0; // alignment box = reported width
   double _lastWrapWidth = double.infinity;
   double _lastMaxWidth = double.infinity;
   List<wf.HitSpanBox> _hitBoxes = const [];
-  bool _hasRecognizers = false;
+  bool _hasInteractiveSpans = false;
   bool _paraDirty = false; // paint-only span change pending re-break
   int _contentGen = 0; // bumped on any content change (layout or paint-only)
 
@@ -326,6 +370,9 @@ class RenderWindfoilParagraph extends RenderBox
         markNeedsPaint();
       case RenderComparison.layout:
         _text = value;
+        // Fragment ranges derive from the span tree — rebuild them.
+        _disposeFragments();
+        _createFragments();
         _needsRelayout();
     }
   }
@@ -384,6 +431,84 @@ class RenderWindfoilParagraph extends RenderBox
     if (_lineBreaker == value) return;
     _lineBreaker = value;
     _needsRelayout();
+  }
+
+  StrutStyle? _strutStyle;
+  set strutStyle(StrutStyle? value) {
+    if (_strutStyle == value) return;
+    _strutStyle = value;
+    _needsRelayout();
+  }
+
+  TextWidthBasis _textWidthBasis;
+  set textWidthBasis(TextWidthBasis value) {
+    if (_textWidthBasis == value) return;
+    _textWidthBasis = value;
+    _needsRelayout();
+  }
+
+  TextHeightBehavior? _textHeightBehavior;
+  set textHeightBehavior(TextHeightBehavior? value) {
+    if (_textHeightBehavior == value) return;
+    _textHeightBehavior = value;
+    _needsRelayout();
+  }
+
+  // ---- selection ----
+
+  SelectionRegistrar? _registrar;
+  set registrar(SelectionRegistrar? value) {
+    if (identical(value, _registrar)) return;
+    _disposeFragments();
+    _registrar = value;
+    _createFragments();
+  }
+
+  Color? _selectionColor;
+  set selectionColor(Color? value) {
+    if (_selectionColor == value) return;
+    _selectionColor = value;
+    markNeedsPaint();
+  }
+
+  List<_SelectableFragment>? _fragments;
+
+  /// One selectable fragment per placeholder-free stretch of the source
+  /// text, like RenderParagraph — WidgetSpan children register their own
+  /// selectables, and on-screen ordering slots them between fragments.
+  void _createFragments() {
+    final registrar = _registrar;
+    if (registrar == null) return;
+    final ranges = <TextRange>[];
+    var cursor = 0;
+    var fragStart = 0;
+    _text.visitChildren((span) {
+      if (span is TextSpan) {
+        cursor += span.text?.length ?? 0;
+      } else if (span is PlaceholderSpan) {
+        if (cursor > fragStart) {
+          ranges.add(TextRange(start: fragStart, end: cursor));
+        }
+        cursor += 1; // the placeholder's '￼'
+        fragStart = cursor;
+      }
+      return true;
+    });
+    if (cursor > fragStart) {
+      ranges.add(TextRange(start: fragStart, end: cursor));
+    }
+    _fragments = [for (final r in ranges) _SelectableFragment(this, r)];
+    _fragments!.forEach(registrar.add);
+  }
+
+  void _disposeFragments() {
+    final fragments = _fragments;
+    if (fragments == null) return;
+    _fragments = null;
+    for (final f in fragments) {
+      _registrar?.remove(f);
+      f.dispose();
+    }
   }
 
   double _devicePixelRatio;
@@ -474,6 +599,7 @@ class RenderWindfoilParagraph extends RenderBox
 
   @override
   void dispose() {
+    _disposeFragments();
     _healAfterFrame = null;
     if (_timingsHooked) {
       _timingsHooked = false;
@@ -526,7 +652,47 @@ class RenderWindfoilParagraph extends RenderBox
         maxLines: _maxLines,
         addEllipsis: _overflow == TextOverflow.ellipsis,
         lineBreaker: _lineBreaker,
+        strut: _resolveStrut(),
+        applyHeightToFirstAscent:
+            _textHeightBehavior?.applyHeightToFirstAscent ?? true,
+        applyHeightToLastDescent:
+            _textHeightBehavior?.applyHeightToLastDescent ?? true,
+        evenLeading: _textHeightBehavior?.leadingDistribution ==
+            TextLeadingDistribution.even,
       );
+
+  /// StrutStyle → resolved px metrics against the engine's font registry.
+  /// Null while the strut's font isn't registered (strut then simply doesn't
+  /// constrain — layout reruns when fonts land, like text runs do).
+  wf.StrutMetrics? _resolveStrut() {
+    final s = _strutStyle;
+    if (s == null) return null;
+    final font = _engine.resolveFont(
+      s.fontFamily ?? _text.style?.fontFamily,
+      weight: s.fontWeight,
+      fontStyle: s.fontStyle,
+    );
+    if (font == null) return null;
+    final fontSize = _textScaler.scale(s.fontSize ?? _text.style?.fontSize ?? 14.0);
+    final m = font.verticalMetrics;
+    var ascent = m.ascender / font.unitsPerEm * fontSize;
+    var descent = -m.descender / font.unitsPerEm * fontSize;
+    final heightMul = s.height;
+    if (heightMul != null && ascent + descent > 0) {
+      // Height multiplier: the strut extent becomes height*fontSize, split
+      // proportionally to the font's natural ascent/descent (SkParagraph).
+      final f = heightMul * fontSize / (ascent + descent);
+      ascent *= f;
+      descent *= f;
+    }
+    final leading = (s.leading ?? (m.lineGap / font.unitsPerEm)) * fontSize;
+    return wf.StrutMetrics(
+      ascent: ascent,
+      descent: descent,
+      leading: leading,
+      force: s.forceStrutHeight ?? false,
+    );
+  }
 
   wf.ParagraphLines _break(
       wf.PreparedParagraph prepared, double wrapWidth, double maxWidth) {
@@ -602,9 +768,17 @@ class RenderWindfoilParagraph extends RenderBox
     final para = _break(prepared, wrapWidth, constraints.maxWidth);
     // TextPainter's width rule: report the unwrapped intrinsic width clamped
     // to the constraints, and align lines against THAT box (never against an
-    // unbounded constraint).
-    final width = ui.clampDouble(
-        para.maxIntrinsicWidth, constraints.minWidth, constraints.maxWidth);
+    // unbounded constraint). TextWidthBasis.longestLine hugs the laid-out
+    // lines instead.
+    var basis = para.maxIntrinsicWidth;
+    if (_textWidthBasis == TextWidthBasis.longestLine) {
+      basis = 0;
+      for (final l in para.lines) {
+        if (l.width > basis) basis = l.width;
+      }
+    }
+    final width =
+        ui.clampDouble(basis, constraints.minWidth, constraints.maxWidth);
     return (
       para: para,
       runs: runs,
@@ -627,21 +801,28 @@ class RenderWindfoilParagraph extends RenderBox
             ChildLayoutHelper.layoutChild, ChildLayoutHelper.getBaseline);
     final r = _computeLayout(constraints, _layoutDims);
     _para = r.para;
+    _items = r.runs;
     _boxWidth = r.boxWidth;
     _lastWrapWidth = r.wrapWidth;
     _lastMaxWidth = constraints.maxWidth;
     _paraDirty = false;
     _contentGen++;
     size = r.size;
-    bool hasRecognizer(Object? source) =>
-        source is TextSpan && source.recognizer != null;
-    _hasRecognizers = r.runs?.any((i) =>
-            (i is wf.TextRun && hasRecognizer(i.source)) ||
-            (i is wf.EmojiItem && hasRecognizer(i.source))) ??
+    // Recognizers, hover callbacks, and non-default mouse cursors all need
+    // span hit boxes.
+    bool interactive(Object? source) =>
+        source is TextSpan &&
+        (source.recognizer != null ||
+            source.onEnter != null ||
+            source.onExit != null ||
+            source.mouseCursor != MouseCursor.defer);
+    _hasInteractiveSpans = r.runs?.any((i) =>
+            (i is wf.TextRun && interactive(i.source)) ||
+            (i is wf.EmojiItem && interactive(i.source))) ??
         false;
     _hitBoxes = const [];
     final para = r.para;
-    if ((childCount > 0 || _hasRecognizers) && para != null) {
+    if ((childCount > 0 || _hasInteractiveSpans) && para != null) {
       final walk = wf.emitInstances(para, r.boxWidth, _resolvedAlign, null);
       _hitBoxes = walk.hitBoxes;
       if (childCount > 0) {
@@ -650,6 +831,13 @@ class RenderWindfoilParagraph extends RenderBox
             ui.TextBox.fromLTRBD(b.left, b.top, b.left + b.width,
                 b.top + b.height, _textDirection),
         ]);
+      }
+    }
+    // Selection geometry (handle points, rects) shifts with layout.
+    final fragments = _fragments;
+    if (fragments != null) {
+      for (final f in fragments) {
+        f.didChangeParagraphLayout();
       }
     }
   }
@@ -692,41 +880,219 @@ class RenderWindfoilParagraph extends RenderBox
           .para
           ?.firstBaseline;
 
+  // ---- caret / selection geometry (RenderParagraph-compatible) ----
+  //
+  // Offsets are in the paragraph's SOURCE text (effectiveText's plain text:
+  // pre-shaping characters, '￼' per placeholder). Boundaries inside a
+  // rendered ligature interpolate across the cluster's advance.
+
+  wf.ParagraphGeometry? get _geometry {
+    final para = _para;
+    final items = _items;
+    if (para == null || items == null) return null;
+    if (_geometryCache == null || _geometryGen != _contentGen) {
+      _geometryCache = wf.ParagraphGeometry(
+        items: items,
+        para: para,
+        boxWidth: _boxWidth,
+        align: _resolvedAlign,
+      );
+      _geometryGen = _contentGen;
+    }
+    return _geometryCache;
+  }
+
+  /// The source-text position closest to a local point.
+  TextPosition getPositionForOffset(Offset offset) {
+    final g = _geometry;
+    if (g == null) return const TextPosition(offset: 0);
+    final pos = g.positionForOffset(offset.dx, offset.dy);
+    return TextPosition(
+      offset: pos.offset,
+      affinity:
+          pos.upstream ? TextAffinity.upstream : TextAffinity.downstream,
+    );
+  }
+
+  /// Top-left of the caret for `position` (place `caretPrototype` there).
+  Offset getOffsetForCaret(TextPosition position, Rect caretPrototype) {
+    final g = _geometry;
+    if (g == null) return Offset.zero;
+    final c = g.caretAt(position.offset,
+        upstream: position.affinity == TextAffinity.upstream);
+    return Offset(c.x, c.top);
+  }
+
+  double? getFullHeightForCaret(TextPosition position) {
+    final g = _geometry;
+    if (g == null) return null;
+    return g
+        .caretAt(position.offset,
+            upstream: position.affinity == TextAffinity.upstream)
+        .height;
+  }
+
+  List<ui.TextBox> getBoxesForSelection(TextSelection selection) {
+    final g = _geometry;
+    if (g == null || !selection.isValid || selection.isCollapsed) {
+      return const [];
+    }
+    return [
+      for (final b in g.boxesForRange(selection.start, selection.end))
+        ui.TextBox.fromLTRBD(b.left, b.top, b.right, b.bottom, _textDirection),
+    ];
+  }
+
+  TextRange getWordBoundary(TextPosition position) {
+    final g = _geometry;
+    if (g == null) return const TextRange.collapsed(0);
+    final r = wf.wordRangeIn(g.plainText, position.offset);
+    return TextRange(start: r.start, end: r.end);
+  }
+
+  TextRange getLineBoundary(TextPosition position) {
+    final g = _geometry;
+    if (g == null) return const TextRange.collapsed(0);
+    final line = g.caretAt(position.offset,
+            upstream: position.affinity == TextAffinity.upstream)
+        .line;
+    final r = g.lineRange(line);
+    return TextRange(start: r.start, end: r.end);
+  }
+
+  /// The paragraph's source text (the offset space of the APIs above).
+  String get plainText => _geometry?.plainText ?? '';
+
   @override
   bool hitTestSelf(Offset position) => true;
 
   @override
-  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) =>
-      hitTestInlineChildren(result, position);
-
-  @override
-  void handleEvent(PointerEvent event, covariant BoxHitTestEntry entry) {
-    assert(debugHandleEvent(event, entry));
-    if (event is! PointerDownEvent) return;
+  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) {
+    if (hitTestInlineChildren(result, position)) return true;
+    // Like RenderParagraph: put the hit TextSpan itself on the result.
+    // TextSpan is a HitTestTarget (its handleEvent feeds recognizers on
+    // pointer-down) and a MouseTrackerAnnotation (mouseCursor / onEnter /
+    // onExit hover), so both dispatch paths come for free.
     for (final b in _hitBoxes) {
-      if (b.contains(entry.localPosition.dx, entry.localPosition.dy)) {
-        final src = b.source;
-        if (src is TextSpan) {
-          final recognizer = src.recognizer;
-          if (recognizer != null) {
-            recognizer.addPointer(event);
-            return;
-          }
+      if (b.contains(position.dx, position.dy)) {
+        final source = b.source;
+        if (source is HitTestTarget) {
+          result.add(HitTestEntry(source));
+          return true;
         }
       }
     }
+    return false;
   }
 
   @override
   void applyPaintTransform(RenderBox child, Matrix4 transform) =>
       defaultApplyPaintTransform(child, transform);
 
+  /// Child semantics nodes by ordinal, kept stable across assembles so
+  /// assistive tech doesn't see nodes churn (RenderParagraph does the same).
+  Map<int, SemanticsNode>? _semanticsChildCache;
+
   @override
   void describeSemanticsConfiguration(SemanticsConfiguration config) {
     super.describeSemanticsConfiguration(config);
-    config
-      ..label = _semanticsLabel
-      ..textDirection = _textDirection;
+    var hasRecognizer = false;
+    _text.visitChildren((span) {
+      if (span is TextSpan && span.recognizer != null) {
+        hasRecognizer = true;
+        return false;
+      }
+      return true;
+    });
+    if (hasRecognizer) {
+      // Per-span child nodes (assembleSemanticsNode below) so links are
+      // exposed as individually actionable nodes, like RenderParagraph.
+      config
+        ..explicitChildNodes = true
+        ..isSemanticBoundary = true;
+    } else {
+      config
+        ..label = _semanticsLabel
+        ..textDirection = _textDirection;
+    }
+  }
+
+  @override
+  void assembleSemanticsNode(SemanticsNode node, SemanticsConfiguration config,
+      Iterable<SemanticsNode> children) {
+    final newChildren = <SemanticsNode>[];
+    final childNodes = children.toList();
+    final cache = _semanticsChildCache ??= {};
+    var childIndex = 0;
+    var placeholderIndex = 0;
+    var ordinal = 0;
+
+    _text.visitChildren((span) {
+      if (span is PlaceholderSpan) {
+        // WidgetSpan children were tagged with their placeholder index by
+        // WidgetSpan.extractFromInlineSpan; one placeholder may contribute
+        // zero or many nodes.
+        final tag = PlaceholderSpanIndexSemanticsTag(placeholderIndex);
+        while (childIndex < childNodes.length &&
+            childNodes[childIndex].isTagged(tag)) {
+          newChildren.add(childNodes[childIndex]);
+          childIndex++;
+        }
+        placeholderIndex++;
+        return true;
+      }
+      if (span is! TextSpan) return true;
+      final label = span.semanticsLabel ?? span.text ?? '';
+      if (label.isEmpty) return true;
+      // The span's rect: union of its laid-out run boxes. Absent boxes mean
+      // the span isn't rendered (fonts pending / fully truncated) — skip.
+      Rect? rect;
+      for (final b in _hitBoxes) {
+        if (!identical(b.source, span)) continue;
+        final r = Rect.fromLTWH(b.left, b.top, b.width, b.height);
+        rect = rect == null ? r : rect.expandToInclude(r);
+      }
+      if (rect == null) return true;
+
+      final childConfig = SemanticsConfiguration()
+        ..label = label
+        ..textDirection = _textDirection;
+      switch (span.recognizer) {
+        case final TapGestureRecognizer tap when tap.onTap != null:
+          childConfig
+            ..isLink = true
+            ..onTap = tap.onTap;
+        case final DoubleTapGestureRecognizer tap when tap.onDoubleTap != null:
+          childConfig
+            ..isLink = true
+            ..onTap = tap.onDoubleTap;
+        case final LongPressGestureRecognizer lp when lp.onLongPress != null:
+          childConfig.onLongPress = lp.onLongPress;
+        default:
+          break;
+      }
+      final child = cache[ordinal] ??= SemanticsNode();
+      child
+        ..rect = rect
+        ..updateWith(config: childConfig);
+      newChildren.add(child);
+      ordinal++;
+      return true;
+    });
+
+    // Untagged (or unexpectedly ordered) child nodes must never be dropped.
+    while (childIndex < childNodes.length) {
+      newChildren.add(childNodes[childIndex]);
+      childIndex++;
+    }
+
+    node.updateWith(config: config, childrenInInversePaintOrder: newChildren);
+  }
+
+  @override
+  void clearSemantics() {
+    super.clearSemantics();
+    _semanticsChildCache = null;
   }
 
   // ---- paint ----
@@ -735,9 +1101,10 @@ class RenderWindfoilParagraph extends RenderBox
     if (_paraDirty) {
       // Paint-only span change (e.g. colors): re-break at the same widths;
       // metrics are unchanged by construction of RenderComparison.paint.
-      final (_, prepared) = _flattenAndPrepare(_layoutDims);
+      final (runs, prepared) = _flattenAndPrepare(_layoutDims);
       if (prepared != null) {
         _para = _break(prepared, _lastWrapWidth, _lastMaxWidth);
+        _items = runs;
       }
       _paraDirty = false;
     }
@@ -779,13 +1146,65 @@ class RenderWindfoilParagraph extends RenderBox
         needsCompositing,
         offset,
         Offset.zero & size,
-        _paintContents,
+        _overflow == TextOverflow.fade ? _paintFaded : _paintContents,
         oldLayer: _clipHandle.layer,
       );
     } else {
       _clipHandle.layer = null;
       _paintContents(context, offset);
     }
+  }
+
+  /// TextOverflow.fade: paint into a layer, then erase toward the overflow
+  /// edge with a dstIn gradient — horizontal at the reading edge when a line
+  /// is wider than the box, else vertical at the bottom (RenderParagraph's
+  /// rule).
+  void _paintFaded(PaintingContext context, Offset offset) {
+    final canvas = context.canvas;
+    final bounds = offset & size;
+    canvas.saveLayer(bounds, Paint());
+    _paintContents(context, offset);
+    final fade = _fadeExtentPx().clamp(1.0, size.width);
+    var overflowsWidth = false;
+    for (final l in _para?.lines ?? const <wf.LineMetrics>[]) {
+      if (l.width > size.width + 0.01) {
+        overflowsWidth = true;
+        break;
+      }
+    }
+    final Offset from;
+    final Offset to;
+    if (overflowsWidth) {
+      final rtl = _textDirection == TextDirection.rtl;
+      from = Offset(rtl ? bounds.left + fade : bounds.right - fade, 0);
+      to = Offset(rtl ? bounds.left : bounds.right, 0);
+    } else {
+      from = Offset(0, bounds.bottom - fade);
+      to = Offset(0, bounds.bottom);
+    }
+    canvas.drawRect(
+      bounds,
+      Paint()
+        ..blendMode = BlendMode.dstIn
+        ..shader = ui.Gradient.linear(
+          from,
+          to,
+          const [Color(0xFFFFFFFF), Color(0x00FFFFFF)],
+        ),
+    );
+    canvas.restore();
+  }
+
+  /// Fade region size: the root style's ellipsis advance when resolvable
+  /// (what RenderParagraph uses), else one font size.
+  double _fadeExtentPx() {
+    final style = _text.style;
+    final fontSize = _textScaler.scale(style?.fontSize ?? 14.0);
+    final font = _engine.resolveFont(style?.fontFamily);
+    if (font != null && font.hasGlyph('…')) {
+      return font.advanceOf('…') / font.unitsPerEm * fontSize;
+    }
+    return fontSize;
   }
 
   bool _contentsOverflow() {
@@ -864,6 +1283,27 @@ class RenderWindfoilParagraph extends RenderBox
   void _paintContents(PaintingContext context, Offset offset) {
     final emitted = _emitted;
     final ink = emitted?.inkBounds;
+    if (emitted != null && emitted.backgrounds.isNotEmpty) {
+      for (final b in emitted.backgrounds) {
+        context.canvas.drawRect(
+          Rect.fromLTWH(
+              offset.dx + b.left, offset.dy + b.top, b.width, b.height),
+          Paint()
+            ..color = Color.from(
+              alpha: b.color.length > 3 ? b.color[3] : 1.0,
+              red: b.color[0],
+              green: b.color[1],
+              blue: b.color[2],
+            ),
+        );
+      }
+    }
+    final fragments = _fragments;
+    if (fragments != null) {
+      for (final f in fragments) {
+        f.paint(context, offset);
+      }
+    }
     if (emitted != null && emitted.decorations.isNotEmpty) {
       _drawDecorations(context.canvas, offset,
           emitted.decorations.where((d) => !d.aboveText));
@@ -895,15 +1335,55 @@ class RenderWindfoilParagraph extends RenderBox
       }
       final image = _image;
       if (rendered && image != null) {
+        final src = Rect.fromLTWH(
+            0, 0, image.width.toDouble(), image.height.toDouble());
         final dst = Rect.fromLTWH(
           offset.dx + _imageDevRect.left / _imageScale,
           offset.dy + _imageDevRect.top / _imageScale,
           _imageDevRect.width / _imageScale,
           _imageDevRect.height / _imageScale,
         );
+        // TextStyle.shadows: re-blit each shadowed run's slice of the glyph
+        // image, offset, tinted (srcIn), and blurred, painted in list order
+        // under the text like Flutter. The isolation must happen on the
+        // SOURCE rect: blitting the whole image and clipping at the
+        // destination leaks every neighboring glyph inside the clip (the
+        // previous line's descenders, adjacent same-line spans) into the
+        // shadow as smears with hard clip edges — and a blur clip has to be
+        // inflated by the blur bloom, which admits even more of them.
+        for (final sr in emitted.shadowRuns) {
+          final runRect = Rect.fromLTWH(sr.left, sr.top, sr.width, sr.height);
+          final srcRun = Rect.fromLTRB(
+            runRect.left * _imageScale - _imageDevRect.left,
+            runRect.top * _imageScale - _imageDevRect.top,
+            runRect.right * _imageScale - _imageDevRect.left,
+            runRect.bottom * _imageScale - _imageDevRect.top,
+          );
+          for (final s in sr.shadows) {
+            final paint = Paint()
+              ..filterQuality = _filterQuality
+              ..colorFilter = ColorFilter.mode(
+                Color.from(
+                  alpha: s.color.length > 3 ? s.color[3] : 1.0,
+                  red: s.color[0],
+                  green: s.color[1],
+                  blue: s.color[2],
+                ),
+                BlendMode.srcIn,
+              );
+            if (s.blurRadius > 0) {
+              // ui.Shadow.convertRadiusToSigma.
+              final sigma = s.blurRadius * 0.57735 + 0.5;
+              paint.imageFilter = ui.ImageFilter.blur(
+                  sigmaX: sigma, sigmaY: sigma, tileMode: ui.TileMode.decal);
+            }
+            context.canvas.drawImageRect(image, srcRun,
+                runRect.shift(offset + Offset(s.dx, s.dy)), paint);
+          }
+        }
         context.canvas.drawImageRect(
           image,
-          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+          src,
           dst,
           Paint()..filterQuality = _filterQuality,
         );
@@ -1030,5 +1510,398 @@ class RenderWindfoilParagraph extends RenderBox
     properties.add(DoubleProperty('devicePixelRatio', _devicePixelRatio));
     properties.add(FlagProperty('transformAdaptive',
         value: _transformAdaptive, ifTrue: 'adaptive'));
+  }
+}
+
+/// One placeholder-free stretch of a paragraph's source text, exposed to the
+/// selection framework (SelectionArea / SelectableRegion). Mirrors
+/// RenderParagraph's _SelectableFragment: geometry queries go through the
+/// paragraph's ParagraphGeometry in SOURCE offsets, so copied content is the
+/// pre-shaping text even when ligatures render as single proxies.
+class _SelectableFragment with ChangeNotifier implements Selectable {
+  _SelectableFragment(this.paragraph, this.range);
+
+  final RenderWindfoilParagraph paragraph;
+
+  /// Source-text offsets covered by this fragment (no placeholders inside).
+  final TextRange range;
+
+  int? _selectionStart;
+  int? _selectionEnd;
+  LayerLink? _startHandle;
+  LayerLink? _endHandle;
+  SelectionGeometry? _cachedGeometry;
+
+  @override
+  SelectionGeometry get value => _cachedGeometry ??= _computeGeometry();
+
+  /// Called by the paragraph after (re)layout: positions moved.
+  void didChangeParagraphLayout() => _updateGeometry();
+
+  void _updateGeometry() {
+    final next = _computeGeometry();
+    if (next == _cachedGeometry) return;
+    _cachedGeometry = next;
+    notifyListeners();
+    if (paragraph.attached && paragraph.hasSize) paragraph.markNeedsPaint();
+  }
+
+  SelectionGeometry _computeGeometry() {
+    final hasContent = range.end > range.start;
+    final g = paragraph._geometry;
+    final s = _selectionStart;
+    final e = _selectionEnd;
+    if (g == null || s == null || e == null) {
+      return SelectionGeometry(
+          status: SelectionStatus.none, hasContent: hasContent);
+    }
+    final a = math.min(s, e);
+    final b = math.max(s, e);
+    final flipped = e < s;
+    final collapsed = a == b;
+    SelectionPoint point(wf.CaretMetrics c, TextSelectionHandleType type) =>
+        SelectionPoint(
+          localPosition: Offset(c.x, c.top + c.height),
+          lineHeight: c.height,
+          handleType: type,
+        );
+    return SelectionGeometry(
+      status:
+          collapsed ? SelectionStatus.collapsed : SelectionStatus.uncollapsed,
+      hasContent: hasContent,
+      startSelectionPoint: point(
+          g.caretAt(s),
+          collapsed
+              ? TextSelectionHandleType.collapsed
+              : (flipped
+                  ? TextSelectionHandleType.right
+                  : TextSelectionHandleType.left)),
+      endSelectionPoint: point(
+          g.caretAt(e),
+          collapsed
+              ? TextSelectionHandleType.collapsed
+              : (flipped
+                  ? TextSelectionHandleType.left
+                  : TextSelectionHandleType.right)),
+      selectionRects: [
+        for (final r in g.boxesForRange(a, b))
+          Rect.fromLTRB(r.left, r.top, r.right, r.bottom),
+      ],
+    );
+  }
+
+  // ---- event dispatch ----
+
+  @override
+  SelectionResult dispatchSelectionEvent(SelectionEvent event) {
+    final SelectionResult result;
+    if (event is SelectionEdgeUpdateEvent) {
+      result = _updateEdge(event,
+          isEnd: event.type == SelectionEventType.endEdgeUpdate);
+    } else if (event is ClearSelectionEvent) {
+      _selectionStart = null;
+      _selectionEnd = null;
+      result = SelectionResult.none;
+    } else if (event is SelectAllSelectionEvent) {
+      _selectionStart = range.start;
+      _selectionEnd = range.end;
+      result = SelectionResult.none;
+    } else if (event is SelectWordSelectionEvent) {
+      result = _selectBoundaryAt(event.globalPosition, word: true);
+    } else if (event is SelectParagraphSelectionEvent) {
+      result = _selectBoundaryAt(event.globalPosition, word: false);
+    } else if (event is GranularlyExtendSelectionEvent) {
+      result = _granularlyExtend(event);
+    } else if (event is DirectionallyExtendSelectionEvent) {
+      result = _directionallyExtend(event);
+    } else {
+      result = SelectionResult.none;
+    }
+    _updateGeometry();
+    return result;
+  }
+
+  Offset _globalToLocal(Offset global) {
+    final transform = paragraph.getTransformTo(null)..invert();
+    return MatrixUtils.transformPoint(transform, global);
+  }
+
+  Rect get _paragraphRect =>
+      Rect.fromLTWH(0, 0, paragraph.size.width, paragraph.size.height);
+
+  SelectionResult _updateEdge(SelectionEdgeUpdateEvent event,
+      {required bool isEnd}) {
+    final local = _globalToLocal(event.globalPosition);
+    final adjusted = SelectionUtils.adjustDragOffset(_paragraphRect, local,
+        direction: paragraph._textDirection);
+    var offset = paragraph
+        .getPositionForOffset(adjusted)
+        .offset
+        .clamp(range.start, range.end);
+    if (event.granularity == TextGranularity.word) {
+      // Long-press drags select whole words: snap the moving edge outward
+      // from the anchor edge.
+      final g = paragraph._geometry;
+      final anchor = isEnd ? _selectionStart : _selectionEnd;
+      if (g != null && g.plainText.isNotEmpty) {
+        final w = wf.wordRangeIn(
+            g.plainText, offset.clamp(0, g.plainText.length - 1));
+        offset = (anchor == null || offset >= anchor)
+            ? w.end.clamp(range.start, range.end)
+            : w.start.clamp(range.start, range.end);
+      }
+    }
+    if (isEnd) {
+      _selectionEnd = offset;
+    } else {
+      _selectionStart = offset;
+    }
+    return SelectionUtils.getResultBasedOnRect(_paragraphRect, local);
+  }
+
+  SelectionResult _selectBoundaryAt(Offset globalPosition,
+      {required bool word}) {
+    final g = paragraph._geometry;
+    if (g == null || range.end == range.start) return SelectionResult.end;
+    final local = _globalToLocal(globalPosition);
+    var at = g.positionForOffset(local.dx, local.dy).offset;
+    if (at < range.start) at = range.start;
+    final lastIn = math.max(range.start, range.end - 1);
+    if (at > lastIn) at = lastIn;
+    if (word) {
+      final w = wf.wordRangeIn(g.plainText, at);
+      _selectionStart = w.start.clamp(range.start, range.end);
+      _selectionEnd = w.end.clamp(range.start, range.end);
+    } else {
+      // Paragraph: between newlines (clamped into the fragment).
+      final text = g.plainText;
+      var start = at;
+      while (start > range.start && text.codeUnitAt(start - 1) != 0x0A) {
+        start--;
+      }
+      var end = at;
+      while (end < range.end && text.codeUnitAt(end) != 0x0A) {
+        end++;
+      }
+      _selectionStart = start;
+      _selectionEnd = end;
+    }
+    return SelectionResult.end;
+  }
+
+  static int _cpStart(String text, int index) {
+    if (index <= 0) return 0;
+    final unit = text.codeUnitAt(index);
+    return (unit >= 0xDC00 && unit <= 0xDFFF) ? index - 1 : index;
+  }
+
+  static int _stepForward(String text, int offset) {
+    if (offset >= text.length) return offset + 1;
+    final unit = text.codeUnitAt(offset);
+    final pair = unit >= 0xD800 && unit <= 0xDBFF && offset + 1 < text.length;
+    return offset + (pair ? 2 : 1);
+  }
+
+  static int _stepBackward(String text, int offset) {
+    if (offset <= 0) return -1;
+    return _cpStart(text, offset - 1) == offset - 1
+        ? offset - 1
+        : _cpStart(text, offset - 1);
+  }
+
+  SelectionResult _granularlyExtend(GranularlyExtendSelectionEvent event) {
+    final g = paragraph._geometry;
+    if (g == null) return SelectionResult.end;
+    final text = g.plainText;
+    var edge = event.isEnd ? _selectionEnd : _selectionStart;
+    edge ??= event.isEnd ? _selectionStart : _selectionEnd;
+    edge ??= event.forward ? range.start : range.end;
+
+    int next;
+    switch (event.granularity) {
+      case TextGranularity.character:
+        next = event.forward
+            ? _stepForward(text, edge)
+            : _stepBackward(text, edge);
+      case TextGranularity.word:
+        if (event.forward) {
+          final probe = math.min(math.max(edge, 0), math.max(0, text.length - 1));
+          final w = wf.wordRangeIn(text, probe);
+          next = w.end > edge ? w.end : _stepForward(text, edge);
+        } else {
+          final probe = math.max(0, edge - 1);
+          final w = wf.wordRangeIn(text, probe);
+          next = w.start < edge ? w.start : _stepBackward(text, edge);
+        }
+      case TextGranularity.line:
+        final r = g.lineRange(
+            g.caretAt(edge.clamp(range.start, range.end)).line);
+        next = event.forward ? r.end : r.start;
+      case TextGranularity.paragraph:
+      case TextGranularity.document:
+        next = event.forward ? range.end : range.start;
+    }
+
+    final crossedForward = event.forward && next > range.end;
+    final crossedBackward = !event.forward && next < range.start;
+    final clamped = next.clamp(range.start, range.end);
+    if (event.isEnd) {
+      _selectionEnd = clamped;
+    } else {
+      _selectionStart = clamped;
+    }
+    (event.isEnd ? _selectionStart ??= edge : _selectionEnd ??= edge);
+    if (crossedForward) return SelectionResult.next;
+    if (crossedBackward) return SelectionResult.previous;
+    return SelectionResult.end;
+  }
+
+  SelectionResult _directionallyExtend(
+      DirectionallyExtendSelectionEvent event) {
+    final g = paragraph._geometry;
+    if (g == null || g.para.lines.isEmpty) return SelectionResult.end;
+    final localDx = _globalToLocal(Offset(event.dx, 0)).dx;
+    var edge = event.isEnd ? _selectionEnd : _selectionStart;
+    edge ??= event.isEnd ? _selectionStart : _selectionEnd;
+
+    int line;
+    switch (event.direction) {
+      case SelectionExtendDirection.forward:
+        line = g.caretAt(range.start).line;
+      case SelectionExtendDirection.backward:
+        line = g.caretAt(range.end).line;
+      case SelectionExtendDirection.previousLine:
+        line = g.caretAt((edge ?? range.start).clamp(range.start, range.end))
+                .line -
+            1;
+      case SelectionExtendDirection.nextLine:
+        line = g.caretAt((edge ?? range.end).clamp(range.start, range.end))
+                .line +
+            1;
+    }
+
+    SelectionResult result = SelectionResult.end;
+    int offset;
+    if (line < 0) {
+      offset = range.start;
+      result = SelectionResult.previous;
+    } else if (line >= g.para.lines.length) {
+      offset = range.end;
+      result = SelectionResult.next;
+    } else {
+      final mid = (g.lineTop(line) + g.lineBottom(line)) / 2;
+      offset = g
+          .positionForOffset(localDx, mid)
+          .offset
+          .clamp(range.start, range.end);
+      if (offset <= range.start &&
+          event.direction == SelectionExtendDirection.previousLine) {
+        // Still inside, fine — previous only when we ran off the top above.
+      }
+    }
+    if (event.isEnd) {
+      _selectionEnd = offset;
+      _selectionStart ??= edge ?? offset;
+    } else {
+      _selectionStart = offset;
+      _selectionEnd ??= edge ?? offset;
+    }
+    return result;
+  }
+
+  // ---- content ----
+
+  @override
+  SelectedContent? getSelectedContent() {
+    final s = _selectionStart;
+    final e = _selectionEnd;
+    final g = paragraph._geometry;
+    if (s == null || e == null || s == e || g == null) return null;
+    return SelectedContent(
+        plainText: g.plainText.substring(math.min(s, e), math.max(s, e)));
+  }
+
+  @override
+  SelectedContentRange? getSelection() {
+    final s = _selectionStart;
+    final e = _selectionEnd;
+    if (s == null || e == null) return null;
+    return SelectedContentRange(
+        startOffset: s - range.start, endOffset: e - range.start);
+  }
+
+  @override
+  int get contentLength => range.end - range.start;
+
+  // ---- geometry plumbing ----
+
+  @override
+  Matrix4 getTransformTo(RenderObject? ancestor) =>
+      paragraph.getTransformTo(ancestor);
+
+  @override
+  Size get size => paragraph.size;
+
+  @override
+  List<Rect> get boundingBoxes {
+    final g = paragraph._geometry;
+    if (g == null) {
+      return <Rect>[Offset.zero & paragraph.size];
+    }
+    final boxes = g.boxesForRange(range.start, range.end);
+    if (boxes.isEmpty) return <Rect>[Offset.zero & paragraph.size];
+    return [
+      for (final b in boxes) Rect.fromLTRB(b.left, b.top, b.right, b.bottom),
+    ];
+  }
+
+  @override
+  void pushHandleLayers(LayerLink? startHandle, LayerLink? endHandle) {
+    if (identical(startHandle, _startHandle) &&
+        identical(endHandle, _endHandle)) {
+      return;
+    }
+    _startHandle = startHandle;
+    _endHandle = endHandle;
+    if (paragraph.attached && paragraph.hasSize) paragraph.markNeedsPaint();
+  }
+
+  /// Paints the highlight and mobile handle anchors; called from the
+  /// paragraph's paint, under the glyphs.
+  void paint(PaintingContext context, Offset offset) {
+    final s = _selectionStart;
+    final e = _selectionEnd;
+    final g = paragraph._geometry;
+    if (s != null && e != null && s != e && g != null) {
+      final color = paragraph._selectionColor;
+      if (color != null) {
+        final paintObj = Paint()..color = color;
+        for (final r in g.boxesForRange(math.min(s, e), math.max(s, e))) {
+          context.canvas.drawRect(
+            Rect.fromLTRB(offset.dx + r.left, offset.dy + r.top,
+                offset.dx + r.right, offset.dy + r.bottom),
+            paintObj,
+          );
+        }
+      }
+    }
+    final geometry = value;
+    final start = geometry.startSelectionPoint;
+    final end = geometry.endSelectionPoint;
+    if (_startHandle != null && start != null) {
+      context.pushLayer(
+        LeaderLayer(
+            link: _startHandle!, offset: offset + start.localPosition),
+        (PaintingContext c, Offset o) {},
+        Offset.zero,
+      );
+    }
+    if (_endHandle != null && end != null) {
+      context.pushLayer(
+        LeaderLayer(link: _endHandle!, offset: offset + end.localPosition),
+        (PaintingContext c, Offset o) {},
+        Offset.zero,
+      );
+    }
   }
 }

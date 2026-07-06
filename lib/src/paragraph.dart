@@ -36,6 +36,7 @@ import 'text/prepare.dart';
 export 'text/inline_items.dart';
 export 'text/line_breaker.dart';
 export 'text/prepare.dart' show PreparedParagraph, prepareParagraph;
+export 'text/selection.dart';
 
 enum TextAlign { left, center, right, justify }
 
@@ -85,6 +86,26 @@ class SingleFontGlyphTable extends GlyphTable {
       identical(f, font) ? table[ch] : null;
 }
 
+/// Resolved strut, in logical px (mirror of StrutStyle after font
+/// resolution, VM-pure). Seeds every line's metrics as a minimum; with
+/// [force] it replaces the text metrics outright (placeholders still grow
+/// the line).
+class StrutMetrics {
+  const StrutMetrics({
+    required this.ascent,
+    required this.descent,
+    this.leading = 0,
+    this.force = false,
+  });
+
+  final double ascent;
+  final double descent;
+
+  /// Extra leading, split half above / half below the strut.
+  final double leading;
+  final bool force;
+}
+
 class ParagraphStyle {
   const ParagraphStyle({
     this.maxWidth = double.infinity,
@@ -93,6 +114,10 @@ class ParagraphStyle {
     this.maxLines,
     this.addEllipsis = false,
     this.lineBreaker = LineBreaker.greedy,
+    this.strut,
+    this.applyHeightToFirstAscent = true,
+    this.applyHeightToLastDescent = true,
+    this.evenLeading = false,
   });
 
   final double maxWidth;
@@ -106,6 +131,21 @@ class ParagraphStyle {
   /// ellipsis, maxLines, and justify space distribution are applied on top
   /// of whatever breaks the strategy returns.
   final LineBreaker lineBreaker;
+
+  /// Minimum (or, with StrutMetrics.force, exact) line metrics.
+  final StrutMetrics? strut;
+
+  /// TextHeightBehavior: false → the first line's ascent ignores runs'
+  /// height multipliers (uses natural font ascent).
+  final bool applyHeightToFirstAscent;
+
+  /// TextHeightBehavior: false → the last line's descent ignores runs'
+  /// height multipliers.
+  final bool applyHeightToLastDescent;
+
+  /// Paragraph default for TextRun.evenLeading (TextHeightBehavior.
+  /// leadingDistribution == even).
+  final bool evenLeading;
 }
 
 sealed class LineItem {
@@ -123,16 +163,27 @@ class LineRun extends LineItem {
     required this.width,
     this.wordSpacingPx = 0,
     this.decoration,
+    this.background,
+    this.shadows,
     this.source,
+    this.itemIndex = -1,
+    this.startInItem = -1,
   });
 
-  LineRun.fromRun(TextRun run, this.text, this.width)
-      : font = run.font,
+  LineRun.fromRun(
+    TextRun run,
+    this.text,
+    this.width, {
+    this.itemIndex = -1,
+    this.startInItem = -1,
+  })  : font = run.font,
         fontSizePx = run.fontSizePx,
         color = run.color,
         letterSpacingPx = run.letterSpacingPx,
         wordSpacingPx = run.wordSpacingPx,
         decoration = run.decoration,
+        background = run.background,
+        shadows = run.shadows,
         source = run.source,
         fillRule = run.fillRule;
 
@@ -143,8 +194,18 @@ class LineRun extends LineItem {
   final double letterSpacingPx;
   final double wordSpacingPx;
   final InlineDecoration? decoration;
+  final List<double>? background;
+  final List<InlineShadow>? shadows;
   final Object? source;
   final FillRule fillRule;
+
+  /// Source InlineItem index + UTF-16 offset of this slice within that
+  /// item's (shaped) text; -1 for synthesized runs (ellipsis, the visible
+  /// soft-hyphen '-' maps to the SHY unit instead). Selection geometry maps
+  /// pen positions back to source offsets through these.
+  final int itemIndex;
+  final int startInItem;
+
   @override
   double width;
 
@@ -152,18 +213,20 @@ class LineRun extends LineItem {
 }
 
 class LineEmoji extends LineItem {
-  LineEmoji(this.item);
+  LineEmoji(this.item, {this.itemIndex = -1});
 
   final EmojiItem item;
+  final int itemIndex;
 
   @override
   double get width => item.width;
 }
 
 class LinePlaceholder extends LineItem {
-  LinePlaceholder(this.item);
+  LinePlaceholder(this.item, {this.itemIndex = -1});
 
   final PlaceholderItem item;
+  final int itemIndex;
 
   @override
   double get width => item.width;
@@ -175,6 +238,12 @@ class LineMetrics {
   double ascent = 0;
   double descent = 0;
   double height = 0; // baseline-to-baseline advance to the next line
+
+  /// Ascent/descent as they would be WITHOUT any TextStyle.height
+  /// multipliers (strut and placeholders included) — what
+  /// TextHeightBehavior's apply-height trimming reverts to.
+  double naturalAscent = 0;
+  double naturalDescent = 0;
 
   /// True when the line ends at a '\n' or the end of the paragraph (justify
   /// never stretches these).
@@ -225,22 +294,33 @@ double _ascenderPx(WindfoilFont font, double sizePx) =>
 double _descenderPx(WindfoilFont font, double sizePx) =>
     -font.verticalMetrics.descender / font.unitsPerEm * sizePx;
 
-void _growMetrics(LineMetrics l, TextRun run, double styleLineHeight) {
+void _growMetrics(LineMetrics l, TextRun run, ParagraphStyle style) {
   var a = _ascenderPx(run.font, run.fontSizePx);
   var d = _descenderPx(run.font, run.fontSizePx);
-  var h = _lineHeightPx(run.font, run.fontSizePx, styleLineHeight);
+  var h = _lineHeightPx(run.font, run.fontSizePx, style.lineHeight);
+  final na = a; // natural metrics: what apply-height trimming reverts to
+  final nd = d;
   final hm = run.height;
   if (hm != null && a + d > 0) {
     // TextStyle.height semantics: the run's line extent becomes
-    // height*fontSize, split proportionally to the natural ascent/descent.
-    final target = hm * run.fontSizePx * styleLineHeight;
-    final f = target / (a + d);
-    a *= f;
-    d *= f;
+    // height*fontSize, split proportionally to the natural ascent/descent —
+    // or evenly, with TextLeadingDistribution.even.
+    final target = hm * run.fontSizePx * style.lineHeight;
+    if (run.evenLeading ?? style.evenLeading) {
+      final extra = (target - (a + d)) / 2;
+      a += extra;
+      d += extra;
+    } else {
+      final f = target / (a + d);
+      a *= f;
+      d *= f;
+    }
     h = target;
   }
   if (a > l.ascent) l.ascent = a;
   if (d > l.descent) l.descent = d;
+  if (na > l.naturalAscent) l.naturalAscent = na;
+  if (nd > l.naturalDescent) l.naturalDescent = nd;
   if (h > l.height) l.height = h;
 }
 
@@ -249,12 +329,16 @@ void _growPlaceholderMetrics(LineMetrics l, PlaceholderItem p) {
     case InlinePlaceholderAlignment.baseline:
       final a = p.baselineOffset ?? p.height;
       if (a > l.ascent) l.ascent = a;
+      if (a > l.naturalAscent) l.naturalAscent = a;
       final d = p.height - a;
       if (d > l.descent) l.descent = d;
+      if (d > l.naturalDescent) l.naturalDescent = d;
     case InlinePlaceholderAlignment.aboveBaseline:
       if (p.height > l.ascent) l.ascent = p.height;
+      if (p.height > l.naturalAscent) l.naturalAscent = p.height;
     case InlinePlaceholderAlignment.belowBaseline:
       if (p.height > l.descent) l.descent = p.height;
+      if (p.height > l.naturalDescent) l.naturalDescent = p.height;
     case InlinePlaceholderAlignment.top:
     case InlinePlaceholderAlignment.middle:
     case InlinePlaceholderAlignment.bottom:
@@ -262,21 +346,58 @@ void _growPlaceholderMetrics(LineMetrics l, PlaceholderItem p) {
   }
 }
 
+/// A fresh line, seeded with the strut's minimum metrics when one is set.
+LineMetrics _newLineMetrics(ParagraphStyle style) {
+  final line = LineMetrics();
+  final strut = style.strut;
+  if (strut != null && !strut.force) {
+    line.ascent = line.naturalAscent = strut.ascent + strut.leading / 2;
+    line.descent = line.naturalDescent = strut.descent + strut.leading / 2;
+    line.height = line.ascent + line.descent;
+  }
+  return line;
+}
+
 /// Resolve deferred box-relative placeholders and the final line box height.
-void _commitLineMetrics(LineMetrics line) {
+/// A forcing strut replaces the text metrics first (box-relative
+/// placeholders can still grow the box, matching SkParagraph).
+void _commitLineMetrics(LineMetrics line, [StrutMetrics? strut]) {
+  if (strut != null && strut.force) {
+    line.ascent = line.naturalAscent = strut.ascent + strut.leading / 2;
+    line.descent = line.naturalDescent = strut.descent + strut.leading / 2;
+    line.height = 0; // rebuilt from the final box below
+  }
   // Box-relative placeholders grow the line box only if they don't fit.
+  // Their growth is not height-multiplier-driven, so it counts as natural
+  // too (apply-height trimming must never cut into placeholder space).
   for (final p in line._deferred) {
     final box = line.ascent + line.descent;
     switch (p.alignment) {
       case InlinePlaceholderAlignment.top:
-        if (p.height > box) line.descent = p.height - line.ascent;
+        if (p.height > box) {
+          line.descent = p.height - line.ascent;
+          if (line.descent > line.naturalDescent) {
+            line.naturalDescent = line.descent;
+          }
+        }
       case InlinePlaceholderAlignment.bottom:
-        if (p.height > box) line.ascent = p.height - line.descent;
+        if (p.height > box) {
+          line.ascent = p.height - line.descent;
+          if (line.ascent > line.naturalAscent) {
+            line.naturalAscent = line.ascent;
+          }
+        }
       case InlinePlaceholderAlignment.middle:
         final extra = p.height - box;
         if (extra > 0) {
           line.ascent += extra / 2;
           line.descent += extra / 2;
+          if (line.ascent > line.naturalAscent) {
+            line.naturalAscent = line.ascent;
+          }
+          if (line.descent > line.naturalDescent) {
+            line.naturalDescent = line.descent;
+          }
         }
       default:
         break;
@@ -344,14 +465,35 @@ ParagraphLines layoutPreparedLines(
   if (lines.isEmpty) {
     // Empty paragraph: one empty line styled by the last run, like an empty
     // TextField line.
-    final line = LineMetrics()..hardBreak = true;
+    final line = _newLineMetrics(style)..hardBreak = true;
     final styleItem = prepared.fallbackStyleItem;
     if (styleItem >= 0 && prepared.items[styleItem] is TextRun) {
       _growMetrics(
-          line, prepared.items[styleItem] as TextRun, style.lineHeight);
+          line, prepared.items[styleItem] as TextRun, style);
     }
-    _commitLineMetrics(line);
+    _commitLineMetrics(line, style.strut);
     lines.add(line);
+  }
+
+  // TextHeightBehavior: revert height-multiplier growth on the paragraph's
+  // outer edges (the line advance shrinks by the same amount).
+  if (!style.applyHeightToFirstAscent) {
+    final first = lines.first;
+    if (first.naturalAscent < first.ascent) {
+      final delta = first.ascent - first.naturalAscent;
+      first.ascent = first.naturalAscent;
+      final box = first.ascent + first.descent;
+      first.height = (first.height - delta) > box ? first.height - delta : box;
+    }
+  }
+  if (!style.applyHeightToLastDescent) {
+    final last = lines.last;
+    if (last.naturalDescent < last.descent) {
+      final delta = last.descent - last.naturalDescent;
+      last.descent = last.naturalDescent;
+      final box = last.ascent + last.descent;
+      last.height = (last.height - delta) > box ? last.height - delta : box;
+    }
   }
 
   var ellipsized = false;
@@ -380,7 +522,7 @@ LineMetrics _materializeLine(
   LineRange range,
   ParagraphStyle style,
 ) {
-  final line = LineMetrics()..hardBreak = range.hardBreak;
+  final line = _newLineMetrics(style)..hardBreak = range.hardBreak;
   final lb = p.lineBreak;
 
   // The end cursor is exclusive; endGrapheme > 0 means the end segment is
@@ -403,15 +545,18 @@ LineMetrics _materializeLine(
     if (pieces.first.isAtomic) {
       final item = p.items[pieces.first.itemIndex];
       if (item is EmojiItem) {
-        line.items.add(LineEmoji(item));
+        line.items.add(LineEmoji(item, itemIndex: pieces.first.itemIndex));
         final a = _ascenderPx(item.font, item.fontSizePx);
         final d = _descenderPx(item.font, item.fontSizePx);
         final h = _lineHeightPx(item.font, item.fontSizePx, style.lineHeight);
         if (a > line.ascent) line.ascent = a;
         if (d > line.descent) line.descent = d;
+        if (a > line.naturalAscent) line.naturalAscent = a;
+        if (d > line.naturalDescent) line.naturalDescent = d;
         if (h > line.height) line.height = h;
       } else if (item is PlaceholderItem) {
-        line.items.add(LinePlaceholder(item));
+        line.items
+            .add(LinePlaceholder(item, itemIndex: pieces.first.itemIndex));
         _growPlaceholderMetrics(line, item);
       }
       continue;
@@ -424,9 +569,11 @@ LineMetrics _materializeLine(
         final count = piece.endInSegment - piece.startInSegment;
         final per = count > 0 ? piece.width / count : 0.0;
         for (var k = 0; k < count; k++) {
-          line.items.add(LineRun.fromRun(run, ch, per));
+          line.items.add(LineRun.fromRun(run, ch, per,
+              itemIndex: piece.itemIndex,
+              startInItem: piece.startInItem + k));
         }
-        _growMetrics(line, run, style.lineHeight);
+        _growMetrics(line, run, style);
       }
       continue;
     }
@@ -445,8 +592,10 @@ LineMetrics _materializeLine(
           run,
           segText.substring(piece.startInSegment, piece.endInSegment),
           piece.width,
+          itemIndex: piece.itemIndex,
+          startInItem: piece.startInItem,
         ));
-        _growMetrics(line, run, style.lineHeight);
+        _growMetrics(line, run, style);
       }
       continue;
     }
@@ -470,9 +619,11 @@ LineMetrics _materializeLine(
         end++;
       }
       final run = p.items[piece.itemIndex] as TextRun;
-      line.items.add(
-          LineRun.fromRun(run, segText.substring(startOff, offs[end - 1]), w));
-      _growMetrics(line, run, style.lineHeight);
+      line.items.add(LineRun.fromRun(
+          run, segText.substring(startOff, offs[end - 1]), w,
+          itemIndex: piece.itemIndex,
+          startInItem: piece.startInItem + (startOff - piece.startInSegment)));
+      _growMetrics(line, run, style);
       g = end;
     }
   }
@@ -486,9 +637,13 @@ LineMetrics _materializeLine(
         lb.kinds[shySeg] == SegmentBreakKind.softHyphen) {
       final pieces = p.segmentPieces[shySeg];
       if (pieces.isNotEmpty) {
+        // The visible '-' stands in for the SHY character: same item slice,
+        // so selection maps it onto the U+00AD unit.
         final run = p.items[pieces.first.itemIndex] as TextRun;
-        line.items.add(LineRun.fromRun(run, '-', lb.widths[shySeg]));
-        _growMetrics(line, run, style.lineHeight);
+        line.items.add(LineRun.fromRun(run, '-', lb.widths[shySeg],
+            itemIndex: pieces.first.itemIndex,
+            startInItem: pieces.first.startInItem));
+        _growMetrics(line, run, style);
       }
     }
   }
@@ -498,11 +653,11 @@ LineMetrics _materializeLine(
     // that owns the break.
     final styleItem = lb.chunks[range.chunkIndex].styleItemIndex;
     if (styleItem >= 0 && p.items[styleItem] is TextRun) {
-      _growMetrics(line, p.items[styleItem] as TextRun, style.lineHeight);
+      _growMetrics(line, p.items[styleItem] as TextRun, style);
     }
   }
 
-  _commitLineMetrics(line);
+  _commitLineMetrics(line, style.strut);
 
   // Trailing spaces don't count toward the alignment box. The walker width
   // includes them (they hang), so strip trailing space items here — this
@@ -557,6 +712,8 @@ void _ellipsize(LineMetrics line, double maxWidth) {
     width: _measure(font, ell, lastRun.fontSizePx, lastRun.letterSpacingPx),
     wordSpacingPx: lastRun.wordSpacingPx,
     decoration: lastRun.decoration,
+    background: lastRun.background,
+    shadows: lastRun.shadows,
   );
 
   double total() =>
@@ -622,6 +779,42 @@ class HitSpanBox {
       x >= left && x < left + width && y >= top && y < top + height;
 }
 
+/// A run's highlight rect (TextStyle.backgroundColor), full line-box height
+/// like Flutter's selection boxes.
+class BackgroundRect {
+  const BackgroundRect({
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+    required this.color,
+  });
+
+  final double left;
+  final double top;
+  final double width;
+  final double height;
+  final List<double> color; // RGBA 0..1
+}
+
+/// A shadowed run's rect + its shadows: the painter re-blits the glyph
+/// image clipped to this rect, per shadow, under the text.
+class ShadowRun {
+  const ShadowRun({
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+    required this.shadows,
+  });
+
+  final double left;
+  final double top;
+  final double width;
+  final double height;
+  final List<InlineShadow> shadows;
+}
+
 class ParagraphInstances {
   ParagraphInstances({
     required this.instances,
@@ -629,6 +822,8 @@ class ParagraphInstances {
     this.placeholders = const [],
     this.decorations = const [],
     this.hitBoxes = const [],
+    this.backgrounds = const [],
+    this.shadowRuns = const [],
   });
 
   final Float32List instances;
@@ -646,7 +841,59 @@ class ParagraphInstances {
   /// Per-run rects tagged with their source spans (recognizer hit-testing).
   final List<HitSpanBox> hitBoxes;
 
+  /// Highlight rects painted under everything, in text order.
+  final List<BackgroundRect> backgrounds;
+
+  /// Shadowed run rects painted under the glyphs, in text order.
+  final List<ShadowRun> shadowRuns;
+
   int get glyphCount => instances.length ~/ floatsPerInstance;
+}
+
+/// Horizontal pen origin of a line within the alignment box (shared by the
+/// paint walk and selection geometry so they can never drift).
+double lineAlignOffset(TextAlign align, double boxWidth, LineMetrics line) =>
+    switch (align) {
+      TextAlign.left || TextAlign.justify => 0.0,
+      TextAlign.center => (boxWidth - line.width) * 0.5,
+      TextAlign.right => boxWidth - line.width,
+    };
+
+/// Justify stretch: extra px per stretchable (non-trailing) space on `line`,
+/// and how many spaces stretch. (0, 0) for non-justified/hard-broken lines
+/// and the ellipsized last line.
+(double, int) justifySpaceExtra(
+  ParagraphLines para,
+  LineMetrics line,
+  double boxWidth,
+  TextAlign align,
+) {
+  if (align != TextAlign.justify ||
+      line.hardBreak ||
+      (para.ellipsized && identical(line, para.lines.last))) {
+    return (0, 0);
+  }
+  var end = line.items.length;
+  while (end > 0) {
+    final it = line.items[end - 1];
+    if (it is LineRun && it.isSpace) {
+      end--;
+    } else {
+      break;
+    }
+  }
+  var stretchable = 0;
+  for (var i = 0; i < end; i++) {
+    final it = line.items[i];
+    if (it is LineRun && it.isSpace) stretchable++;
+  }
+  final extra = boxWidth - line.width;
+  // May be negative: optimal-fit breakers (Knuth-Plass) compress spaces
+  // slightly below natural width, like TeX's shrinkability.
+  if (stretchable > 0 && extra != 0 && extra.isFinite) {
+    return (extra / stretchable, stretchable);
+  }
+  return (0, 0);
 }
 
 /// Walk the pen across `para`'s lines. With a [table], emits glyph instances;
@@ -664,44 +911,16 @@ ParagraphInstances emitInstances(
   final placeholders = <PlaceholderBox>[];
   final decorations = <DecorationLine>[];
   final hitBoxes = <HitSpanBox>[];
+  final backgrounds = <BackgroundRect>[];
+  final shadowRuns = <ShadowRun>[];
   var y = top;
   var inkMinX = double.infinity, inkMinY = double.infinity;
   var inkMaxX = -double.infinity, inkMaxY = -double.infinity;
 
   for (final line in para.lines) {
-    final offset = switch (align) {
-      TextAlign.left || TextAlign.justify => 0.0,
-      TextAlign.center => (boxWidth - line.width) * 0.5,
-      TextAlign.right => boxWidth - line.width,
-    };
-
-    // Justify: distribute the leftover width across non-trailing spaces.
-    // Hard-broken and ellipsized last lines keep their natural spacing.
-    var spaceExtra = 0.0;
-    var stretchable = 0;
-    if (align == TextAlign.justify &&
-        !line.hardBreak &&
-        !(para.ellipsized && identical(line, para.lines.last))) {
-      var end = line.items.length;
-      while (end > 0) {
-        final it = line.items[end - 1];
-        if (it is LineRun && it.isSpace) {
-          end--;
-        } else {
-          break;
-        }
-      }
-      for (var i = 0; i < end; i++) {
-        final it = line.items[i];
-        if (it is LineRun && it.isSpace) stretchable++;
-      }
-      final extra = boxWidth - line.width;
-      // May be negative: optimal-fit breakers (Knuth-Plass) compress spaces
-      // slightly below natural width, like TeX's shrinkability.
-      if (stretchable > 0 && extra != 0 && extra.isFinite) {
-        spaceExtra = extra / stretchable;
-      }
-    }
+    final offset = lineAlignOffset(align, boxWidth, line);
+    final (spaceExtra, stretchable) =
+        justifySpaceExtra(para, line, boxWidth, align);
 
     final baselineY = y + line.ascent;
     var pen = x + offset;
@@ -732,6 +951,16 @@ ParagraphInstances emitInstances(
           if (gx1 > inkMaxX) inkMaxX = gx1;
           if (gy0 < inkMinY) inkMinY = gy0;
           if (gy1 > inkMaxY) inkMaxY = gy1;
+        }
+        final bg = e.background;
+        if (bg != null && e.width > 0) {
+          backgrounds.add(BackgroundRect(
+            left: pen,
+            top: y,
+            width: e.width,
+            height: line.ascent + line.descent,
+            color: bg,
+          ));
         }
         final src = e.source;
         if (src != null && e.width > 0) {
@@ -813,6 +1042,27 @@ ParagraphInstances emitInstances(
         stretched++;
       }
 
+      final bg = run.background;
+      if (bg != null && pen > penStart) {
+        backgrounds.add(BackgroundRect(
+          left: penStart,
+          top: y,
+          width: pen - penStart,
+          height: line.ascent + line.descent,
+          color: bg,
+        ));
+      }
+      final runShadows = run.shadows;
+      if (runShadows != null && runShadows.isNotEmpty && pen > penStart) {
+        shadowRuns.add(ShadowRun(
+          left: penStart,
+          top: y,
+          width: pen - penStart,
+          height: line.ascent + line.descent,
+          shadows: runShadows,
+        ));
+      }
+
       final src = run.source;
       if (src != null && pen > penStart) {
         hitBoxes.add(HitSpanBox(
@@ -870,6 +1120,8 @@ ParagraphInstances emitInstances(
     placeholders: placeholders,
     decorations: decorations,
     hitBoxes: hitBoxes,
+    backgrounds: backgrounds,
+    shadowRuns: shadowRuns,
   );
 }
 
