@@ -343,9 +343,6 @@ class RenderWindfoilParagraph extends RenderBox
   // frame at least that new has finished rasterizing (see _renderSurface).
   final List<(gpu.GpuImageSurface?, ui.Image, int)> _retired = [];
   bool _timingsHooked = false;
-  // Frame number of the newest size-changed render; a heal re-render runs
-  // once the engine reports that frame rasterized (see _renderSurface).
-  int? _healAfterFrame;
   (int, double)? _cacheKey; // (contentGen, renderScale)
 
   /// Process-wide count of offscreen GPU renders (_renderSurface successes),
@@ -591,11 +588,10 @@ class RenderWindfoilParagraph extends RenderBox
     super.detach();
   }
 
-  /// Timings callback: frames reported here have finished rasterizing.
-  /// Two consumers: images superseded by a frame that old can no longer be
-  /// referenced by the compositor and are safe to dispose, and once the
-  /// newest size-changed frame has rasterized the resize churn has drained,
-  /// so the owed heal re-render can run (see _renderSurface).
+  /// Timings callback: frames reported here have finished rasterizing, so a
+  /// superseded surface image that only a frame at least this old still
+  /// referenced can no longer be on-screen and is safe to dispose (see
+  /// _renderSurface). Unhooks itself once the retired queue drains.
   void _onFrameTimings(List<ui.FrameTiming> timings) {
     var latest = -1;
     for (final t in timings) {
@@ -604,15 +600,7 @@ class RenderWindfoilParagraph extends RenderBox
     while (_retired.isNotEmpty && _retired.first.$3 <= latest) {
       _retired.removeAt(0).$2.dispose();
     }
-    final healAt = _healAfterFrame;
-    if (healAt != null && latest >= healAt) {
-      _healAfterFrame = null;
-      if (attached && hasSize) {
-        _cacheKey = null; // force a fresh present, not a cached-image repaint
-        markNeedsPaint();
-      }
-    }
-    if (_retired.isEmpty && _healAfterFrame == null && _timingsHooked) {
+    if (_retired.isEmpty && _timingsHooked) {
       _timingsHooked = false;
       SchedulerBinding.instance.removeTimingsCallback(_onFrameTimings);
     }
@@ -627,7 +615,6 @@ class RenderWindfoilParagraph extends RenderBox
   @override
   void dispose() {
     _disposeFragments();
-    _healAfterFrame = null;
     if (_timingsHooked) {
       _timingsHooked = false;
       SchedulerBinding.instance.removeTimingsCallback(_onFrameTimings);
@@ -1490,7 +1477,7 @@ class RenderWindfoilParagraph extends RenderBox
     // disposing it early lets the pool recycle its texture under a frame
     // that is still on its way to the screen — which paints as text
     // stretched to the wrong scale. The retired pair is disposed by
-    // _flushRetired once the engine reports a frame at least as new as
+    // _onFrameTimings once the engine reports a frame at least as new as
     // this one has finished rasterizing.
     final prevImage = _image;
     if (prevImage != null) {
@@ -1506,20 +1493,6 @@ class RenderWindfoilParagraph extends RenderBox
     _imageScale = scale;
     _imageDevRect = Rect.fromLTWH(
         devLeft.toDouble(), devTop.toDouble(), w.toDouble(), h.toDouble());
-    if (sizeChanged && prevImage != null) {
-      // The engine can composite a resize-churn frame from a stale-size
-      // texture (flutter_gpu master; happens regardless of image lifetime),
-      // and the last churn frame then sticks on screen wrong. A clean render
-      // on a drained pipeline always heals it, so owe one follow-up render
-      // gated on this frame's raster being reported: during churn every size
-      // change re-arms this with a newer frame, so it converges to a single
-      // heal once the engine has actually caught up — no wall-clock timers.
-      // A brand-new paragraph (prevImage == null) has no presented image in
-      // flight, so the hazard cannot exist and the heal render is skipped —
-      // this halves first-paint GPU submissions across the board.
-      _healAfterFrame = ui.PlatformDispatcher.instance.frameData.frameNumber;
-      _hookTimings();
-    }
     return true;
   }
 
