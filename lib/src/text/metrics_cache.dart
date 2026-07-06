@@ -40,6 +40,12 @@ class SegmentMetrics {
 
 final _cache = Expando<Map<String, SegmentMetrics>>('windfoilSegmentMetrics');
 
+/// Benchmark hook (pretext's clearCache() analog): drop `font`'s cached
+/// segment metrics so the next prepare re-measures cold.
+void debugClearSegmentMetricsFor(WindfoilFont font) {
+  _cache[font] = null;
+}
+
 SegmentMetrics segmentMetricsOf(WindfoilFont font, String text) {
   final byText = _cache[font] ??= <String, SegmentMetrics>{};
   return byText[text] ??= _measure(font, text);
@@ -48,14 +54,14 @@ SegmentMetrics segmentMetricsOf(WindfoilFont font, String text) {
 SegmentMetrics _measure(WindfoilFont font, String text) {
   var w = 0.0;
   var rendered = 0;
-  String? prev;
+  var prevGid = -1;
   for (final rune in text.runes) {
     if (isZeroWidthCodePoint(rune)) continue;
-    final ch = String.fromCharCode(rune);
-    if (prev != null) w += font.kerningOf(prev, ch);
-    w += font.advanceOf(ch);
+    final gid = font.glyphIdForRune(rune) ?? 0; // cmap miss → .notdef tofu
+    if (prevGid >= 0) w += font.kerningOfGlyphIds(prevGid, gid);
+    w += font.advanceOfGlyphId(gid);
     rendered++;
-    prev = ch;
+    prevGid = gid;
   }
   return SegmentMetrics(w, rendered);
 }
@@ -69,16 +75,16 @@ void ensureGraphemeMetrics(WindfoilFont font, String text, SegmentMetrics m) {
   final runeCounts = <int>[];
   var w = 0.0;
   var offset = 0;
-  String? prev;
+  var prevGid = -1;
   for (final grapheme in text.characters) {
     var rendered = 0;
     for (final rune in grapheme.runes) {
       if (isZeroWidthCodePoint(rune)) continue;
-      final ch = String.fromCharCode(rune);
-      if (prev != null) w += font.kerningOf(prev, ch);
-      w += font.advanceOf(ch);
+      final gid = font.glyphIdForRune(rune) ?? 0;
+      if (prevGid >= 0) w += font.kerningOfGlyphIds(prevGid, gid);
+      w += font.advanceOfGlyphId(gid);
       rendered++;
-      prev = ch;
+      prevGid = gid;
     }
     offset += grapheme.length;
     cum.add(w);

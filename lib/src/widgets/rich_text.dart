@@ -234,9 +234,11 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
   RenderWindfoilParagraph createRenderObject(BuildContext context) {
     return RenderWindfoilParagraph(
       text: effectiveText,
-      // Placeholders excluded: object-replacement chars are noise to screen
-      // readers, and WidgetSpan children contribute their own semantics.
-      semanticsLabel: text.toPlainText(includePlaceholders: false),
+      // The label is derived lazily from this span (placeholders excluded:
+      // object-replacement chars are noise to screen readers, and WidgetSpan
+      // children contribute their own semantics) — computing plain text on
+      // every rebuild would tax paint-only updates.
+      semanticsSource: text,
       textAlign: textAlign,
       textDirection: textDirection ?? Directionality.of(context),
       softWrap: softWrap,
@@ -262,7 +264,7 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
       BuildContext context, RenderWindfoilParagraph renderObject) {
     renderObject
       ..text = effectiveText
-      ..semanticsLabel = text.toPlainText(includePlaceholders: false)
+      ..semanticsSource = text
       ..textAlign = textAlign
       ..textDirection = textDirection ?? Directionality.of(context)
       ..softWrap = softWrap
@@ -297,7 +299,7 @@ class RenderWindfoilParagraph extends RenderBox
         RenderInlineChildrenContainerDefaults {
   RenderWindfoilParagraph({
     required this._text,
-    required this._semanticsLabel,
+    required this._semanticsSource,
     required this._textAlign,
     required this._textDirection,
     required this._softWrap,
@@ -345,6 +347,20 @@ class RenderWindfoilParagraph extends RenderBox
   // once the engine reports that frame rasterized (see _renderSurface).
   int? _healAfterFrame;
   (int, double)? _cacheKey; // (contentGen, renderScale)
+
+  /// Process-wide count of offscreen GPU renders (_renderSurface successes),
+  /// including resize-heal and zoom-step re-renders. Benchmarks read deltas
+  /// to attribute re-render churn; reset between scenarios.
+  static int debugSurfaceRenders = 0;
+
+  /// Bytes of the emitted per-glyph instance buffer (64 per glyph).
+  int get debugInstanceBytes => _emitted?.instances.lengthInBytes ?? 0;
+
+  /// Device-pixel size of the cached glyph image, null before first render.
+  (int, int)? get debugImageSize {
+    final img = _image;
+    return img == null ? null : (img.width, img.height);
+  }
   Rect _imageDevRect = Rect.zero;
   double _imageScale = 1;
   final LayerHandle<ClipRectLayer> _clipHandle = LayerHandle<ClipRectLayer>();
@@ -377,10 +393,21 @@ class RenderWindfoilParagraph extends RenderBox
     }
   }
 
-  String _semanticsLabel;
-  set semanticsLabel(String value) {
-    if (_semanticsLabel == value) return;
-    _semanticsLabel = value;
+  /// The original span the semantics label derives from. Plain text is
+  /// computed lazily on first semantics query and cached — apps without
+  /// active semantics never pay for it.
+  InlineSpan _semanticsSource;
+  String? _semanticsLabelCache;
+  String get _semanticsLabel => _semanticsLabelCache ??=
+      _semanticsSource.toPlainText(includePlaceholders: false);
+  set semanticsSource(InlineSpan value) {
+    if (identical(_semanticsSource, value)) return;
+    _semanticsSource = value;
+    final cached = _semanticsLabelCache;
+    if (cached == null) return; // never queried — stay lazy
+    final next = value.toPlainText(includePlaceholders: false);
+    if (next == cached) return;
+    _semanticsLabelCache = next;
     markNeedsSemanticsUpdate();
   }
 
@@ -1456,6 +1483,7 @@ class RenderWindfoilParagraph extends RenderBox
       debugPrint('windfoil: paragraph render failed: $e');
       return false;
     }
+    debugSurfaceRenders++;
     // Retire the previous surface+image instead of disposing them now:
     // frames that reference the old image may still be waiting to
     // rasterize (paint outpaces raster during live window resizes), and
@@ -1478,7 +1506,7 @@ class RenderWindfoilParagraph extends RenderBox
     _imageScale = scale;
     _imageDevRect = Rect.fromLTWH(
         devLeft.toDouble(), devTop.toDouble(), w.toDouble(), h.toDouble());
-    if (sizeChanged) {
+    if (sizeChanged && prevImage != null) {
       // The engine can composite a resize-churn frame from a stale-size
       // texture (flutter_gpu master; happens regardless of image lifetime),
       // and the last churn frame then sticks on screen wrong. A clean render
@@ -1486,6 +1514,9 @@ class RenderWindfoilParagraph extends RenderBox
       // gated on this frame's raster being reported: during churn every size
       // change re-arms this with a newer frame, so it converges to a single
       // heal once the engine has actually caught up — no wall-clock timers.
+      // A brand-new paragraph (prevImage == null) has no presented image in
+      // flight, so the hazard cannot exist and the heal render is skipped —
+      // this halves first-paint GPU submissions across the board.
       _healAfterFrame = ui.PlatformDispatcher.instance.frameData.frameNumber;
       _hookTimings();
     }

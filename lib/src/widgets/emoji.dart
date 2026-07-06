@@ -40,6 +40,18 @@ class EmojiSegment {
 }
 
 bool containsEmoji(String text) {
+  // Fast reject on raw code units: every emoji-relevant scalar (keycap mark
+  // U+20E3, the BMP pictographic blocks, VS16, and SMP surrogates) is
+  // ≥ U+20E3, so ordinary Latin text bails here without a rune list.
+  var possible = false;
+  for (var i = 0; i < text.length; i++) {
+    if (text.codeUnitAt(i) >= _keycapMark) {
+      possible = true;
+      break;
+    }
+  }
+  if (!possible) return false;
+
   final cps = text.runes.toList();
   for (var i = 0; i < cps.length; i++) {
     if (_isEmojiBase(cps[i]) || _isRegional(cps[i])) {
@@ -221,25 +233,38 @@ InlineSpan expandUncoveredSpans(InlineSpan root, WindfoilEngine engine) {
       style?.fontFamily,
       ...?style?.fontFamilyFallback,
     ];
-    final coverage = <int, bool>{};
+    // Coverage verdicts live on the engine, keyed by the resolution context
+    // (family list + weight/style) and invalidated on font churn — repeated
+    // builds of the same content skip per-char font resolution entirely.
+    final coverage = engine.coverageCacheFor(
+        '${style?.fontFamily}|${style?.fontFamilyFallback?.join(',')}'
+        '|${style?.fontWeight?.value}|${style?.fontStyle?.index}');
     bool covered(int cp) {
       if (isZeroWidthCodePoint(cp) || cp == 0x20 || cp == 0x0A) return true;
-      if (engine.nativeEmojiCovers(cp)) return true;
       return coverage.putIfAbsent(
         cp,
         () =>
+            engine.nativeEmojiCovers(cp) ||
             engine.resolveFontForChar(
-              String.fromCharCode(cp),
-              families: families,
-              weight: style?.fontWeight,
-              fontStyle: style?.fontStyle,
-            ) !=
-            null,
+                  String.fromCharCode(cp),
+                  families: families,
+                  weight: style?.fontWeight,
+                  fontStyle: style?.fontStyle,
+                ) !=
+                null,
       );
     }
 
-    final cps = text?.runes.toList() ?? const <int>[];
-    if (text == null || cps.every(covered)) {
+    var allCovered = true;
+    if (text != null) {
+      for (final r in text.runes) {
+        if (!covered(r)) {
+          allCovered = false;
+          break;
+        }
+      }
+    }
+    if (text == null || allCovered) {
       if (!changed) return s;
       return TextSpan(
         text: text,
@@ -249,6 +274,7 @@ InlineSpan expandUncoveredSpans(InlineSpan root, WindfoilEngine engine) {
         semanticsLabel: s.semanticsLabel,
       );
     }
+    final cps = text.runes.toList();
 
     changed = true;
     final pieces = <InlineSpan>[];

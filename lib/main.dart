@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 import 'package:flutter_gpu/gpu.dart' as gpu;
 
+import 'bench/bench_page.dart';
 import 'src/engine/engine.dart';
 import 'src/font.dart';
 import 'justification_demo.dart';
@@ -30,7 +31,10 @@ gpu.PixelFormat windfoilSurfaceFormat(gpu.GpuContext context) {
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  Windfoil.initialize(); // warm fonts + pipeline for the widget demo
+  // Bench mode measures cold init itself; everything else warms eagerly.
+  if (io.Platform.environment['WINDFOIL_DEMO'] != 'bench') {
+    Windfoil.initialize(); // warm fonts + pipeline for the widget demo
+  }
   runApp(const WindfoilApp());
 }
 
@@ -40,20 +44,22 @@ class WindfoilApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Dev hook (demo only): open a specific demo page directly.
-    final page = io.Platform.environment['WINDFOIL_DEMO'];
+    final page =
+        io.Platform.environment['WINDFOIL_DEMO'] ??
+        const String.fromEnvironment('WINDFOIL_DEMO');
     return MaterialApp(
       theme: ThemeData(useMaterial3: true),
-      home: Builder(
-        builder: (context) => SelectionArea(
-          child: switch (page) {
-            'widgets' => const WidgetDemoPage(),
-            'pretext' => const PretextDemoPage(),
-            'justify' => const JustificationDemoPage(),
-            'vars' => const VariableFontDemoPage(),
-            _ => const WindfoilDemoPage(),
-          },
-        ),
-      ),
+      // Bench mode stays OUTSIDE SelectionArea: WindfoilRichText registers
+      // per-fragment selectables while bare RichText does not, so a
+      // selection scope would tax only the windfoil passes.
+      home: switch (page) {
+        'bench' => const BenchPage(),
+        'widgets' => const WidgetDemoPage(),
+        'pretext' => const PretextDemoPage(),
+        'justify' => const JustificationDemoPage(),
+        'vars' => const VariableFontDemoPage(),
+        _ => const WindfoilDemoPage(),
+      },
     );
   }
 }
@@ -306,7 +312,11 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        _dpr = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 2.0);
+        // Render the glyph surface at the panel's native pixel density. The
+        // shader computes analytic AA at surface resolution, so under-resolving
+        // here (the old 2.0 cap) forced a nearest-neighbor upscale on >2x phones
+        // that re-aliased every edge. The 4.0 ceiling just bounds worst-case fill.
+        _dpr = MediaQuery.devicePixelRatioOf(context);
         _size = Size(constraints.maxWidth, constraints.maxHeight);
         if (_scene != null && _view.z == 1 && _cam.z == 1) {
           WidgetsBinding.instance.addPostFrameCallback((_) => _recenter());
@@ -495,7 +505,7 @@ class _GpuImagePainter extends CustomPainter {
       img,
       Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
       Rect.fromLTWH(0, 0, size.width, size.height),
-      Paint(),
+      Paint()..filterQuality = FilterQuality.none,
     );
   }
 

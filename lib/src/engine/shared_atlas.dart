@@ -15,8 +15,11 @@ import '../paragraph.dart';
 class SharedGlyphAtlas implements GlyphTable {
   final _curves = <double>[];
   final _rows = <int>[];
-  final _table = <(WindfoilFont, String), GlyphTableEntry>{};
-  final _blank = <(WindfoilFont, String)>{}; // cmap misses / empty outlines
+  // Keyed by code point (not char string): the emit pen walk and banding
+  // resolve runes directly. Distinct from _gidTable despite the same key
+  // shape — one is rune-keyed, the other glyph-id-keyed.
+  final _table = <(WindfoilFont, int), GlyphTableEntry>{};
+  final _blank = <(WindfoilFont, int)>{}; // cmap misses / empty outlines
   final _gidTable = <(WindfoilFont, int), GlyphTableEntry>{};
   final _blankGids = <(WindfoilFont, int)>{};
   var _generation = 0;
@@ -26,24 +29,34 @@ class SharedGlyphAtlas implements GlyphTable {
 
   bool get isEmpty => _rows.isEmpty;
 
+  /// Curve floats appended so far. GPU-side bytes are count*4 (RGBA32F
+  /// upload); the CPU-side `List<double>` holds 8 bytes per element.
+  int get curveFloatCount => _curves.length;
+
+  /// Row entries appended so far (uploaded as Uint32, 4 bytes each).
+  int get rowCount => _rows.length;
+
+  /// Banded glyph entries across both keying schemes (char and glyph-id).
+  int get glyphEntryCount => _table.length + _gidTable.length;
+
   /// Make sure every unique character of `text` has a banded entry for
   /// `font`. Returns true when new glyph data was appended.
   bool ensureGlyphs(WindfoilFont font, String text) {
     var grew = false;
-    for (final rune in text.runes.toSet()) {
+    for (final rune in text.runes) {
       if (isZeroWidthCodePoint(rune)) continue;
-      final ch = String.fromCharCode(rune);
-      if (ch == ' ' || ch == '\n') continue;
-      final key = (font, ch);
+      if (rune == 0x20 || rune == 0x0A) continue;
+      final key = (font, rune);
       if (_table.containsKey(key) || _blank.contains(key)) continue;
-      final g = font.glyphQuads(ch);
+      // cmap miss → .notdef (glyph 0) tofu, matching advanceOf.
+      final g = font.glyphOutlineById(font.glyphIdForRune(rune) ?? 0);
       if (g == null) {
         _blank.add(key);
         continue;
       }
       final pieces = <double>[];
       for (var i = 0; i < g.quads.length; i += 6) {
-        pushMonotonePieces(g.quads.sublist(i, i + 6), pieces);
+        pushMonotonePiecesAt(g.quads, i, pieces);
       }
       final header = bandPieces(pieces, g.bbox[1], g.bbox[3], _curves, _rows);
       _table[key] = GlyphTableEntry(
@@ -71,7 +84,7 @@ class SharedGlyphAtlas implements GlyphTable {
     }
     final pieces = <double>[];
     for (var i = 0; i < g.quads.length; i += 6) {
-      pushMonotonePieces(g.quads.sublist(i, i + 6), pieces);
+      pushMonotonePiecesAt(g.quads, i, pieces);
     }
     final header = bandPieces(pieces, g.bbox[1], g.bbox[3], _curves, _rows);
     _gidTable[key] = GlyphTableEntry(
@@ -87,11 +100,21 @@ class SharedGlyphAtlas implements GlyphTable {
   }
 
   @override
-  GlyphTableEntry? lookup(WindfoilFont font, String ch) => _table[(font, ch)];
+  GlyphTableEntry? lookup(WindfoilFont font, String ch) =>
+      ch.isEmpty ? null : _table[(font, ch.runes.first)];
+
+  @override
+  GlyphTableEntry? lookupRune(WindfoilFont font, int rune) =>
+      _table[(font, rune)];
 
   @override
   GlyphTableEntry? lookupGlyphId(WindfoilFont font, int glyphId) =>
       _gidTable[(font, glyphId)];
+
+  /// Live append-only backing stores, exposed for the incremental texture
+  /// uploader (do not mutate).
+  List<double> get curves => _curves;
+  List<int> get rows => _rows;
 
   Float32List curvesData() => Float32List.fromList(_curves);
 

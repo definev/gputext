@@ -76,10 +76,31 @@ class WindfoilEngine extends ChangeNotifier {
   /// Bumped whenever font resolution could change (register/fallbacks).
   int get fontGeneration => _fontGeneration;
 
-  @visibleForTesting
+  // Cache observability (tests and the benchmark harness read these).
   int debugLayoutCacheHits = 0;
-  @visibleForTesting
   int debugLayoutCacheMisses = 0;
+
+  int get debugLayoutCacheLength => _layoutCache.length;
+
+  void debugResetCacheCounters() {
+    debugLayoutCacheHits = 0;
+    debugLayoutCacheMisses = 0;
+  }
+
+  // Per-(resolution-context, code point) coverage verdicts for the widget
+  // layer's uncovered-character expansion; dropped on any font churn.
+  final _coverageCache = <String, Map<int, bool>>{};
+  var _coverageGeneration = -1;
+
+  /// Shared coverage-verdict map for one resolution context (family list +
+  /// weight/style signature); valid until [fontGeneration] changes.
+  Map<int, bool> coverageCacheFor(String contextKey) {
+    if (_coverageGeneration != _fontGeneration) {
+      _coverageCache.clear();
+      _coverageGeneration = _fontGeneration;
+    }
+    return _coverageCache.putIfAbsent(contextKey, () => <int, bool>{});
+  }
 
   (List<wf.InlineItem>, wf.PreparedParagraph)? layoutCacheGet(Object key) {
     final v = _layoutCache.remove(key);
@@ -270,16 +291,15 @@ class WindfoilEngine extends ChangeNotifier {
     return best?.font;
   }
 
-  /// Current curve/row textures, re-uploaded when the atlas has grown.
-  /// Null until the atlas has any glyph data.
+  AtlasTextureUploader? _uploader;
+
+  /// Current curve/row textures, incrementally re-uploaded when the atlas
+  /// has grown. Null until the atlas has any glyph data.
   AtlasTextures? prepareTextures() {
     if (atlas.isEmpty) return null;
     if (_texturesGeneration != atlas.generation) {
-      _textures = uploadAtlasTextures(
-        gpu.gpuContext,
-        atlas.curvesData(),
-        atlas.rowsData(),
-      );
+      _uploader ??= AtlasTextureUploader();
+      _textures = _uploader!.upload(gpu.gpuContext, atlas.curves, atlas.rows);
       _texturesGeneration = atlas.generation;
     }
     return _textures;
@@ -293,6 +313,7 @@ class WindfoilEngine extends ChangeNotifier {
     _pipeline = null;
     _textures = null;
     _texturesGeneration = -1;
+    _uploader = null;
     _unsupported = false;
   }
 }

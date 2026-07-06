@@ -49,3 +49,5 @@ app.*.map.json
 
 # FVM Version Cache
 .fvm/
+# Benchmark run outputs (baselines are committed, results are not)
+/benchmark/results/

@@ -69,6 +69,11 @@ abstract class GlyphTable {
 
   GlyphTableEntry? lookup(WindfoilFont font, String ch);
 
+  /// Rune-based twin of [lookup] — the emit pen walk resolves code points
+  /// directly. Default delegates for tables that only key by string.
+  GlyphTableEntry? lookupRune(WindfoilFont font, int rune) =>
+      lookup(font, String.fromCharCode(rune));
+
   /// Lookup by raw glyph ID (COLR emoji layers); tables that only key by
   /// character return null.
   GlyphTableEntry? lookupGlyphId(WindfoilFont font, int glyphId) => null;
@@ -924,7 +929,7 @@ ParagraphInstances emitInstances(
 
     final baselineY = y + line.ascent;
     var pen = x + offset;
-    String? prev;
+    var prevGid = -1; // -1 → no kerning context (line/run-boundary reset)
     WindfoilFont? prevFont;
     var stretched = 0;
 
@@ -973,7 +978,7 @@ ParagraphInstances emitInstances(
           ));
         }
         pen += e.width;
-        prev = null;
+        prevGid = -1;
         prevFont = null;
         continue;
       }
@@ -999,7 +1004,7 @@ ParagraphInstances emitInstances(
           height: h,
         ));
         pen += p.width;
-        prev = null;
+        prevGid = -1;
         prevFont = null;
         continue;
       }
@@ -1011,11 +1016,12 @@ ParagraphInstances emitInstances(
       final penStart = pen;
       for (final rune in run.text.runes) {
         if (isZeroWidthCodePoint(rune)) continue;
-        final ch = String.fromCharCode(rune);
-        if (prev != null && identical(prevFont, run.font)) {
-          pen += run.font.kerningOf(prev, ch) * scale;
+        // cmap miss → .notdef (glyph 0), matching advanceOf's tofu rule.
+        final gid = run.font.glyphIdForRune(rune) ?? 0;
+        if (prevGid >= 0 && identical(prevFont, run.font)) {
+          pen += run.font.kerningOfGlyphIds(prevGid, gid) * scale;
         }
-        final gl = table?.lookup(run.font, ch);
+        final gl = table?.lookupRune(run.font, rune);
         if (gl != null) {
           out.addAll([
             pen, baselineY, scale, rule,
@@ -1032,9 +1038,9 @@ ParagraphInstances emitInstances(
           if (gy0 < inkMinY) inkMinY = gy0;
           if (gy1 > inkMaxY) inkMaxY = gy1;
         }
-        pen += run.font.advanceOf(ch) * scale + run.letterSpacingPx;
-        if (ch == ' ') pen += run.wordSpacingPx;
-        prev = ch;
+        pen += run.font.advanceOfGlyphId(gid) * scale + run.letterSpacingPx;
+        if (rune == 0x20) pen += run.wordSpacingPx;
+        prevGid = gid;
         prevFont = run.font;
       }
       if (run.isSpace && stretched < stretchable) {

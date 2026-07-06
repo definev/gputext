@@ -21,9 +21,19 @@ List<double> subdivide(List<double> q, double t) {
   ];
 }
 
-void pushMonotonePieces(List<double> q, List<double> out) {
-  final tx = extremumT(q[0], q[2], q[4]);
-  final ty = extremumT(q[1], q[3], q[5]);
+void pushMonotonePieces(List<double> q, List<double> out) =>
+    pushMonotonePiecesAt(q, 0, out);
+
+/// Allocation-free splitter reading one quad at `src[base..base+5]` — the
+/// banding hot path calls this per quad per glyph, so no sublists, no
+/// intermediate lists, scalar subdivision only.
+void pushMonotonePiecesAt(List<double> src, int base, List<double> out) {
+  var x0 = src[base], y0 = src[base + 1];
+  var cx = src[base + 2], cy = src[base + 3];
+  final x1 = src[base + 4], y1 = src[base + 5];
+
+  final tx = extremumT(x0, cx, x1);
+  final ty = extremumT(y0, cy, y1);
   double? first;
   double? second;
   if (tx != null && ty != null) {
@@ -33,17 +43,37 @@ void pushMonotonePieces(List<double> q, List<double> out) {
     first = tx ?? ty;
   }
 
-  var rest = List<double>.from(q);
   var consumed = 0.0;
-  for (final t in [first, second]) {
+  for (var pass = 0; pass < 2; pass++) {
+    final t = pass == 0 ? first : second;
     if (t == null) continue;
     final denom = 1 - consumed;
     final local = denom > 0 ? (t - consumed) / denom : 1.0;
     if (!(local > 0 && local < 1)) continue;
-    final parts = subdivide(rest, local);
-    out.addAll(parts.sublist(0, 6));
-    rest = parts.sublist(6);
+    final x01 = x0 + (cx - x0) * local;
+    final y01 = y0 + (cy - y0) * local;
+    final x12 = cx + (x1 - cx) * local;
+    final y12 = cy + (y1 - cy) * local;
+    final xm = x01 + (x12 - x01) * local;
+    final ym = y01 + (y12 - y01) * local;
+    out
+      ..add(x0)
+      ..add(y0)
+      ..add(x01)
+      ..add(y01)
+      ..add(xm)
+      ..add(ym);
+    x0 = xm;
+    y0 = ym;
+    cx = x12;
+    cy = y12;
     consumed = t;
   }
-  out.addAll(rest);
+  out
+    ..add(x0)
+    ..add(y0)
+    ..add(cx)
+    ..add(cy)
+    ..add(x1)
+    ..add(y1);
 }

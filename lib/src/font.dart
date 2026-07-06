@@ -595,7 +595,12 @@ class WindfoilFont {
 
   int? _glyphId(String ch) {
     if (ch.isEmpty) return null;
-    final cp = ch.runes.first;
+    return glyphIdForRune(ch.runes.first);
+  }
+
+  /// Rune-based twin of the string lookups: per-char pen walks, metrics,
+  /// and banding resolve each code point once with no string round-trips.
+  int? glyphIdForRune(int cp) {
     final mapped = _cmap[cp];
     if (mapped != null) return mapped;
     // Plane-15 PUA proxies minted by applyFeatures for substituted glyphs.
@@ -606,6 +611,8 @@ class WindfoilFont {
   }
 
   bool hasGlyph(String ch) => _glyphId(ch) != null;
+
+  bool hasGlyphForRune(int cp) => glyphIdForRune(cp) != null;
 
   /// True when the font carries COLR v0 layered color glyphs.
   bool get hasColorGlyphs => _colr != null;
@@ -634,6 +641,12 @@ class WindfoilFont {
     final left = _glyphId(a);
     final right = _glyphId(b);
     if (left == null || right == null) return 0;
+    return kerningOfGlyphIds(left, right);
+  }
+
+  /// Kern adjustment between two already-resolved glyph ids (same-font pen
+  /// walks carry the previous id forward instead of re-resolving strings).
+  double kerningOfGlyphIds(int left, int right) {
     // When a GPOS 'kern' feature exists it supersedes the legacy kern table.
     if (_gposKern.isNotEmpty) {
       for (final sub in _gposKern) {

@@ -239,12 +239,11 @@ List<wf.InlineItem>? flattenSpan(
           if (!isZeroWidthCodePoint(rune) &&
               rune != 0x20 &&
               rune != 0x0A) {
-            final ch = String.fromCharCode(rune);
-            if (primary.hasGlyph(ch)) {
+            if (primary.hasGlyphForRune(rune)) {
               target = primary;
             } else {
               final fallback = engine.resolveFontForChar(
-                ch,
+                String.fromCharCode(rune),
                 families: families,
                 weight: style?.fontWeight,
                 fontStyle: style?.fontStyle,
