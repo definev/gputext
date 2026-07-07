@@ -50,20 +50,20 @@ List<double> makeSizes(int n) {
   );
 }
 
-class WindfoilScene {
-  WindfoilScene({
+class GPUTextScene {
+  GPUTextScene({
     required this.font,
     required this.atlas,
     required this.instances,
     required this.bounds,
   });
 
-  final WindfoilFont font;
+  final GPUFont font;
   final GlyphAtlas atlas;
   final Float32List instances;
   final LayoutBounds bounds;
 
-  static WindfoilScene build(WindfoilFont font) {
+  static GPUTextScene build(GPUFont font) {
     final lines = makeLines(nLines);
     final sizes = makeSizes(nLines);
     final text = lines.join();
@@ -119,7 +119,7 @@ class WindfoilScene {
       [
         TextRun(
           text:
-              'Centered paragraph demonstrating font metrics, kerning, and word wrap in the windfoil renderer.',
+              'Centered paragraph demonstrating font metrics, kerning, and word wrap in the gputext renderer.',
           font: font,
           fontSizePx: 20,
           color: ink,
@@ -147,7 +147,7 @@ class WindfoilScene {
     );
 
     final merged = mergeLayouts([ladder, leftPara, centerPara, rightPara]);
-    return WindfoilScene(
+    return GPUTextScene(
       font: font,
       atlas: atlas,
       instances: Float32List.fromList(merged.instances),

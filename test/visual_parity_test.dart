@@ -8,19 +8,19 @@ import 'dart:io';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/engine/engine.dart';
-import 'package:windfoil_flutter/src/font.dart';
-import 'package:windfoil_flutter/src/paragraph.dart' as wf;
-import 'package:windfoil_flutter/src/widgets/span_flattener.dart';
-import 'package:windfoil_flutter/windfoil_flutter.dart' show WindfoilRichText;
+import 'package:gputext/src/engine/engine.dart';
+import 'package:gputext/src/font.dart';
+import 'package:gputext/src/paragraph.dart' as wf;
+import 'package:gputext/src/widgets/span_flattener.dart';
+import 'package:gputext/gputext.dart' show GPURichText;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  late WindfoilFont font;
-  final engine = Windfoil.instance;
+  late GPUFont font;
+  final engine = GPUText.instance;
 
   setUpAll(() {
-    font = WindfoilFont.parse(
+    font = GPUFont.parse(
         File('assets/Lato-Regular.ttf').readAsBytesSync());
     engine.registerFont('Lato', font);
   });
@@ -230,14 +230,14 @@ void main() {
     testWidgets('strutStyle grows the widget height', (tester) async {
       const span = TextSpan(
           text: 'x', style: TextStyle(fontFamily: 'Lato', fontSize: 16));
-      await tester.pumpWidget(host(const WindfoilRichText(text: span)));
-      final plain = tester.getSize(find.byType(WindfoilRichText));
+      await tester.pumpWidget(host(const GPURichText(text: span)));
+      final plain = tester.getSize(find.byType(GPURichText));
 
-      await tester.pumpWidget(host(const WindfoilRichText(
+      await tester.pumpWidget(host(const GPURichText(
         text: span,
         strutStyle: StrutStyle(fontFamily: 'Lato', fontSize: 40),
       )));
-      final strutted = tester.getSize(find.byType(WindfoilRichText));
+      final strutted = tester.getSize(find.byType(GPURichText));
       expect(strutted.height, greaterThan(plain.height));
       expect(strutted.height,
           closeTo(naturalAscent(40) + naturalDescent(40), 0.5));
@@ -247,15 +247,15 @@ void main() {
       const span = TextSpan(
           text: 'x',
           style: TextStyle(fontFamily: 'Lato', fontSize: 16, height: 3));
-      await tester.pumpWidget(host(const WindfoilRichText(text: span)));
-      final normal = tester.getSize(find.byType(WindfoilRichText));
+      await tester.pumpWidget(host(const GPURichText(text: span)));
+      final normal = tester.getSize(find.byType(GPURichText));
 
-      await tester.pumpWidget(host(const WindfoilRichText(
+      await tester.pumpWidget(host(const GPURichText(
         text: span,
         textHeightBehavior:
             TextHeightBehavior(applyHeightToFirstAscent: false),
       )));
-      final trimmed = tester.getSize(find.byType(WindfoilRichText));
+      final trimmed = tester.getSize(find.byType(GPURichText));
       expect(trimmed.height, lessThan(normal.height));
     });
 
@@ -267,15 +267,15 @@ void main() {
       // to the same tight width.
       Widget sized(TextWidthBasis basis) => host(ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 60),
-            child: WindfoilRichText(text: span, textWidthBasis: basis),
+            child: GPURichText(text: span, textWidthBasis: basis),
           ));
 
       await tester.pumpWidget(sized(TextWidthBasis.parent));
-      final parent = tester.getSize(find.byType(WindfoilRichText));
+      final parent = tester.getSize(find.byType(GPURichText));
       expect(parent.width, 60); // intrinsic width exceeds the box → clamp
 
       await tester.pumpWidget(sized(TextWidthBasis.longestLine));
-      final longest = tester.getSize(find.byType(WindfoilRichText));
+      final longest = tester.getSize(find.byType(GPURichText));
       expect(longest.width, lessThan(60)); // wrapped lines are narrower
     });
 
@@ -284,7 +284,7 @@ void main() {
       await tester.pumpWidget(host(SizedBox(
         width: 60,
         height: 20,
-        child: const WindfoilRichText(
+        child: const GPURichText(
           text: TextSpan(
             text: 'a very long line that cannot possibly fit here',
             style: TextStyle(

@@ -46,7 +46,7 @@ class AtlasTextureUploader {
     if (!context.supportsTextureFormat(format, shaderRead: true)) {
       throw UnsupportedError(
         'This device does not support ${format.name} shader-read textures '
-        'required for windfoil curve data.',
+        'required for gputext curve data.',
       );
     }
     const maxH = 1 << 20;
@@ -127,7 +127,7 @@ AtlasTextures uploadAtlasTextures(
   if (!context.supportsTextureFormat(format, shaderRead: true)) {
     throw UnsupportedError(
       'This device does not support ${format.name} shader-read textures '
-      'required for windfoil curve data.',
+      'required for gputext curve data.',
     );
   }
   final curveVec2Count = curves.length ~/ 2;

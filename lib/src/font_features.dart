@@ -297,7 +297,7 @@ _GsubSubtable? _parseGsubSubtable(ByteData d, int off, int type) {
 // ---------------------------------------------------------------------------
 // Public feature API.
 
-extension WindfoilFontFeatures on WindfoilFont {
+extension GPUFontFeatures on GPUFont {
   /// Apply GSUB substitution features to `text` and return pipeline text in
   /// which substituted glyphs appear as PUA proxy characters (see the file
   /// header). `features` follows TextStyle.fontFeatures semantics: value 0
@@ -426,7 +426,7 @@ extension WindfoilFontFeatures on WindfoilFont {
 /// Map-building twin of [applyBasicLigatures] for fonts without a usable
 /// GSUB: substitutes fi/fl/ffi/ffl with their precomposed code points and
 /// records the shaped→original boundary map.
-(String, Int32List?) _basicLigaturesMapped(String text, WindfoilFont font) {
+(String, Int32List?) _basicLigaturesMapped(String text, GPUFont font) {
   final patterns = <(String, String)>[
     if (font.hasGlyph('ﬃ')) ('ffi', 'ﬃ'),
     if (font.hasGlyph('ﬄ')) ('ffl', 'ﬄ'),

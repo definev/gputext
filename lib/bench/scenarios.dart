@@ -1,5 +1,5 @@
 // Tier B scenario matrix. Every scenario is one span/widget factory consumed
-// by both engine passes — only the leaf widget differs (WindfoilRichText vs
+// by both engine passes — only the leaf widget differs (GPURichText vs
 // RichText with identical arguments), so the passes always measure identical
 // content, constraints, and per-frame mutation.
 //
@@ -15,7 +15,7 @@ import '../src/paragraph.dart' as wf show KnuthPlassLineBreaker, LineBreaker;
 import '../src/widgets/rich_text.dart';
 import 'corpus.dart';
 
-enum EngineKind { windfoil, richtext }
+enum EngineKind { gputext, richtext }
 
 const benchCjkFamily = 'BenchCJK';
 const benchGsfFamily = 'BenchGSF';
@@ -46,7 +46,7 @@ class FrameScenario {
     required this.path,
     required this.build,
     this.onTick,
-    this.engines = const [EngineKind.windfoil, EngineKind.richtext],
+    this.engines = const [EngineKind.gputext, EngineKind.richtext],
     this.dynamicContent = true,
     this.includeMount = false,
     this.needsCjk = false,
@@ -69,7 +69,7 @@ class FrameScenario {
   final bool includeMount;
 
   final bool needsCjk;
-  final bool knuthPlass; // windfoil pass uses the Knuth–Plass breaker
+  final bool knuthPlass; // gputext pass uses the Knuth–Plass breaker
 }
 
 TextStyle benchStyle({
@@ -93,8 +93,8 @@ Widget benchText(
   bool knuthPlass = false,
   Listenable? scaleHint,
 }) =>
-    engine == EngineKind.windfoil
-        ? WindfoilRichText(
+    engine == EngineKind.gputext
+        ? GPURichText(
             text: span,
             textAlign: align,
             lineBreaker: knuthPlass
@@ -137,7 +137,7 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
       id: 'frame.static_idle',
       label: '30 static paragraphs, idle vsync',
       desc: 'Floor/sanity: nothing changes; both sides should build ~0. '
-          'Windfoil steady-state paint is a cached-image blit — pair with '
+          'GPUText steady-state paint is a cached-image blit — pair with '
           'the dynamic scenarios below for a fair picture.',
       path: 'pure',
       dynamicContent: false,
@@ -146,9 +146,9 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
     FrameScenario(
       id: 'frame.repaint_color',
       label: 'per-frame color toggle, 30 paragraphs',
-      desc: 'RenderComparison.paint each frame: windfoil re-emits instances '
+      desc: 'RenderComparison.paint each frame: gputext re-emits instances '
           'and re-renders its GPU surface; RichText re-records. The honest '
-          '"windfoil is not just a blit" case.',
+          '"gputext is not just a blit" case.',
       path: 'pure',
       build: (ctx, e, tick) => _column([
         for (var i = 0; i < 30; i++)
@@ -180,7 +180,7 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
     FrameScenario(
       id: 'frame.reflow_width',
       label: 'animated wrap width, 20 paragraphs',
-      desc: 'Width 240↔420 px sinusoid: windfoil re-breaks from cached '
+      desc: 'Width 240↔420 px sinusoid: gputext re-breaks from cached '
           'prepares (the prepare/layout split); RichText relays out from '
           'scratch. Resize-heal re-renders are counted in surfaceRenders.',
       path: 'pure',
@@ -197,7 +197,7 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
       label: 'long-document scroll, full Gatsby corpus',
       desc: 'Constant 24 px/frame with direction reversal: steady-state blit '
           'vs engine repaint, plus viewport-entry cold prepares. This is '
-          'windfoil\'s best case by construction.',
+          'gputext\'s best case by construction.',
       path: 'pure',
       onTick: (ctx, tick) {
         if (!ctx.scroll.hasClients) return;
@@ -225,7 +225,7 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
     FrameScenario(
       id: 'frame.zoom_transform',
       label: 'Transform.scale zoom 1→8→1',
-      desc: 'Exponential zoom sweep, transformAdaptive on: windfoil '
+      desc: 'Exponential zoom sweep, transformAdaptive on: gputext '
           're-renders crisp at each quantized 1.25× step (surfaceRenders ≈ '
           'steps crossed); RichText rasters once and scales (blurry — see '
           'vis.zoom_4x for the quality side).',
@@ -270,7 +270,7 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
       id: 'frame.zoom_interactive',
       label: 'InteractiveViewer step zoom ×1.25',
       desc: 'Programmatic TransformationController sweep, 6-frame dwell per '
-          '1.25× step (up to ~6×, back down); windfoil pass wires scaleHint '
+          '1.25× step (up to ~6×, back down); gputext pass wires scaleHint '
           'so re-render triggers cross the RepaintBoundary.',
       path: 'pure',
       onTick: (ctx, tick) {
@@ -288,7 +288,7 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
           child: _column([
             for (var i = 0; i < 6; i++)
               benchText(e, TextSpan(text: sentences[i], style: benchStyle()),
-                  scaleHint: e == EngineKind.windfoil ? ctx.transform : null),
+                  scaleHint: e == EngineKind.gputext ? ctx.transform : null),
           ], width: 400),
         ),
       ),
@@ -307,7 +307,7 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
       id: 'frame.grid_shared',
       label: '240 identical-text cells, mount + steady',
       desc: 'Shared prepare-cache effect: identical spans should flatten+'
-          'prepare once and hit the cache ~239 times (windfoil pass).',
+          'prepare once and hit the cache ~239 times (gputext pass).',
       path: 'pure',
       dynamicContent: false,
       includeMount: true,
@@ -334,7 +334,7 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
       desc: 'Same driver with the TeX-style optimal-fit breaker; Flutter has '
           'no counterpart (compare against frame.justify).',
       path: 'no-counterpart',
-      engines: const [EngineKind.windfoil],
+      engines: const [EngineKind.gputext],
       knuthPlass: true,
       build: (ctx, e, tick) {
         final width = 330 + 90 * math.sin(tick * 2 * math.pi / 120);
@@ -390,7 +390,7 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
       id: 'frame.widgetspan_heavy',
       label: '12 paragraphs × 8 WidgetSpans, per-frame change',
       desc: 'Cache-disabled worst case: inline children force a fresh '
-          'flatten+prepare every build (windfoil pass).',
+          'flatten+prepare every build (gputext pass).',
       path: 'cache-disabled',
       build: (ctx, e, tick) => _column([
         for (var i = 0; i < 12; i++)

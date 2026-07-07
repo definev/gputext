@@ -1,8 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:windfoil_flutter/bench/report.dart';
-import 'package:windfoil_flutter/bench/stats.dart';
+import 'package:gputext/bench/report.dart';
+import 'package:gputext/bench/stats.dart';
 
 void main() {
   group('stats', () {
@@ -41,7 +41,7 @@ void main() {
         ..meta['os'] = 'test'
         ..cpuResults.add(cpuResult(
           id: 'cpu.x',
-          engine: 'windfoil',
+          engine: 'gputext',
           label: 'x',
           desc: 'd',
           path: 'pure',
@@ -85,10 +85,10 @@ void main() {
       });
       expect(json.length, greaterThan(12000)); // spans >2 chunks
       final lines = chunkReportLines(json);
-      expect(lines.first, 'WFBENCH:BEGIN v1');
-      expect(lines.last, 'WFBENCH:END bytes=${json.length}');
+      expect(lines.first, 'GPUBENCH:BEGIN v1');
+      expect(lines.last, 'GPUBENCH:END bytes=${json.length}');
       for (final l in lines.sublist(1, lines.length - 1)) {
-        expect(l.length, lessThanOrEqualTo('WFBENCH:J:'.length + 6000));
+        expect(l.length, lessThanOrEqualTo('GPUBENCH:J:'.length + 6000));
       }
       expect(reassembleChunks(lines), json);
       // Interleaved non-marker noise (flutter run logs) is ignored.

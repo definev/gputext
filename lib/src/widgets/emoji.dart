@@ -1,4 +1,4 @@
-// Emoji support: windfoil renders monochrome coverage from quadratic
+// Emoji support: gputext renders monochrome coverage from quadratic
 // outlines, so color emoji can't go through the winding-integral shader.
 // Instead, emoji clusters are rewritten into baseline-aligned WidgetSpans
 // whose child is a stock Text — the engine's font fallback then draws the
@@ -132,7 +132,7 @@ List<EmojiSegment> splitEmojiSegments(String text) {
 /// through the coverage shader (the flattener emits EmojiItems for them).
 /// Returns the original span unchanged (identical) when nothing needs
 /// delegation.
-InlineSpan expandEmojiSpans(InlineSpan root, WindfoilEngine engine) {
+InlineSpan expandEmojiSpans(InlineSpan root, GPUTextEngine engine) {
   var changed = false;
 
   bool nativeEligible(String cluster) {
@@ -205,15 +205,15 @@ bool _isCjkIdeograph(int cp) =>
     (cp >= 0xFF00 && cp <= 0xFFEF) || // full/half-width forms
     (cp >= 0x20000 && cp <= 0x2FA1F); // SMP ideograph planes
 
-/// Font-fallback layer 2: characters that no registered windfoil font covers
+/// Font-fallback layer 2: characters that no registered gputext font covers
 /// (after the style's fontFamilyFallback and the engine fallback chain) are
 /// rewritten into baseline-aligned inline Text spans so the platform's font
 /// fallback renders them instead of .notdef tofu. CJK stretches split per
 /// character so lines can wrap between ideographs; other scripts stay whole
 /// (breaking inside a word would be wrong). No-op until fonts are loaded —
-/// call again on engine notify (WindfoilRichText rebuilds via
+/// call again on engine notify (GPURichText rebuilds via
 /// ListenableBuilder).
-InlineSpan expandUncoveredSpans(InlineSpan root, WindfoilEngine engine) {
+InlineSpan expandUncoveredSpans(InlineSpan root, GPUTextEngine engine) {
   if (!engine.fontsReady) return root;
   var changed = false;
 

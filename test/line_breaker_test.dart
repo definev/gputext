@@ -9,16 +9,16 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/font.dart';
-import 'package:windfoil_flutter/src/layout.dart' show measureText;
-import 'package:windfoil_flutter/src/paragraph.dart' as wf;
+import 'package:gputext/src/font.dart';
+import 'package:gputext/src/layout.dart' show measureText;
+import 'package:gputext/src/paragraph.dart' as wf;
 
 void main() {
-  late WindfoilFont font;
+  late GPUFont font;
 
   setUpAll(() {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    font = WindfoilFont.parse(bytes);
+    font = GPUFont.parse(bytes);
   });
 
   wf.TextRun run(String text) => wf.TextRun(

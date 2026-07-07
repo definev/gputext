@@ -3,7 +3,7 @@ import 'font.dart';
 
 const floatsPerInstance = 16;
 
-double measureText(String text, WindfoilFont font, double fontSizePx) {
+double measureText(String text, GPUFont font, double fontSizePx) {
   final scale = fontSizePx / font.unitsPerEm;
   var w = 0.0;
   String? prev;
@@ -21,7 +21,7 @@ double layoutLine(
   List<double> out,
   String text,
   Map<String, GlyphTableEntry> table,
-  WindfoilFont font, {
+  GPUFont font, {
   required double x,
   required double baselineY,
   required double fontSizePx,
@@ -87,7 +87,7 @@ class SizedLine {
 LayoutResult layoutStack(
   List<SizedLine> lines,
   Map<String, GlyphTableEntry> table,
-  WindfoilFont font, {
+  GPUFont font, {
   required double x,
   required double top,
   required List<double> color,

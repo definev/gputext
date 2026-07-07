@@ -4,15 +4,15 @@
 // should break identically — feature rows for the new break semantics, and
 // a micro-benchmark card showing why prepare-once/layout-per-width matters.
 //
-// Dev hooks (demo only): WINDFOIL_DEMO=pretext opens this page directly;
-// WINDFOIL_DEMO_WIDTH=<px> presets the wrap width for screenshots.
+// Dev hooks (demo only): GPUTEXT_DEMO=pretext opens this page directly;
+// GPUTEXT_DEMO_WIDTH=<px> presets the wrap width for screenshots.
 
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 
 import 'src/paragraph.dart' as wf;
-import 'windfoil_flutter.dart';
+import 'gputext.dart';
 
 const _ink = Color(0xFF0C0F1C);
 const _accentRed = Color(0xFF8C1F14);
@@ -23,7 +23,7 @@ const _paper = Color(0xFFE9E3D5);
 TextSpan _showcaseSpan() => const TextSpan(
   style: TextStyle(fontFamily: 'Lato', fontSize: 15, color: _ink, height: 1.35),
   children: [
-    TextSpan(text: 'Windfoil now breaks lines with a pretext-style engine. '),
+    TextSpan(text: 'GPUText now breaks lines with a pretext-style engine. '),
     TextSpan(text: 'Glued units like 12\u00A0kg or page\u00A042 never split; '),
     TextSpan(
         text: 'soft\u00ADhy\u00ADphen\u00ADat\u00ADed words show a hyphen '
@@ -55,7 +55,7 @@ const _featureStyle =
 final _features = <_FeatureRow>[
   _FeatureRow(
     'Soft hyphens',
-    'U+00AD stays invisible until the break is chosen, then windfoil draws '
+    'U+00AD stays invisible until the break is chosen, then gputext draws '
         'a "-" when it fits. Stock Flutter breaks there too but never draws '
         'the hyphen.',
     const TextSpan(
@@ -134,14 +134,14 @@ class _PretextDemoPageState extends State<PretextDemoPage> {
   @override
   void initState() {
     super.initState();
-    final preset = Platform.environment['WINDFOIL_DEMO_WIDTH'];
+    final preset = Platform.environment['GPUTEXT_DEMO_WIDTH'];
     if (preset != null) {
       final w = double.tryParse(preset);
       if (w != null) _width = w.clamp(90.0, 620.0);
     }
-    // Screenshot hook, like WINDFOIL_DEMO_ZOOM in the widget demo.
+    // Screenshot hook, like GPUTEXT_DEMO_ZOOM in the widget demo.
     final scrollPreset =
-        double.tryParse(Platform.environment['WINDFOIL_DEMO_SCROLL'] ?? '');
+        double.tryParse(Platform.environment['GPUTEXT_DEMO_SCROLL'] ?? '');
     _scroll = ScrollController(initialScrollOffset: scrollPreset ?? 0);
   }
 
@@ -192,8 +192,8 @@ class _PretextDemoPageState extends State<PretextDemoPage> {
                 spacing: 16,
                 runSpacing: 12,
                 children: [
-                  _fixedPane('windfoil', f.width,
-                      WindfoilRichText(text: f.span)),
+                  _fixedPane('gputext', f.width,
+                      GPURichText(text: f.span)),
                   _fixedPane('stock RichText', f.width, RichText(text: f.span)),
                 ],
               ),
@@ -227,17 +227,17 @@ class _PretextDemoPageState extends State<PretextDemoPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('Pretext text engine')),
       body: ListenableBuilder(
-        listenable: Windfoil.instance,
+        listenable: GPUText.instance,
         builder: (context, _) => ListView(
           controller: _scroll,
           padding: const EdgeInsets.all(16),
           children: [
             Text(
-              'Drag the width: both panes re-wrap live. Windfoil prepares '
+              'Drag the width: both panes re-wrap live. GPUText prepares '
               'the paragraph once and reruns only the pure-arithmetic line '
               'walker per width; the stock pane is Flutter\'s engine — the '
               'wrapping oracle the port is tested against. Breaks match '
-              'except where windfoil deliberately upgrades them: chosen '
+              'except where gputext deliberately upgrades them: chosen '
               'soft hyphens draw a real "-", and URLs wrap as path+query '
               'units instead of fragmenting.',
               style: TextStyle(fontSize: 13, color: _ink.withValues(alpha: 0.7)),
@@ -252,8 +252,8 @@ class _PretextDemoPageState extends State<PretextDemoPage> {
               spacing: 16,
               runSpacing: 12,
               children: [
-                _pane('windfoil · ${_width.round()}px',
-                    WindfoilRichText(text: _showcaseSpan())),
+                _pane('gputext · ${_width.round()}px',
+                    GPURichText(text: _showcaseSpan())),
                 _pane('stock RichText', RichText(text: _showcaseSpan())),
               ],
             ),
@@ -289,7 +289,7 @@ class _PerfCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final font = Windfoil.instance.resolveFont('Lato');
+    final font = GPUText.instance.resolveFont('Lato');
     if (font == null) return const SizedBox.shrink();
 
     if (_prepared == null) {

@@ -1,7 +1,7 @@
-// Side-by-side comparison of stock RichText and WindfoilRichText, plus a
-// zoom pen showing windfoil's transform-adaptive re-rendering.
+// Side-by-side comparison of stock RichText and GPURichText, plus a
+// zoom pen showing gputext's transform-adaptive re-rendering.
 //
-// Dev hooks (demo only): WINDFOIL_DEMO_ZOOM=<n> presets the InteractiveViewer
+// Dev hooks (demo only): GPUTEXT_DEMO_ZOOM=<n> presets the InteractiveViewer
 // zoom so screenshots can be taken without driving gestures.
 
 import 'dart:io' show File, Platform;
@@ -9,7 +9,7 @@ import 'dart:io' show File, Platform;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
-import 'windfoil_flutter.dart';
+import 'gputext.dart';
 
 const _ink = Color(0xFF0C0F1C);
 const _accentRed = Color(0xFF8C1F14);
@@ -21,7 +21,7 @@ const _darkAmber = Color(0xFFE8B14C);
 TextSpan _sampleSpan() => const TextSpan(
   style: TextStyle(fontFamily: 'Lato', fontSize: 16, color: _ink),
   children: [
-    TextSpan(text: '🌚 Windfoil '),
+    TextSpan(text: '🌚 GPUText '),
     TextSpan(
       text: 'rich',
       style: TextStyle(fontSize: 26, color: _accentRed),
@@ -60,9 +60,9 @@ TextSpan _widgetSpanSample() => TextSpan(
           color: _accentRed.withValues(alpha: 0.15),
           borderRadius: BorderRadius.circular(10),
         ),
-        child: WindfoilRichText(
+        child: GPURichText(
           text: TextSpan(
-            text: 'windfoil',
+            text: 'gputext',
             style: TextStyle(fontSize: 13, color: _accentRed),
           ),
         ),
@@ -194,7 +194,7 @@ TextSpan _emojiSample() => const TextSpan(
     TextSpan(
       text:
           ' with tone, flag 🇻🇳, family 👨‍👩‍👧‍👦, keycap 1️⃣ — while '
-          'the surrounding windfoil text stays vector-crisp.',
+          'the surrounding gputext text stays vector-crisp.',
     ),
   ],
 );
@@ -204,7 +204,7 @@ TextSpan _fallbackSample() => const TextSpan(
   children: [
     TextSpan(
       text:
-          'Fallback: Latin windfoil text with 中文汉字, かなカナ, '
+          'Fallback: Latin gputext text with 中文汉字, かなカナ, '
           '한글 — covered by the registered wide fallback font — and '
           'SMP music 𝄞𝄢 delegated to the platform. All of it wraps '
           'and mixes freely.',
@@ -283,12 +283,12 @@ TextSpan _darkSample() => const TextSpan(
 );
 
 /// Demo of layer-1 (native) fallback: register a wide-coverage system TTF
-/// so CJK renders through the windfoil shader itself. Uncovered characters
+/// so CJK renders through the gputext shader itself. Uncovered characters
 /// (e.g. SMP symbols) still delegate to the platform (layer 2).
 Future<void> _registerWideFallback() async {
-  final engine = Windfoil.instance;
+  final engine = GPUText.instance;
   // Native COLR emoji (Twemoji): single-code-point emoji render through the
-  // windfoil shader itself; sequences still delegate to the platform.
+  // gputext shader itself; sequences still delegate to the platform.
   if (engine.emojiFont == null) {
     try {
       await engine.loadEmojiFontAsset('assets/TwemojiMozilla.ttf');
@@ -300,7 +300,7 @@ Future<void> _registerWideFallback() async {
   try {
     final file = File('/System/Library/Fonts/Supplemental/Arial Unicode.ttf');
     if (!await file.exists()) return;
-    final font = WindfoilFont.parse(await file.readAsBytes());
+    final font = GPUFont.parse(await file.readAsBytes());
     engine.registerFont('Arial Unicode', font);
     engine.setFallbackFamilies(const ['Arial Unicode']);
   } catch (e) {
@@ -338,13 +338,13 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
     _registerWideFallback();
     _scroll = ScrollController(
       initialScrollOffset:
-          double.tryParse(Platform.environment['WINDFOIL_DEMO_SCROLL'] ?? '') ??
+          double.tryParse(Platform.environment['GPUTEXT_DEMO_SCROLL'] ?? '') ??
           0,
     );
-    final z = double.tryParse(Platform.environment['WINDFOIL_DEMO_ZOOM'] ?? '');
+    final z = double.tryParse(Platform.environment['GPUTEXT_DEMO_ZOOM'] ?? '');
     if (z != null && z > 0) {
       var fx = 110.0, fy = 46.0; // focal point held stationary while zooming
-      final f = Platform.environment['WINDFOIL_DEMO_FOCAL']?.split(',');
+      final f = Platform.environment['GPUTEXT_DEMO_FOCAL']?.split(',');
       if (f != null && f.length == 2) {
         fx = double.tryParse(f[0]) ?? fx;
         fy = double.tryParse(f[1]) ?? fy;
@@ -365,7 +365,7 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
 
   Widget _pair(
     String caption,
-    Widget Function(bool windfoil) builder, {
+    Widget Function(bool gputext) builder, {
     Color? background,
   }) {
     Widget cell(String title, Widget child) => Expanded(
@@ -407,7 +407,7 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             cell('RichText', builder(false)),
-            cell('WindfoilRichText', builder(true)),
+            cell('GPURichText', builder(true)),
           ],
         ),
       ],
@@ -418,21 +418,21 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFE9E3D5),
-      appBar: AppBar(title: const Text('RichText vs WindfoilRichText')),
+      appBar: AppBar(title: const Text('RichText vs GPURichText')),
       body: SelectionArea(
         child: ListView(
           controller: _scroll,
           children: [
             _pair(
               'Mixed-style paragraph, word wrap',
-              (windfoil) => windfoil
-                  ? WindfoilRichText(text: _sampleSpan())
+              (gputext) => gputext
+                  ? GPURichText(text: _sampleSpan())
                   : RichText(text: _sampleSpan()),
             ),
             _pair(
               'maxLines: 2, overflow: ellipsis, center-aligned',
-              (windfoil) => windfoil
-                  ? WindfoilRichText(
+              (gputext) => gputext
+                  ? GPURichText(
                       text: _sampleSpan(),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
@@ -447,26 +447,26 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
             ),
             _pair(
               'WidgetSpan: icon (middle), chip (baseline), box (bottom)',
-              (windfoil) => windfoil
-                  ? WindfoilRichText(text: _widgetSpanSample())
+              (gputext) => gputext
+                  ? GPURichText(text: _widgetSpanSample())
                   : RichText(text: _widgetSpanSample()),
             ),
             _pair(
               'Emoji: clusters, tones, flags, ZWJ, keycaps',
-              (windfoil) => windfoil
-                  ? WindfoilRichText(text: _emojiSample())
+              (gputext) => gputext
+                  ? GPURichText(text: _emojiSample())
                   : RichText(text: _emojiSample()),
             ),
             _pair(
               'Font fallback: native (wide TTF) + platform delegation (SMP)',
-              (windfoil) => windfoil
-                  ? WindfoilRichText(text: _fallbackSample())
+              (gputext) => gputext
+                  ? GPURichText(text: _fallbackSample())
                   : RichText(text: _fallbackSample()),
             ),
             _pair(
               'Decorations, justify, wordSpacing, height',
-              (windfoil) => windfoil
-                  ? WindfoilRichText(
+              (gputext) => gputext
+                  ? GPURichText(
                       text: _decorationSample(),
                       textAlign: TextAlign.justify,
                     )
@@ -478,37 +478,37 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
             _pair(
               'Dark mode: premultiplied compositing on a dark surface',
               background: _darkSurface,
-              (windfoil) => windfoil
-                  ? WindfoilRichText(text: _darkSample())
+              (gputext) => gputext
+                  ? GPURichText(text: _darkSample())
                   : RichText(text: _darkSample()),
             ),
             _pair(
               'Links: TextSpan.recognizer (tap to count)',
-              (windfoil) => windfoil
-                  ? WindfoilRichText(text: _linkSample(_linkRight, _rightTaps))
+              (gputext) => gputext
+                  ? GPURichText(text: _linkSample(_linkRight, _rightTaps))
                   : RichText(text: _linkSample(_linkLeft, _leftTaps)),
             ),
             _pair(
               'GPOS kerning + fi/fl/ffi/ffl ligatures',
-              (windfoil) => windfoil
-                  ? WindfoilRichText(text: _kernLigaSample())
+              (gputext) => gputext
+                  ? GPURichText(text: _kernLigaSample())
                   : RichText(text: _kernLigaSample()),
             ),
             _pair(
               'backgroundColor, shadows, foreground paint',
-              (windfoil) => windfoil
-                  ? WindfoilRichText(text: _paintSample())
+              (gputext) => gputext
+                  ? GPURichText(text: _paintSample())
                   : RichText(text: _paintSample()),
             ),
             _pair(
               'StrutStyle (28px floor under 13px text) + TextOverflow.fade',
-              (windfoil) {
+              (gputext) {
                 const strut = StrutStyle(fontFamily: 'Lato', fontSize: 28);
                 final fade = SizedBox(
                   width: 280,
                   height: 22,
-                  child: windfoil
-                      ? WindfoilRichText(
+                  child: gputext
+                      ? GPURichText(
                           text: _fadeSample(),
                           overflow: TextOverflow.fade,
                           softWrap: false,
@@ -524,8 +524,8 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    windfoil
-                        ? WindfoilRichText(
+                    gputext
+                        ? GPURichText(
                             text: _strutSample(),
                             strutStyle: strut,
                           )
@@ -539,21 +539,21 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
             _pair(
               'SelectionArea: drag to select, double-click a word, ⌘A',
               // Text.rich on the stock side — bare RichText doesn't register
-              // with SelectionArea; WindfoilRichText does (Text.rich behavior).
-              (windfoil) => SelectionArea(
-                child: windfoil
-                    ? WindfoilRichText(text: _paintSample())
+              // with SelectionArea; GPURichText does (Text.rich behavior).
+              (gputext) => SelectionArea(
+                child: gputext
+                    ? GPURichText(text: _paintSample())
                     : Text.rich(_paintSample()),
               ),
             ),
             _pair(
               'CJK + hyphen line breaking (narrow column, no spaces)',
-              (windfoil) => Align(
+              (gputext) => Align(
                 alignment: Alignment.topLeft,
                 child: SizedBox(
                   width: 340,
-                  child: windfoil
-                      ? WindfoilRichText(text: _cjkWrapSample())
+                  child: gputext
+                      ? GPURichText(text: _cjkWrapSample())
                       : RichText(text: _cjkWrapSample()),
                 ),
               ),
@@ -563,9 +563,9 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
               child: Text(
                 'Layout cache: '
                 // ignore: invalid_use_of_visible_for_testing_member
-                '${Windfoil.instance.debugLayoutCacheHits} hits / '
+                '${GPUText.instance.debugLayoutCacheHits} hits / '
                 // ignore: invalid_use_of_visible_for_testing_member
-                '${Windfoil.instance.debugLayoutCacheMisses} misses '
+                '${GPUText.instance.debugLayoutCacheMisses} misses '
                 '(identical paragraphs share one flatten+break)',
                 style: Theme.of(context).textTheme.labelSmall
                     ?.copyWith(color: Colors.black45),
@@ -573,7 +573,7 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
             ),
             const Padding(
               padding: EdgeInsets.fromLTRB(12, 12, 12, 0),
-              child: Text('Pinch/scroll to zoom — windfoil re-renders crisp'),
+              child: Text('Pinch/scroll to zoom — gputext re-renders crisp'),
             ),
             SizedBox(
               height: 300,
@@ -598,7 +598,7 @@ class _WidgetDemoPageState extends State<WidgetDemoPage> {
                         Expanded(
                           child: Padding(
                             padding: const EdgeInsets.all(8),
-                            child: WindfoilRichText(
+                            child: GPURichText(
                               text: _sampleSpan(),
                               scaleHint: _zoom,
                             ),

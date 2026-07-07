@@ -1,5 +1,5 @@
 // Demo-scene renderer: one static instance buffer + one atlas, drawn through
-// the shared WindfoilPipeline. Widgets use WindfoilPipeline directly.
+// the shared GPUTextPipeline. Widgets use GPUTextPipeline directly.
 
 import 'dart:typed_data';
 
@@ -11,26 +11,26 @@ import 'layout.dart';
 
 export 'engine/pipeline.dart' show FrameUniforms;
 
-class WindfoilRenderer {
-  WindfoilRenderer._({
+class GPUTextRenderer {
+  GPUTextRenderer._({
     required this.pipeline,
     required this.instanceBuffer,
     required this.textures,
     required this.instanceCount,
   });
 
-  final WindfoilPipeline pipeline;
+  final GPUTextPipeline pipeline;
   final gpu.DeviceBuffer instanceBuffer;
   final AtlasTextures textures;
   final int instanceCount;
 
-  static Future<WindfoilRenderer> create({
+  static Future<GPUTextRenderer> create({
     required Float32List curves,
     required Uint32List rows,
     required Float32List instances,
   }) async {
-    final pipeline = await WindfoilPipeline.create();
-    return WindfoilRenderer._(
+    final pipeline = await GPUTextPipeline.create();
+    return GPUTextRenderer._(
       pipeline: pipeline,
       instanceBuffer: pipeline.uploadInstances(instances),
       textures: uploadAtlasTextures(gpu.gpuContext, curves, rows),

@@ -7,19 +7,19 @@ import 'dart:io';
 import 'package:flutter/widgets.dart' show TextScaler, TextSpan, TextStyle;
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/engine/engine.dart';
-import 'package:windfoil_flutter/src/engine/shared_atlas.dart';
-import 'package:windfoil_flutter/src/font.dart';
-import 'package:windfoil_flutter/src/paragraph.dart' as wf;
-import 'package:windfoil_flutter/src/widgets/span_flattener.dart';
+import 'package:gputext/src/engine/engine.dart';
+import 'package:gputext/src/engine/shared_atlas.dart';
+import 'package:gputext/src/font.dart';
+import 'package:gputext/src/paragraph.dart' as wf;
+import 'package:gputext/src/widgets/span_flattener.dart';
 
 void main() {
-  late WindfoilFont font;
+  late GPUFont font;
 
   setUpAll(() {
-    font = WindfoilFont.parse(
+    font = GPUFont.parse(
         File('assets/Lato-Regular.ttf').readAsBytesSync());
-    Windfoil.instance.registerFont('Lato', font);
+    GPUText.instance.registerFont('Lato', font);
   });
 
   wf.TextRun run(String text, {double size = 16, double letterSpacing = 0}) =>
@@ -68,7 +68,7 @@ void main() {
             text: 'first',
             style: TextStyle(fontFamily: 'Lato', fontSize: 16)),
         TextScaler.noScaling,
-        Windfoil.instance,
+        GPUText.instance,
       )!;
       final r = items.single as wf.TextRun;
       expect(r.originalText, 'first');
@@ -109,7 +109,7 @@ void main() {
         const TextSpan(
             text: 'fi', style: TextStyle(fontFamily: 'Lato', fontSize: 16)),
         TextScaler.noScaling,
-        Windfoil.instance,
+        GPUText.instance,
       )!;
       final r = items.single as wf.TextRun;
       expect(r.text.runes.length, 1, reason: 'expected a single lig cluster');

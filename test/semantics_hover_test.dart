@@ -8,23 +8,23 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/engine/engine.dart';
-import 'package:windfoil_flutter/src/font.dart';
-import 'package:windfoil_flutter/windfoil_flutter.dart' show WindfoilRichText;
+import 'package:gputext/src/engine/engine.dart';
+import 'package:gputext/src/font.dart';
+import 'package:gputext/gputext.dart' show GPURichText;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUpAll(() {
-    Windfoil.instance.registerFont(
+    GPUText.instance.registerFont(
       'Lato',
-      WindfoilFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync()),
+      GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync()),
     );
   });
 
   Widget host(InlineSpan span) => Directionality(
         textDirection: TextDirection.ltr,
-        child: Center(child: WindfoilRichText(text: TextSpan(children: [span]))),
+        child: Center(child: GPURichText(text: TextSpan(children: [span]))),
       );
 
   const style = TextStyle(fontFamily: 'Lato', fontSize: 16);
@@ -68,7 +68,7 @@ void main() {
         ],
       )));
 
-      final para = tester.getSemantics(find.byType(WindfoilRichText));
+      final para = tester.getSemantics(find.byType(GPURichText));
       expect(
         para,
         matchesSemantics(children: [
@@ -104,7 +104,7 @@ void main() {
           const TextSpan(text: ' and more'),
         ],
       )));
-      final para = tester.getSemantics(find.byType(WindfoilRichText));
+      final para = tester.getSemantics(find.byType(GPURichText));
       expect(findByLabel(para, 'link to documentation'), isNotNull);
       expect(findByLabel(para, 'here'), isNull);
       handle.dispose();
@@ -123,7 +123,7 @@ void main() {
           const WidgetSpan(child: Text('chip', style: style)),
         ],
       )));
-      final para = tester.getSemantics(find.byType(WindfoilRichText));
+      final para = tester.getSemantics(find.byType(GPURichText));
       expect(findByLabel(para, 'chip'), isNotNull);
       expect(findByLabel(para, 'tap'), isNotNull);
       handle.dispose();
@@ -152,7 +152,7 @@ void main() {
       await tester.pump();
       expect(enters, 0);
 
-      await gesture.moveTo(tester.getCenter(find.byType(WindfoilRichText)));
+      await gesture.moveTo(tester.getCenter(find.byType(GPURichText)));
       await tester.pump();
       expect(enters, 1);
       expect(exits, 0);
@@ -179,7 +179,7 @@ void main() {
       await gesture.addPointer(location: Offset.zero);
       addTearDown(gesture.removePointer);
       await tester.pump();
-      await gesture.moveTo(tester.getCenter(find.byType(WindfoilRichText)));
+      await gesture.moveTo(tester.getCenter(find.byType(GPURichText)));
       await tester.pump();
       expect(enters, 1);
       expect(RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
@@ -198,7 +198,7 @@ void main() {
         ],
       )));
       // Tap the trailing half of the paragraph, where the link run sits.
-      final rect = tester.getRect(find.byType(WindfoilRichText));
+      final rect = tester.getRect(find.byType(GPURichText));
       await tester.tapAt(Offset(
           rect.right - rect.width * 0.15, rect.center.dy));
       expect(taps, 1);

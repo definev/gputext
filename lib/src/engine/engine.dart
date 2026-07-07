@@ -1,11 +1,11 @@
-// Process-wide windfoil engine: GPU pipeline + font registry + the shared
+// Process-wide gputext engine: GPU pipeline + font registry + the shared
 // incremental glyph atlas, with ChangeNotifier readiness signaling.
 //
 // Two readiness gates (widgets listen and mark themselves dirty):
 //   fontsReady — metrics available, layout can run (markNeedsLayout on flip)
 //   gpuReady   — pipeline built, paint can render (markNeedsPaint on flip)
 //
-// `await Windfoil.initialize(...)` in main() is the no-FOUT path; otherwise
+// `await GPUText.initialize(...)` in main() is the no-FOUT path; otherwise
 // the first attached widget lazily kicks ensureInitialized() and repaints
 // when ready. Platforms without Impeller/flutter_gpu set isSupported=false:
 // widgets still lay out (fonts are pure Dart) but paint nothing.
@@ -26,8 +26,8 @@ const _defaultFontAsset = 'assets/Lato-Regular.ttf';
 const _defaultFontFamily = 'Lato';
 
 /// Public facade.
-abstract final class Windfoil {
-  static WindfoilEngine get instance => WindfoilEngine._instance;
+abstract final class GPUText {
+  static GPUTextEngine get instance => GPUTextEngine._instance;
 
   /// Load fonts and build the GPU pipeline up front (no first-frame flash).
   /// `fallbackFamilies` are tried, in order, for characters the styled
@@ -41,18 +41,18 @@ abstract final class Windfoil {
       instance._initializeWith(
           fontAssets, defaultFamily, fallbackFamilies, emojiFontAsset);
 
-  /// False when flutter_gpu/Impeller is unavailable; windfoil widgets lay
+  /// False when flutter_gpu/Impeller is unavailable; gputext widgets lay
   /// out but paint blank, so apps can fall back to stock RichText.
   static bool get isSupported => !instance.unsupported;
 }
 
-class WindfoilEngine extends ChangeNotifier {
-  WindfoilEngine._();
+class GPUTextEngine extends ChangeNotifier {
+  GPUTextEngine._();
 
-  static final WindfoilEngine _instance = WindfoilEngine._();
+  static final GPUTextEngine _instance = GPUTextEngine._();
 
   Future<void>? _initFuture;
-  WindfoilPipeline? _pipeline;
+  GPUTextPipeline? _pipeline;
   final atlas = SharedGlyphAtlas();
   final _fonts = <String, List<_FontVariant>>{};
   final _fallbackFamilies = <String>[];
@@ -124,7 +124,7 @@ class WindfoilEngine extends ChangeNotifier {
   bool get fontsReady => _fonts.isNotEmpty;
   bool get gpuReady => _pipeline != null;
   bool get unsupported => _unsupported;
-  WindfoilPipeline get pipeline => _pipeline!;
+  GPUTextPipeline get pipeline => _pipeline!;
 
   /// Idempotent lazy init: registers the bundled default font if none were
   /// registered, then builds the pipeline. Never throws — flips
@@ -146,14 +146,14 @@ class WindfoilEngine extends ChangeNotifier {
     await ensureInitialized();
   }
 
-  WindfoilFont? _emojiFont;
+  GPUFont? _emojiFont;
 
   /// COLR v0 font used to render single-code-point emoji natively through
   /// the coverage shader; null → all emoji delegate to the platform.
-  WindfoilFont? get emojiFont => _emojiFont;
+  GPUFont? get emojiFont => _emojiFont;
 
   /// Register (or clear, with null) the native color-emoji font.
-  void registerEmojiFont(WindfoilFont? font) {
+  void registerEmojiFont(GPUFont? font) {
     assert(font == null || font.hasColorGlyphs,
         'Emoji font must carry COLR v0 color glyphs');
     _emojiFont = font;
@@ -161,14 +161,14 @@ class WindfoilEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<WindfoilFont> loadEmojiFontAsset(String assetKey) async {
+  Future<GPUFont> loadEmojiFontAsset(String assetKey) async {
     ByteData data;
     try {
       data = await rootBundle.load(assetKey);
     } catch (_) {
-      data = await rootBundle.load('packages/windfoil_flutter/$assetKey');
+      data = await rootBundle.load('packages/gputext/$assetKey');
     }
-    final font = WindfoilFont.parse(data.buffer.asUint8List(
+    final font = GPUFont.parse(data.buffer.asUint8List(
       data.offsetInBytes,
       data.lengthInBytes,
     ));
@@ -194,7 +194,7 @@ class WindfoilEngine extends ChangeNotifier {
   /// First font along `families` + the engine fallback chain that covers
   /// `ch`; null when no registered font does (callers then delegate the
   /// character to the platform text stack).
-  WindfoilFont? resolveFontForChar(
+  GPUFont? resolveFontForChar(
     String ch, {
     List<String?> families = const [null],
     ui.FontWeight? weight,
@@ -213,20 +213,20 @@ class WindfoilEngine extends ChangeNotifier {
         await loadFontAsset(_defaultFontFamily, _defaultFontAsset);
       }
     } catch (e) {
-      debugPrint('windfoil: default font load failed: $e');
+      debugPrint('gputext: default font load failed: $e');
     }
     try {
-      _pipeline = await WindfoilPipeline.create();
+      _pipeline = await GPUTextPipeline.create();
     } catch (e) {
-      debugPrint('windfoil: GPU init failed, widgets will paint blank: $e');
+      debugPrint('gputext: GPU init failed, widgets will paint blank: $e');
       _unsupported = true;
     }
     notifyListeners();
   }
 
   /// Load and register a TTF from the asset bundle (bare key first, then
-  /// packages/windfoil_flutter/-prefixed for package consumers).
-  Future<WindfoilFont> loadFontAsset(
+  /// packages/gputext/-prefixed for package consumers).
+  Future<GPUFont> loadFontAsset(
     String family,
     String assetKey, {
     ui.FontWeight weight = ui.FontWeight.w400,
@@ -236,9 +236,9 @@ class WindfoilEngine extends ChangeNotifier {
     try {
       data = await rootBundle.load(assetKey);
     } catch (_) {
-      data = await rootBundle.load('packages/windfoil_flutter/$assetKey');
+      data = await rootBundle.load('packages/gputext/$assetKey');
     }
-    final font = WindfoilFont.parse(data.buffer.asUint8List(
+    final font = GPUFont.parse(data.buffer.asUint8List(
       data.offsetInBytes,
       data.lengthInBytes,
     ));
@@ -248,7 +248,7 @@ class WindfoilEngine extends ChangeNotifier {
 
   void registerFont(
     String family,
-    WindfoilFont font, {
+    GPUFont font, {
     ui.FontWeight weight = ui.FontWeight.w400,
     ui.FontStyle style = ui.FontStyle.normal,
   }) {
@@ -265,7 +265,7 @@ class WindfoilEngine extends ChangeNotifier {
 
   /// Family lookup with default-family fallback and nearest weight/style
   /// matching among registered variants; null while no fonts loaded.
-  WindfoilFont? resolveFont(
+  GPUFont? resolveFont(
     String? family, {
     ui.FontWeight? weight,
     ui.FontStyle? fontStyle,
@@ -323,5 +323,5 @@ class _FontVariant {
 
   final int weight; // 100..900
   final bool italic;
-  final WindfoilFont font;
+  final GPUFont font;
 }

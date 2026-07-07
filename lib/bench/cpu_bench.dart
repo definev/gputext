@@ -1,13 +1,13 @@
 // Tier A — CPU layout microbenchmarks (Stopwatch, UI thread).
 //
-// Windfoil measures its library APIs directly (flattenSpan → prepareParagraph
+// GPUText measures its library APIs directly (flattenSpan → prepareParagraph
 // → layoutPreparedLines); the RichText side measures TextPainter, the exact
 // engine under RichText. Methodology mirrors pretext/pages/benchmark.ts:
 // WARMUP=2 + RUNS measured runs, median-of-runs reported, widths cycled per
 // repeat to defeat single-width caching, and numeric sinks accumulated from
 // every result so nothing is dead-code-eliminated.
 //
-// Cold-prepare asymmetry, stated once: windfoil's segment-metrics cache is
+// Cold-prepare asymmetry, stated once: gputext's segment-metrics cache is
 // cleared per run (debugClearSegmentMetricsFor — pretext clearCache parity),
 // but the engine's internal shaping caches under TextPainter cannot be
 // cleared, so "cold" slightly favors richtext.
@@ -68,11 +68,11 @@ class CpuTier {
   });
 
   final BenchCorpus corpus;
-  final WindfoilEngine engine;
+  final GPUTextEngine engine;
   final bool quick;
 
-  /// Windfoil-registered CJK font (Arial Unicode); null → zh rows skipped.
-  final WindfoilFont? cjkFont;
+  /// GPUText-registered CJK font (Arial Unicode); null → zh rows skipped.
+  final GPUFont? cjkFont;
   final String cjkFamily;
 
   int get _count => quick ? 100 : 500;
@@ -114,7 +114,7 @@ class CpuTier {
     }, runs: _runs);
     report.cpuResults.add(cpuResult(
       id: 'cpu.prepare_cold_$_count',
-      engine: 'windfoil',
+      engine: 'gputext',
       label: 'flatten + prepareParagraph, cold',
       desc: 'One cold $_count-text batch; segment-metrics cache cleared per '
           'run (engine shaping caches under TextPainter cannot be cleared)',
@@ -151,7 +151,7 @@ class CpuTier {
     }, sampleRepeats: _layoutRepeats, runs: _runs);
     report.cpuResults.add(cpuResult(
       id: 'cpu.layout_warm_$_count',
-      engine: 'windfoil',
+      engine: 'gputext',
       label: 'layoutPreparedLines over prepared batch',
       desc: 'Hot per-width relayout, widths cycled '
           '${_widths.map((w) => w.round()).join('/')}px, '
@@ -186,7 +186,7 @@ class CpuTier {
     ));
 
     // --- cpu.corpus_long ---
-    final corpora = <(String, String, String, WindfoilFont?)>[
+    final corpora = <(String, String, String, GPUFont?)>[
       ('gatsby', corpus.gatsby, 'Lato', lato),
       ('zh-zhufu', corpus.zhZhufu, cjkFamily, cjkFont),
       ('mixed-app', corpus.mixedApp, 'Lato', lato),
@@ -198,9 +198,9 @@ class CpuTier {
       if (font == null) {
         report.cpuResults.add({
           'id': 'cpu.corpus_long/$id',
-          'engine': 'windfoil',
+          'engine': 'gputext',
           'status': 'skipped',
-          'desc': 'no windfoil font covers this corpus (CJK font unavailable)',
+          'desc': 'no gputext font covers this corpus (CJK font unavailable)',
           'path': 'pure',
         });
         continue;
@@ -226,7 +226,7 @@ class CpuTier {
           .length;
       report.cpuResults.add(cpuResult(
         id: 'cpu.corpus_long/$id',
-        engine: 'windfoil',
+        engine: 'gputext',
         label: 'full-corpus cold prepare',
         desc: 'chars=${text.length}; hot layout reported separately',
         path: 'pure',
@@ -235,7 +235,7 @@ class CpuTier {
       ));
       report.cpuResults.add(cpuResult(
         id: 'cpu.corpus_long/$id.hot',
-        engine: 'windfoil',
+        engine: 'gputext',
         label: 'full-corpus hot layout',
         desc: 'layoutPreparedLines cycling widths, $_layoutRepeats repeats',
         path: 'pure',
@@ -310,7 +310,7 @@ class CpuTier {
     }, sampleRepeats: 5, runs: _runs);
     report.cpuResults.add(cpuResult(
       id: 'cpu.knuth_plass',
-      engine: 'windfoil',
+      engine: 'gputext',
       label: 'greedy justify, ${kpParas.length} paragraphs',
       desc: 'baseline for the Knuth–Plass row',
       path: 'pure',
@@ -318,7 +318,7 @@ class CpuTier {
     ));
     report.cpuResults.add(cpuResult(
       id: 'cpu.knuth_plass',
-      engine: 'windfoil-kp',
+      engine: 'gputext-kp',
       label: 'Knuth–Plass justify, ${kpParas.length} paragraphs',
       desc: 'TeX-style optimal fit; Flutter has no counterpart',
       path: 'no-counterpart',
@@ -350,7 +350,7 @@ class CpuTier {
     }, sampleRepeats: 5, runs: _runs);
     report.cpuResults.add(cpuResult(
       id: 'cpu.oneshot_vs_split',
-      engine: 'windfoil',
+      engine: 'gputext',
       label: 'prepared relayout vs one-shot re-prepare',
       desc: '1000-word paragraph; speedup = oneshot/split medians '
           '(_PerfCard continuity check)',

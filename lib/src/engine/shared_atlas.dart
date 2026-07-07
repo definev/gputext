@@ -18,10 +18,10 @@ class SharedGlyphAtlas implements GlyphTable {
   // Keyed by code point (not char string): the emit pen walk and banding
   // resolve runes directly. Distinct from _gidTable despite the same key
   // shape — one is rune-keyed, the other glyph-id-keyed.
-  final _table = <(WindfoilFont, int), GlyphTableEntry>{};
-  final _blank = <(WindfoilFont, int)>{}; // cmap misses / empty outlines
-  final _gidTable = <(WindfoilFont, int), GlyphTableEntry>{};
-  final _blankGids = <(WindfoilFont, int)>{};
+  final _table = <(GPUFont, int), GlyphTableEntry>{};
+  final _blank = <(GPUFont, int)>{}; // cmap misses / empty outlines
+  final _gidTable = <(GPUFont, int), GlyphTableEntry>{};
+  final _blankGids = <(GPUFont, int)>{};
   var _generation = 0;
 
   /// Bumped whenever curve/row data grows (texture re-upload trigger).
@@ -41,7 +41,7 @@ class SharedGlyphAtlas implements GlyphTable {
 
   /// Make sure every unique character of `text` has a banded entry for
   /// `font`. Returns true when new glyph data was appended.
-  bool ensureGlyphs(WindfoilFont font, String text) {
+  bool ensureGlyphs(GPUFont font, String text) {
     var grew = false;
     for (final rune in text.runes) {
       if (isZeroWidthCodePoint(rune)) continue;
@@ -74,7 +74,7 @@ class SharedGlyphAtlas implements GlyphTable {
   }
 
   /// Band a glyph referenced by ID (COLR layers have no code point).
-  bool ensureGlyphId(WindfoilFont font, int glyphId) {
+  bool ensureGlyphId(GPUFont font, int glyphId) {
     final key = (font, glyphId);
     if (_gidTable.containsKey(key) || _blankGids.contains(key)) return false;
     final g = font.glyphOutlineById(glyphId);
@@ -100,15 +100,15 @@ class SharedGlyphAtlas implements GlyphTable {
   }
 
   @override
-  GlyphTableEntry? lookup(WindfoilFont font, String ch) =>
+  GlyphTableEntry? lookup(GPUFont font, String ch) =>
       ch.isEmpty ? null : _table[(font, ch.runes.first)];
 
   @override
-  GlyphTableEntry? lookupRune(WindfoilFont font, int rune) =>
+  GlyphTableEntry? lookupRune(GPUFont font, int rune) =>
       _table[(font, rune)];
 
   @override
-  GlyphTableEntry? lookupGlyphId(WindfoilFont font, int glyphId) =>
+  GlyphTableEntry? lookupGlyphId(GPUFont font, int glyphId) =>
       _gidTable[(font, glyphId)];
 
   /// Live append-only backing stores, exposed for the incremental texture

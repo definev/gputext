@@ -1,4 +1,4 @@
-// Baseline delta table for windfoil benchmark snapshots (pure dart:core, run
+// Baseline delta table for gputext benchmark snapshots (pure dart:core, run
 // with `dart run tool/compare_bench.dart baseline.json current.json`).
 //
 // Entries join by (id, engine). Gated metrics: cpu medianMs, frame build.p50

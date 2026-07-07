@@ -92,7 +92,7 @@ class TextRun extends InlineItem {
   });
 
   final String text;
-  final WindfoilFont font;
+  final GPUFont font;
   final double fontSizePx;
   final List<double> color;
   final double letterSpacingPx;
@@ -163,7 +163,7 @@ class EmojiItem extends InlineItem {
 
   String get originalText => sourceText ?? '￼';
 
-  final WindfoilFont font;
+  final GPUFont font;
   final double fontSizePx;
   final double advanceUnits; // font units
   final List<ColrLayer> layers;

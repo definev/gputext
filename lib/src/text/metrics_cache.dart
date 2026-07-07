@@ -1,5 +1,5 @@
 // Per-font segment measurement cache (the idea behind pretext's
-// measurement.ts, adapted to windfoil): widths are stored in FONT UNITS so
+// measurement.ts, adapted to gputext): widths are stored in FONT UNITS so
 // one cache entry serves every font size, and per-grapheme cumulative
 // advances are populated lazily — only overlong segments that actually need
 // intra-word breaking (or future caret math) pay for them.
@@ -38,20 +38,20 @@ class SegmentMetrics {
   List<int>? graphemeRenderedRunes;
 }
 
-final _cache = Expando<Map<String, SegmentMetrics>>('windfoilSegmentMetrics');
+final _cache = Expando<Map<String, SegmentMetrics>>('gputextSegmentMetrics');
 
 /// Benchmark hook (pretext's clearCache() analog): drop `font`'s cached
 /// segment metrics so the next prepare re-measures cold.
-void debugClearSegmentMetricsFor(WindfoilFont font) {
+void debugClearSegmentMetricsFor(GPUFont font) {
   _cache[font] = null;
 }
 
-SegmentMetrics segmentMetricsOf(WindfoilFont font, String text) {
+SegmentMetrics segmentMetricsOf(GPUFont font, String text) {
   final byText = _cache[font] ??= <String, SegmentMetrics>{};
   return byText[text] ??= _measure(font, text);
 }
 
-SegmentMetrics _measure(WindfoilFont font, String text) {
+SegmentMetrics _measure(GPUFont font, String text) {
   var w = 0.0;
   var rendered = 0;
   var prevGid = -1;
@@ -68,7 +68,7 @@ SegmentMetrics _measure(WindfoilFont font, String text) {
 
 /// Ensure [SegmentMetrics.graphemeCumUnits] and friends are populated for
 /// grapheme-level breaking of `text`.
-void ensureGraphemeMetrics(WindfoilFont font, String text, SegmentMetrics m) {
+void ensureGraphemeMetrics(GPUFont font, String text, SegmentMetrics m) {
   if (m.graphemeCumUnits != null) return;
   final cum = <double>[];
   final offsets = <int>[];

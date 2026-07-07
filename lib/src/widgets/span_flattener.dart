@@ -1,4 +1,4 @@
-// Flatten an InlineSpan tree into windfoil inline items, applying the
+// Flatten an InlineSpan tree into gputext inline items, applying the
 // TextStyle inheritance cascade the way RenderParagraph does (child style
 // merges over parent). PlaceholderSpans (WidgetSpan) become PlaceholderItems
 // whose dimensions come from the render object's child layout; the preorder
@@ -12,9 +12,9 @@ import 'package:flutter/painting.dart';
 import '../engine/engine.dart';
 import '../font.dart'
     show
-        WindfoilFont,
-        WindfoilFontFeatures,
-        WindfoilFontVariations,
+        GPUFont,
+        GPUFontFeatures,
+        GPUFontVariations,
         isZeroWidthCodePoint;
 import '../paragraph.dart' as wf;
 
@@ -36,7 +36,7 @@ wf.InlinePlaceholderAlignment _mapAlignment(ui.PlaceholderAlignment a) =>
 /// 'ital'/'slnt' when the font exposes those axes. Explicit fontVariations
 /// win. Non-variable fonts pass through untouched, so this is safe to apply
 /// to any resolved font (variant() ignores unknown axes and clamps ranges).
-WindfoilFont _withVariations(WindfoilFont font, TextStyle? style) {
+GPUFont _withVariations(GPUFont font, TextStyle? style) {
   if (font.variationAxes.isEmpty) return font;
   final coords = <String, double>{};
   final weight = style?.fontWeight;
@@ -82,7 +82,7 @@ wf.InlineDecoration? _mapDecoration(TextStyle? style) {
 List<wf.InlineItem>? flattenSpan(
   InlineSpan span,
   TextScaler textScaler,
-  WindfoilEngine engine, {
+  GPUTextEngine engine, {
   List<PlaceholderDimensions> placeholderDimensions = const [],
 }) {
   final items = <wf.InlineItem>[];
@@ -143,7 +143,7 @@ List<wf.InlineItem>? flattenSpan(
           null => null,
         };
 
-        wf.TextRun makeRun(String subText, WindfoilFont font,
+        wf.TextRun makeRun(String subText, GPUFont font,
                 String? sourceText, Int32List? sourceMap) =>
             wf.TextRun(
               text: subText,
@@ -282,7 +282,7 @@ List<wf.InlineItem>? flattenSpan(
     } else {
       assert(
         false,
-        'WindfoilRichText does not support ${s.runtimeType}; '
+        'GPURichText does not support ${s.runtimeType}; '
         'the span will be skipped.',
       );
     }

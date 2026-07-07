@@ -12,7 +12,7 @@ import 'font.dart';
 const targetPerBand = 10;
 const maxBands = 64;
 
-/// Must equal SORT_MIN in windfoil.frag — the shader only breaks early on
+/// Must equal SORT_MIN in gputext.frag — the shader only breaks early on
 /// bands it assumes are x-sorted. Upstream re-tuned 8 → 4: the early break
 /// pays on nearly any band, and the sort is build-time-only.
 const bandSortMin = 4;
@@ -227,7 +227,7 @@ class GlyphAtlas {
   final AtlasStats stats;
 }
 
-GlyphAtlas buildGlyphAtlas(WindfoilFont font, String text) {
+GlyphAtlas buildGlyphAtlas(GPUFont font, String text) {
   final chars = text.runes
       .toSet()
       .map(String.fromCharCode)

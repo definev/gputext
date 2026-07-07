@@ -1,5 +1,5 @@
-name: windfoil_flutter
-description: Windfoil vector text renderer ported to Flutter GPU.
+name: gputext
+description: GPUText vector text renderer ported to Flutter GPU.
 publish_to: 'none'
 version: 0.1.0+1
 

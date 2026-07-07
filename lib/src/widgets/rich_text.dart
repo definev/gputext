@@ -1,5 +1,5 @@
-// WindfoilRichText — a drop-in replacement for RichText whose glyphs are
-// rasterized by the windfoil coverage shader instead of the engine's text
+// GPURichText — a drop-in replacement for RichText whose glyphs are
+// rasterized by the gputext coverage shader instead of the engine's text
 // pipeline.
 //
 // Layout is pure Dart (font metrics only) in logical pixels; painting emits
@@ -18,11 +18,11 @@
 // Emoji are supported by delegation: expandEmojiSpans rewrites emoji
 // clusters (ZWJ sequences, skin tones, flags, keycaps) into baseline-aligned
 // inline Text children, so the platform's color-emoji font renders them
-// while windfoil renders everything else.
+// while gputext renders everything else.
 //
 // Font fallback is two-layered: the flattener resolves each character
 // against TextStyle.fontFamilyFallback + the engine's fallback chain
-// (still windfoil-rendered), and expandUncoveredSpans delegates characters
+// (still gputext-rendered), and expandUncoveredSpans delegates characters
 // no registered font covers to inline engine Text (platform fallback).
 //
 // Accessibility and pointer parity: link spans are exposed as individually
@@ -67,8 +67,8 @@ const _maxSurfaceDim = 8192;
 /// font covers into inline engine-Text spans (consulting loaded fonts via
 /// ListenableBuilder, so late-loading fonts re-expand), then builds the
 /// render-object widget.
-class WindfoilRichText extends StatelessWidget {
-  const WindfoilRichText({
+class GPURichText extends StatelessWidget {
+  const GPURichText({
     super.key,
     required this.text,
     this.textAlign = TextAlign.start,
@@ -108,7 +108,7 @@ class WindfoilRichText extends StatelessWidget {
 
   /// Selection registrar. Unlike RichText, a null registrar falls back to
   /// the enclosing [SelectionContainer] (Text.rich behavior), so a plain
-  /// WindfoilRichText participates in SelectionArea without extra plumbing.
+  /// GPURichText participates in SelectionArea without extra plumbing.
   final SelectionRegistrar? selectionRegistrar;
   final Color? selectionColor;
 
@@ -131,11 +131,11 @@ class WindfoilRichText extends StatelessWidget {
     final registrar =
         selectionRegistrar ?? SelectionContainer.maybeOf(context);
     return ListenableBuilder(
-      listenable: Windfoil.instance,
+      listenable: GPUText.instance,
       builder: (context, _) {
-        var effective = expandEmojiSpans(text, Windfoil.instance);
-        effective = expandUncoveredSpans(effective, Windfoil.instance);
-        return _RawWindfoilRichText(
+        var effective = expandEmojiSpans(text, GPUText.instance);
+        effective = expandUncoveredSpans(effective, GPUText.instance);
+        return _RawGPURichText(
           text: text,
           effectiveText: effective,
           textAlign: textAlign,
@@ -172,8 +172,8 @@ class WindfoilRichText extends StatelessWidget {
   }
 }
 
-class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
-  _RawWindfoilRichText({
+class _RawGPURichText extends MultiChildRenderObjectWidget {
+  _RawGPURichText({
     required this.text,
     required this.effectiveText,
     this.textAlign = TextAlign.start,
@@ -231,8 +231,8 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
   final wf.LineBreaker lineBreaker;
 
   @override
-  RenderWindfoilParagraph createRenderObject(BuildContext context) {
-    return RenderWindfoilParagraph(
+  RenderGPUParagraph createRenderObject(BuildContext context) {
+    return RenderGPUParagraph(
       text: effectiveText,
       // The label is derived lazily from this span (placeholders excluded:
       // object-replacement chars are noise to screen readers, and WidgetSpan
@@ -261,7 +261,7 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
 
   @override
   void updateRenderObject(
-      BuildContext context, RenderWindfoilParagraph renderObject) {
+      BuildContext context, RenderGPUParagraph renderObject) {
     renderObject
       ..text = effectiveText
       ..semanticsSource = text
@@ -293,11 +293,11 @@ class _RawWindfoilRichText extends MultiChildRenderObjectWidget {
   }
 }
 
-class RenderWindfoilParagraph extends RenderBox
+class RenderGPUParagraph extends RenderBox
     with
         ContainerRenderObjectMixin<RenderBox, TextParentData>,
         RenderInlineChildrenContainerDefaults {
-  RenderWindfoilParagraph({
+  RenderGPUParagraph({
     required this._text,
     required this._semanticsSource,
     required this._textAlign,
@@ -316,7 +316,7 @@ class RenderWindfoilParagraph extends RenderBox
     this._textHeightBehavior,
   });
 
-  final WindfoilEngine _engine = Windfoil.instance;
+  final GPUTextEngine _engine = GPUText.instance;
 
   // ---- layout artifacts ----
   wf.ParagraphLines? _para;
@@ -1467,7 +1467,7 @@ class RenderWindfoilParagraph extends RenderBox
       // Release an unpresented frame; otherwise every future resize() on
       // this surface throws "frame still acquired". No-op after present().
       frame?.discard();
-      debugPrint('windfoil: paragraph render failed: $e');
+      debugPrint('gputext: paragraph render failed: $e');
       return false;
     }
     debugSurfaceRenders++;
@@ -1525,7 +1525,7 @@ class RenderWindfoilParagraph extends RenderBox
 class _SelectableFragment with ChangeNotifier implements Selectable {
   _SelectableFragment(this.paragraph, this.range);
 
-  final RenderWindfoilParagraph paragraph;
+  final RenderGPUParagraph paragraph;
 
   /// Source-text offsets covered by this fragment (no placeholders inside).
   final TextRange range;

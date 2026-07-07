@@ -1,9 +1,9 @@
 // Tier D — visual quality metrics (no goldens, numbers only).
 //
 // Both engines render the same span side by side (untimed), each inside a
-// keyed RepaintBoundary over a white background; after the windfoil
+// keyed RepaintBoundary over a white background; after the gputext
 // render/heal machinery settles we capture both boundaries with
-// OffsetLayer.toImage and diff lumas in Dart. Windfoil blits a
+// OffsetLayer.toImage and diff lumas in Dart. GPUText blits a
 // GPU-surface-backed ui.Image, and toImage re-rasterizes the layer tree, so
 // on-device capture is expected to work — but the whole tier degrades to a
 // 'capture-unsupported' entry instead of failing the run if it does not.
@@ -25,7 +25,7 @@ class VisualDiff {
     required this.inkCoveragePct,
   });
 
-  final List<int> widthPx; // [windfoil, richtext]
+  final List<int> widthPx; // [gputext, richtext]
   final List<int> heightPx;
 
   /// Mean |lumaA - lumaB| over the common area, normalized to 0..1.
@@ -110,14 +110,14 @@ Future<VisualDiff> diffImages(ui.Image a, ui.Image b) async {
 /// back as a 'capture-unsupported' entry so the rest of the run proceeds.
 Future<Map<String, Object?>> diffPair({
   required String id,
-  required GlobalKey windfoilKey,
+  required GlobalKey gputextKey,
   required GlobalKey richtextKey,
   required double pixelRatio,
 }) async {
   ui.Image? a;
   ui.Image? b;
   try {
-    a = await captureBoundary(windfoilKey, pixelRatio);
+    a = await captureBoundary(gputextKey, pixelRatio);
     b = await captureBoundary(richtextKey, pixelRatio);
     final diff = await diffImages(a, b);
     return {'id': id, 'status': 'ready', ...diff.toJson()};

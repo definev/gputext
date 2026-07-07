@@ -4,12 +4,12 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/windfoil_flutter.dart';
+import 'package:gputext/gputext.dart';
 
 void main() {
   setUpAll(() {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    Windfoil.instance.registerFont('Lato', WindfoilFont.parse(bytes));
+    GPUText.instance.registerFont('Lato', GPUFont.parse(bytes));
   });
 
   const style = TextStyle(fontFamily: 'Lato', fontSize: 16);
@@ -21,7 +21,7 @@ void main() {
         home: Center(
           child: SizedBox(
             width: 160,
-            child: WindfoilRichText(
+            child: GPURichText(
               text: TextSpan(
                   style: style,
                   text: 'a long sentence that definitely wraps onto '
@@ -31,7 +31,7 @@ void main() {
         ),
       ),
     );
-    final size = tester.getSize(find.byType(WindfoilRichText));
+    final size = tester.getSize(find.byType(GPURichText));
     expect(size.width, 160);
     // Wrapped: taller than any single Lato line at 16px (~19px).
     expect(size.height, greaterThan(30));
@@ -42,13 +42,13 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
-          child: WindfoilRichText(
+          child: GPURichText(
             text: TextSpan(style: style, text: 'hi'),
           ),
         ),
       ),
     );
-    final size = tester.getSize(find.byType(WindfoilRichText));
+    final size = tester.getSize(find.byType(GPURichText));
     expect(size.width, greaterThan(2));
     expect(size.width, lessThan(40));
     expect(size.height, greaterThan(10));
@@ -66,7 +66,7 @@ void main() {
           home: Center(
             child: SizedBox(
               width: 120,
-              child: WindfoilRichText(
+              child: GPURichText(
                 text: span,
                 maxLines: maxLines,
                 overflow: TextOverflow.ellipsis,
@@ -75,7 +75,7 @@ void main() {
           ),
         ),
       );
-      return tester.getSize(find.byType(WindfoilRichText));
+      return tester.getSize(find.byType(GPURichText));
     }
 
     final unlimited = await sizeFor(null);
@@ -92,11 +92,11 @@ void main() {
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              WindfoilRichText(
+              GPURichText(
                   text: TextSpan(
                       style: TextStyle(fontFamily: 'Lato', fontSize: 32),
                       text: 'Big')),
-              WindfoilRichText(
+              GPURichText(
                   text: TextSpan(
                       style: TextStyle(fontFamily: 'Lato', fontSize: 12),
                       text: 'small')),
@@ -105,8 +105,8 @@ void main() {
         ),
       ),
     );
-    final big = tester.getRect(find.byType(WindfoilRichText).first);
-    final small = tester.getRect(find.byType(WindfoilRichText).last);
+    final big = tester.getRect(find.byType(GPURichText).first);
+    final small = tester.getRect(find.byType(GPURichText).last);
     // Baselines align: the small text's top sits well below the big one's.
     expect(small.top, greaterThan(big.top + 10));
     // And ascent proportionality holds approximately (same font):
@@ -124,9 +124,9 @@ void main() {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                WindfoilRichText(
+                GPURichText(
                     text: TextSpan(style: style, text: 'short')),
-                WindfoilRichText(
+                GPURichText(
                     text: TextSpan(style: style, text: 'a longer line')),
               ],
             ),
@@ -147,7 +147,7 @@ void main() {
         home: Center(
           child: SizedBox(
             width: 260,
-            child: WindfoilRichText(
+            child: GPURichText(
               text: TextSpan(style: style, children: [
                 const TextSpan(text: 'tap '),
                 WidgetSpan(
@@ -172,7 +172,7 @@ void main() {
       ),
     );
     final boxRect = tester.getRect(find.byKey(const Key('box')));
-    final paraRect = tester.getRect(find.byType(WindfoilRichText));
+    final paraRect = tester.getRect(find.byType(GPURichText));
     expect(boxRect.width, 24);
     expect(paraRect.contains(boxRect.center), isTrue);
     expect(boxRect.left, greaterThan(paraRect.left + 5)); // after 'tap '
@@ -185,7 +185,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
-          child: WindfoilRichText(
+          child: GPURichText(
             text: TextSpan(style: style, children: const [
               TextSpan(text: 'x'),
               WidgetSpan(
@@ -197,7 +197,7 @@ void main() {
         ),
       ),
     );
-    final size = tester.getSize(find.byType(WindfoilRichText));
+    final size = tester.getSize(find.byType(GPURichText));
     expect(size.height, greaterThanOrEqualTo(40));
   });
 
@@ -211,7 +211,7 @@ void main() {
         home: Center(
           child: SizedBox(
             width: 400,
-            child: WindfoilRichText(
+            child: GPURichText(
               text: TextSpan(style: style, children: [
                 const TextSpan(text: 'x '),
                 TextSpan(
@@ -225,7 +225,7 @@ void main() {
         ),
       ),
     );
-    final rect = tester.getRect(find.byType(WindfoilRichText));
+    final rect = tester.getRect(find.byType(GPURichText));
     // The box may be wider than the text (tight constraints); the link
     // dominates the line, so its glyphs span the horizontal center.
     await tester.tapAt(Offset(rect.left + 120, rect.top + 10)); // in link
@@ -238,7 +238,7 @@ void main() {
 
   testWidgets('identical paragraphs share one layout via the engine cache',
       (tester) async {
-    final engine = Windfoil.instance;
+    final engine = GPUText.instance;
     final hitsBefore = engine.debugLayoutCacheHits;
     const span = TextSpan(
         style: style,
@@ -246,14 +246,14 @@ void main() {
     await tester.pumpWidget(
       const MaterialApp(
         home: Column(children: [
-          SizedBox(width: 250, child: WindfoilRichText(text: span)),
-          SizedBox(width: 250, child: WindfoilRichText(text: span)),
+          SizedBox(width: 250, child: GPURichText(text: span)),
+          SizedBox(width: 250, child: GPURichText(text: span)),
         ]),
       ),
     );
     expect(engine.debugLayoutCacheHits, greaterThan(hitsBefore));
     final rects = tester
-        .widgetList(find.byType(WindfoilRichText))
+        .widgetList(find.byType(GPURichText))
         .toList(growable: false);
     expect(rects.length, 2);
   });
@@ -262,11 +262,11 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
-          child: WindfoilRichText(text: TextSpan(style: style, text: '')),
+          child: GPURichText(text: TextSpan(style: style, text: '')),
         ),
       ),
     );
-    final size = tester.getSize(find.byType(WindfoilRichText));
+    final size = tester.getSize(find.byType(GPURichText));
     expect(size.width, 0);
     expect(size.height, greaterThan(10));
   });

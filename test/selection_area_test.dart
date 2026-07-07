@@ -10,17 +10,17 @@ import 'package:flutter/rendering.dart' show SelectedContent;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/engine/engine.dart';
-import 'package:windfoil_flutter/src/font.dart';
-import 'package:windfoil_flutter/src/widgets/rich_text.dart';
+import 'package:gputext/src/engine/engine.dart';
+import 'package:gputext/src/font.dart';
+import 'package:gputext/src/widgets/rich_text.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUpAll(() {
-    Windfoil.instance.registerFont(
+    GPUText.instance.registerFont(
       'Lato',
-      WindfoilFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync()),
+      GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync()),
     );
   });
 
@@ -42,12 +42,12 @@ void main() {
     testWidgets('position/caret/boxes/word/line boundaries', (tester) async {
       await tester.pumpWidget(MaterialApp(
         home: Center(
-          child: WindfoilRichText(
+          child: GPURichText(
               text: const TextSpan(text: 'hello world', style: style)),
         ),
       ));
-      final render = tester.renderObject(find.byType(WindfoilRichText))
-          as RenderWindfoilParagraph;
+      final render = tester.renderObject(find.byType(GPURichText))
+          as RenderGPUParagraph;
       expect(render.plainText, 'hello world');
 
       final caret4 = render.getOffsetForCaret(
@@ -73,12 +73,12 @@ void main() {
     testWidgets('mouse drag selects and reports content', (tester) async {
       SelectedContent? content;
       await tester.pumpWidget(host(
-        WindfoilRichText(
+        GPURichText(
             text: const TextSpan(text: 'hello world', style: style)),
         onChanged: (c) => content = c,
       ));
-      final render = tester.renderObject(find.byType(WindfoilRichText))
-          as RenderWindfoilParagraph;
+      final render = tester.renderObject(find.byType(GPURichText))
+          as RenderGPUParagraph;
       Offset globalCaret(int offset) => render.localToGlobal(
           render.getOffsetForCaret(TextPosition(offset: offset), Rect.zero) +
               const Offset(0, 10));
@@ -98,12 +98,12 @@ void main() {
         (tester) async {
       SelectedContent? content;
       await tester.pumpWidget(host(
-        WindfoilRichText(
+        GPURichText(
             text: const TextSpan(text: 'first offer', style: style)),
         onChanged: (c) => content = c,
       ));
-      final render = tester.renderObject(find.byType(WindfoilRichText))
-          as RenderWindfoilParagraph;
+      final render = tester.renderObject(find.byType(GPURichText))
+          as RenderGPUParagraph;
       // The rendered text is ligated (fi, ff → single clusters) but source
       // offsets and copied content must be the original characters.
       expect(render.plainText, 'first offer');
@@ -125,12 +125,12 @@ void main() {
     testWidgets('double click selects a word', (tester) async {
       SelectedContent? content;
       await tester.pumpWidget(host(
-        WindfoilRichText(
+        GPURichText(
             text: const TextSpan(text: 'alpha beta gamma', style: style)),
         onChanged: (c) => content = c,
       ));
-      final render = tester.renderObject(find.byType(WindfoilRichText))
-          as RenderWindfoilParagraph;
+      final render = tester.renderObject(find.byType(GPURichText))
+          as RenderGPUParagraph;
       final betaMid = render.localToGlobal(
           render.getOffsetForCaret(const TextPosition(offset: 8), Rect.zero) +
               const Offset(1, 10));
@@ -150,7 +150,7 @@ void main() {
         (tester) async {
       SelectedContent? content;
       await tester.pumpWidget(host(
-        WindfoilRichText(
+        GPURichText(
           text: const TextSpan(style: style, children: [
             TextSpan(text: 'before '),
             WidgetSpan(child: Text('chip', style: style)),
@@ -174,11 +174,11 @@ void main() {
 
     testWidgets('selection highlight paints rects', (tester) async {
       await tester.pumpWidget(host(
-        WindfoilRichText(
+        GPURichText(
             text: const TextSpan(text: 'hello world', style: style)),
       ));
-      final render = tester.renderObject(find.byType(WindfoilRichText))
-          as RenderWindfoilParagraph;
+      final render = tester.renderObject(find.byType(GPURichText))
+          as RenderGPUParagraph;
       Offset globalCaret(int offset) => render.localToGlobal(
           render.getOffsetForCaret(TextPosition(offset: offset), Rect.zero) +
               const Offset(0, 10));
@@ -193,7 +193,7 @@ void main() {
       // The paragraph paints at least one selection rect.
       expect(render.debugNeedsPaint, isFalse);
       expect(
-        find.byType(WindfoilRichText),
+        find.byType(GPURichText),
         paints..rect(),
       );
     });

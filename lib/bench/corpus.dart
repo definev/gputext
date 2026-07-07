@@ -1,4 +1,4 @@
-// Benchmark corpora: text inputs shared by every tier so windfoil and
+// Benchmark corpora: text inputs shared by every tier so gputext and
 // RichText passes always measure identical content.
 //
 // The .txt files are copies of /pretext/corpora — the TS engine's benchmark

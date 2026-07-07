@@ -6,7 +6,7 @@
 //
 // Text analysis runs over CONCATENATED windows of adjacent TextRuns, so a
 // style change mid-word ("hel" red + "lo" blue) does not create a break
-// opportunity — matching Flutter, not the per-run splitting windfoil did
+// opportunity — matching Flutter, not the per-run splitting gputext did
 // before. A segment that spans style boundaries carries one SegmentPiece per
 // (item, offset-range) slice for measurement and materialization. Emoji and
 // placeholder items are atomic single-piece segments; adjacent-segment

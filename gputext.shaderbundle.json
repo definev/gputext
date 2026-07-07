@@ -1,0 +1,10 @@
+{
+  "GPUTextVertex": {
+    "type": "vertex",
+    "file": "shaders/gputext.vert"
+  },
+  "GPUTextFragment": {
+    "type": "fragment",
+    "file": "shaders/gputext.frag"
+  }
+}

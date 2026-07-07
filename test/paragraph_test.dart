@@ -4,19 +4,19 @@ import 'dart:ui' as ui show PlaceholderAlignment;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/engine/engine.dart';
-import 'package:windfoil_flutter/src/engine/shared_atlas.dart';
-import 'package:windfoil_flutter/src/font.dart';
-import 'package:windfoil_flutter/src/layout.dart' show measureText;
-import 'package:windfoil_flutter/src/paragraph.dart' as wf;
-import 'package:windfoil_flutter/src/widgets/span_flattener.dart';
+import 'package:gputext/src/engine/engine.dart';
+import 'package:gputext/src/engine/shared_atlas.dart';
+import 'package:gputext/src/font.dart';
+import 'package:gputext/src/layout.dart' show measureText;
+import 'package:gputext/src/paragraph.dart' as wf;
+import 'package:gputext/src/widgets/span_flattener.dart';
 
 void main() {
-  late WindfoilFont font;
+  late GPUFont font;
 
   setUpAll(() {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    font = WindfoilFont.parse(bytes);
+    font = GPUFont.parse(bytes);
   });
 
   wf.TextRun run(String text, {double size = 16}) => wf.TextRun(
@@ -152,7 +152,7 @@ void main() {
   });
 
   test('flattenSpan maps PlaceholderSpans to indexed placeholder items', () {
-    Windfoil.instance.registerFont('Lato', font);
+    GPUText.instance.registerFont('Lato', font);
     final items = flattenSpan(
       const TextSpan(
         style: TextStyle(fontFamily: 'Lato', fontSize: 16),
@@ -167,7 +167,7 @@ void main() {
         ],
       ),
       TextScaler.noScaling,
-      Windfoil.instance,
+      GPUText.instance,
       placeholderDimensions: const [
         PlaceholderDimensions(
             size: Size(20, 10), alignment: ui.PlaceholderAlignment.bottom),
@@ -285,7 +285,7 @@ void main() {
   });
 
   test('engine resolves nearest weight/style variant', () {
-    final engine = Windfoil.instance;
+    final engine = GPUText.instance;
     engine.registerFont('VarTest', font);
     engine.registerFont('VarTest', font, weight: FontWeight.w700);
     final regular = engine.resolveFont('VarTest');
@@ -325,7 +325,7 @@ void main() {
   });
 
   test('flattenSpan maps decorations, height, and wordSpacing', () {
-    Windfoil.instance.registerFont('Lato', font);
+    GPUText.instance.registerFont('Lato', font);
     final items = flattenSpan(
       const TextSpan(
         style: TextStyle(
@@ -341,7 +341,7 @@ void main() {
         text: 'x',
       ),
       TextScaler.noScaling,
-      Windfoil.instance,
+      GPUText.instance,
     );
     final r = items!.single as wf.TextRun;
     expect(r.height, 1.5);
@@ -354,7 +354,7 @@ void main() {
   });
 
   test('flattenSpan applies the style cascade and text scaling', () {
-    Windfoil.instance.registerFont('Lato', font);
+    GPUText.instance.registerFont('Lato', font);
     final runs = flattenSpan(
       const TextSpan(
         style: TextStyle(
@@ -365,7 +365,7 @@ void main() {
         ],
       ),
       const TextScaler.linear(2),
-      Windfoil.instance,
+      GPUText.instance,
     );
     expect(runs, isNotNull);
     expect(runs!.length, 2);

@@ -1,4 +1,4 @@
-package com.example.windfoil_flutter
+package com.example.gputext
 
 import io.flutter.embedding.android.FlutterActivity
 

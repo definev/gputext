@@ -1,0 +1,21 @@
+{
+    "configurations": [
+        {
+            "name": "Main",
+            "type": "dart",
+            "request": "launch",
+            "program": "lib/main.dart",
+            "flutterMode": "profile"
+        },
+        {
+            "name": "Bench",
+            "type": "dart",
+            "request": "launch",
+            "program": "lib/main.dart",
+            "flutterMode": "profile",
+            "args": [
+                "--dart-define=GPUTEXT_DEMO=bench"
+            ]
+        }
+    ]
+}

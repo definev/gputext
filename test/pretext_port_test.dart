@@ -9,18 +9,18 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/font.dart';
-import 'package:windfoil_flutter/src/layout.dart' show measureText;
-import 'package:windfoil_flutter/src/paragraph.dart' as wf;
-import 'package:windfoil_flutter/src/text/analysis.dart';
+import 'package:gputext/src/font.dart';
+import 'package:gputext/src/layout.dart' show measureText;
+import 'package:gputext/src/paragraph.dart' as wf;
+import 'package:gputext/src/text/analysis.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  late WindfoilFont font;
+  late GPUFont font;
 
   setUpAll(() async {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    font = WindfoilFont.parse(bytes);
+    font = GPUFont.parse(bytes);
     // Register the same face with Flutter's engine so TextPainter shapes the
     // oracle corpus with identical advances.
     final loader = FontLoader('LatoOracle')
@@ -216,7 +216,7 @@ void main() {
   });
 
   group('TextPainter oracle', () {
-    // No ligature-forming pairs (fi/fl): windfoil applies those in the
+    // No ligature-forming pairs (fi/fl): gputext applies those in the
     // flattener, not in these raw runs, and the oracle would ligate.
     const corpus = [
       'The quick brown zebra jumps over the lazy dog and keeps on running',
@@ -246,7 +246,7 @@ void main() {
 
           final ours = breakAt(text, w).lines.length;
           expect(ours, oracle,
-              reason: '"$text" at width $w: windfoil=$ours flutter=$oracle');
+              reason: '"$text" at width $w: gputext=$ours flutter=$oracle');
         }
       }
     });

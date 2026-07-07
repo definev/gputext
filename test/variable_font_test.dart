@@ -24,20 +24,20 @@ import 'dart:io';
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/engine/engine.dart';
-import 'package:windfoil_flutter/src/font.dart';
-import 'package:windfoil_flutter/src/paragraph.dart' as wf;
-import 'package:windfoil_flutter/src/widgets/span_flattener.dart';
+import 'package:gputext/src/engine/engine.dart';
+import 'package:gputext/src/font.dart';
+import 'package:gputext/src/paragraph.dart' as wf;
+import 'package:gputext/src/widgets/span_flattener.dart';
 
 const _asset = 'assets/Google_Sans_Flex/'
     'GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf';
 const _proxyBase = 0xF0000;
 
 void main() {
-  late WindfoilFont font;
+  late GPUFont font;
 
   setUpAll(() {
-    font = WindfoilFont.parse(File(_asset).readAsBytesSync());
+    font = GPUFont.parse(File(_asset).readAsBytesSync());
   });
 
   group('fvar / variant()', () {
@@ -65,7 +65,7 @@ void main() {
       expect(boldNarrow.variationCoordinates, {'wght': 700, 'wdth': 25});
       // Non-variable fonts pass through.
       final lato =
-          WindfoilFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync());
+          GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync());
       expect(lato.variationAxes, isEmpty);
       expect(identical(lato.variant({'wght': 700}), lato), isTrue);
     });
@@ -149,14 +149,14 @@ void main() {
       expect(black[3], closeTo(-1559 + 1597, 1));
 
       final lato =
-          WindfoilFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync());
+          GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync());
       final latoBox = lato.glyphQuads('é')!.bbox;
       expect(latoBox[0], closeTo(74, 1));
       expect(latoBox[2], closeTo(74 + 893, 1));
     });
 
     test('intermediate weights interpolate between masters', () {
-      double stemWidth(WindfoilFont f) {
+      double stemWidth(GPUFont f) {
         final b = f.glyphQuads('H')!.bbox;
         return b[2] - b[0];
       }
@@ -242,7 +242,7 @@ void main() {
 
   group('span flattener integration', () {
     test('fontVariations and fontWeight map onto variant instances', () {
-      final engine = Windfoil.instance;
+      final engine = GPUText.instance;
       engine.registerFont('Flex', font);
 
       final explicit = flattenSpan(
@@ -297,7 +297,7 @@ void main() {
     });
 
     test('italic style leans on the slnt axis', () {
-      final engine = Windfoil.instance;
+      final engine = GPUText.instance;
       engine.registerFont('Flex', font);
       final items = flattenSpan(
         const TextSpan(
@@ -313,7 +313,7 @@ void main() {
     });
 
     test('fontFeatures flow through shaping', () {
-      final engine = Windfoil.instance;
+      final engine = GPUText.instance;
       engine.registerFont('Flex', font);
       final items = flattenSpan(
         const TextSpan(
@@ -332,7 +332,7 @@ void main() {
     });
 
     test('letterSpacing disables default ligatures but not explicit ones', () {
-      final engine = Windfoil.instance;
+      final engine = GPUText.instance;
       engine.registerFont('Flex', font);
       List<wf.InlineItem> flatten(TextStyle style) => flattenSpan(
             TextSpan(text: 'fi', style: style),

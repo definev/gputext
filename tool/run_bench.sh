@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Windfoil benchmark runner: profile-mode macOS run of WINDFOIL_DEMO=bench,
-# extracts the WFBENCH stdout report into benchmark/results/, and prints a
+# GPUText benchmark runner: profile-mode macOS run of GPUTEXT_DEMO=bench,
+# extracts the GPUBENCH stdout report into benchmark/results/, and prints a
 # delta table against the committed baseline.
 #
 #   tool/run_bench.sh                       full run + baseline comparison
-#   WINDFOIL_BENCH_QUICK=1 tool/run_bench.sh          short smoke run
-#   WINDFOIL_BENCH_FILTER=frame.zoom tool/run_bench.sh   subset by id prefix
+#   GPUTEXT_BENCH_QUICK=1 tool/run_bench.sh          short smoke run
+#   GPUTEXT_BENCH_FILTER=frame.zoom tool/run_bench.sh   subset by id prefix
 #   tool/run_bench.sh --update-baseline     copy this run over the baseline
 #
 # Keep the app window foregrounded while it runs — background throttling
@@ -26,19 +26,19 @@ for a in "$@"; do
   esac
 done
 
-log=$(mktemp -t windfoil-bench.XXXXXX)
-echo "windfoil bench: flutter run --profile -d macos (log: $log)"
+log=$(mktemp -t gputext-bench.XXXXXX)
+echo "gputext bench: flutter run --profile -d macos (log: $log)"
 # The app exit(0)s after emitting the report, which ends flutter run.
-WINDFOIL_DEMO=bench flutter run --profile -d macos ${FLUTTER_ARGS+"${FLUTTER_ARGS[@]}"} 2>&1 | tee "$log" || true
+GPUTEXT_DEMO=bench flutter run --profile -d macos ${FLUTTER_ARGS+"${FLUTTER_ARGS[@]}"} 2>&1 | tee "$log" || true
 
-# Report lines arrive as "flutter: WFBENCH:..." through flutter run; accept
+# Report lines arrive as "flutter: GPUBENCH:..." through flutter run; accept
 # bare lines too in case the tool changes its prefixing.
-json=$(sed -n -e 's/^flutter: WFBENCH:J://p' -e 's/^WFBENCH:J://p' "$log" | tr -d '\n')
-expected=$(sed -n -e 's/^flutter: WFBENCH:END bytes=\([0-9]*\).*/\1/p' \
-                  -e 's/^WFBENCH:END bytes=\([0-9]*\).*/\1/p' "$log" | tail -1)
+json=$(sed -n -e 's/^flutter: GPUBENCH:J://p' -e 's/^GPUBENCH:J://p' "$log" | tr -d '\n')
+expected=$(sed -n -e 's/^flutter: GPUBENCH:END bytes=\([0-9]*\).*/\1/p' \
+                  -e 's/^GPUBENCH:END bytes=\([0-9]*\).*/\1/p' "$log" | tail -1)
 
 if [ -z "$json" ] || [ -z "$expected" ]; then
-  echo "error: no WFBENCH report found in flutter run output" >&2
+  echo "error: no GPUBENCH report found in flutter run output" >&2
   exit 1
 fi
 actual=${#json}

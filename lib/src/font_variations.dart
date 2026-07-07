@@ -2,8 +2,8 @@
 // deltas (with IUP inference), and the item-variation-store consumers HVAR
 // (advance widths) and MVAR (global metrics).
 //
-// Variable instances are exposed through [WindfoilFontVariations.variant]:
-// a per-coordinate WindfoilFont that shares every parsed table with its base
+// Variable instances are exposed through [GPUFontVariations.variant]:
+// a per-coordinate GPUFont that shares every parsed table with its base
 // and is cached by canonical coordinates, so identity-keyed consumers (the
 // shared glyph atlas, segment-metrics Expando, kerning-run checks) treat each
 // instance like any other font with zero changes.
@@ -594,7 +594,7 @@ double _iupValue(double target, double c1, double d1, double c2, double d2) {
 // ---------------------------------------------------------------------------
 // Public variation API.
 
-extension WindfoilFontVariations on WindfoilFont {
+extension GPUFontVariations on GPUFont {
   /// Design axes from fvar; empty for non-variable fonts.
   List<FontAxis> get variationAxes => _fvar?.axes ?? const <FontAxis>[];
 
@@ -607,7 +607,7 @@ extension WindfoilFontVariations on WindfoilFont {
   /// coordinates, so equal requests return the IDENTICAL object — everything
   /// downstream (glyph atlas, metrics caches, kerning runs) keys by font
   /// identity.
-  WindfoilFont variant(Map<String, double> coordinates) {
+  GPUFont variant(Map<String, double> coordinates) {
     final base = _base ?? this;
     final fvar = base._fvar;
     if (fvar == null || fvar.axes.isEmpty) return this;
@@ -629,7 +629,7 @@ extension WindfoilFontVariations on WindfoilFont {
     return base._variantCache[key] ??= base._instantiate(canonical);
   }
 
-  WindfoilFont _instantiate(Map<String, double> coords) {
+  GPUFont _instantiate(Map<String, double> coords) {
     final fvar = _fvar!;
     final norm = Float64List(fvar.axes.length);
     for (var i = 0; i < fvar.axes.length; i++) {
@@ -678,7 +678,7 @@ extension WindfoilFontVariations on WindfoilFont {
       );
     }
 
-    return WindfoilFont._(
+    return GPUFont._(
       unitsPerEm: unitsPerEm,
       verticalMetrics: vMetrics,
       decorationMetrics: dMetrics,

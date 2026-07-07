@@ -3,16 +3,16 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/engine/shared_atlas.dart';
-import 'package:windfoil_flutter/src/paragraph.dart' as wf;
-import 'package:windfoil_flutter/src/widgets/emoji.dart';
-import 'package:windfoil_flutter/src/widgets/span_flattener.dart';
-import 'package:windfoil_flutter/windfoil_flutter.dart';
+import 'package:gputext/src/engine/shared_atlas.dart';
+import 'package:gputext/src/paragraph.dart' as wf;
+import 'package:gputext/src/widgets/emoji.dart';
+import 'package:gputext/src/widgets/span_flattener.dart';
+import 'package:gputext/gputext.dart';
 
 void main() {
   setUpAll(() {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    Windfoil.instance.registerFont('Lato', WindfoilFont.parse(bytes));
+    GPUText.instance.registerFont('Lato', GPUFont.parse(bytes));
   });
 
   group('splitEmojiSegments', () {
@@ -60,7 +60,7 @@ void main() {
   group('expandEmojiSpans', () {
     test('returns the identical span when no emoji present', () {
       const span = TextSpan(text: 'plain', style: TextStyle(fontSize: 20));
-      expect(identical(expandEmojiSpans(span, Windfoil.instance), span), isTrue);
+      expect(identical(expandEmojiSpans(span, GPUText.instance), span), isTrue);
     });
 
     test('splits emoji into baseline WidgetSpans with inherited size', () {
@@ -68,7 +68,7 @@ void main() {
         style: TextStyle(fontSize: 24),
         text: 'a🌚b',
       );
-      final out = expandEmojiSpans(span, Windfoil.instance) as TextSpan;
+      final out = expandEmojiSpans(span, GPUText.instance) as TextSpan;
       expect(out.text, isNull);
       final children = out.children!;
       expect(children.length, 3);
@@ -82,14 +82,14 @@ void main() {
     });
   });
 
-  testWidgets('WindfoilRichText renders emoji as inline engine Text',
+  testWidgets('GPURichText renders emoji as inline engine Text',
       (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
           child: SizedBox(
             width: 300,
-            child: WindfoilRichText(
+            child: GPURichText(
               text: const TextSpan(
                 style: TextStyle(fontFamily: 'Lato', fontSize: 16),
                 text: 'moon 🌚 and family 👨‍👩‍👧 wrap along with text',
@@ -102,7 +102,7 @@ void main() {
     expect(find.text('🌚'), findsOneWidget);
     expect(find.text('👨‍👩‍👧'), findsOneWidget);
     final emojiRect = tester.getRect(find.text('🌚'));
-    final paraRect = tester.getRect(find.byType(WindfoilRichText));
+    final paraRect = tester.getRect(find.byType(GPURichText));
     expect(paraRect.contains(emojiRect.center), isTrue);
     // Emoji box is roughly font-sized, positioned after 'moon '.
     expect(emojiRect.left, greaterThan(paraRect.left + 10));
@@ -110,15 +110,15 @@ void main() {
   });
 
   group('native COLR emoji', () {
-    late WindfoilFont twemoji;
+    late GPUFont twemoji;
 
     setUpAll(() {
-      twemoji = WindfoilFont.parse(
+      twemoji = GPUFont.parse(
           File('assets/TwemojiMozilla.ttf').readAsBytesSync());
     });
 
-    setUp(() => Windfoil.instance.registerEmojiFont(twemoji));
-    tearDown(() => Windfoil.instance.registerEmojiFont(null));
+    setUp(() => GPUText.instance.registerEmojiFont(twemoji));
+    tearDown(() => GPUText.instance.registerEmojiFont(null));
 
     test('COLR layers parse with palette colors and outlines', () {
       expect(twemoji.hasColorGlyphs, isTrue);
@@ -135,7 +135,7 @@ void main() {
         text: 'a \u{1F31A} b \u2764',
       );
       expect(
-          identical(expandEmojiSpans(span, Windfoil.instance), span), isTrue);
+          identical(expandEmojiSpans(span, GPUText.instance), span), isTrue);
     });
 
     test('sequences still delegate (until GSUB lands)', () {
@@ -144,7 +144,7 @@ void main() {
         text: 'family \u{1F468}\u200D\u{1F469}\u200D\u{1F467} '
             'flag \u{1F1FB}\u{1F1F3} tone \u{1F44D}\u{1F3FD}',
       );
-      final out = expandEmojiSpans(span, Windfoil.instance) as TextSpan;
+      final out = expandEmojiSpans(span, GPUText.instance) as TextSpan;
       final widgets = out.children!.whereType<WidgetSpan>().length;
       expect(widgets, 3);
     });
@@ -156,7 +156,7 @@ void main() {
           text: 'a\u{1F31A}b',
         ),
         TextScaler.noScaling,
-        Windfoil.instance,
+        GPUText.instance,
       )!;
       expect(items.length, 3);
       final emoji = items[1] as wf.EmojiItem;
@@ -172,7 +172,7 @@ void main() {
           text: '\u{1F31A}',
         ),
         TextScaler.noScaling,
-        Windfoil.instance,
+        GPUText.instance,
       )!;
       final emoji = items.single as wf.EmojiItem;
       final atlas = SharedGlyphAtlas();
@@ -196,7 +196,7 @@ void main() {
       await tester.pumpWidget(
         const MaterialApp(
           home: Center(
-            child: WindfoilRichText(
+            child: GPURichText(
               text: TextSpan(
                 style: TextStyle(fontFamily: 'Lato', fontSize: 16),
                 text: 'moon \u{1F31A} native',
@@ -206,7 +206,7 @@ void main() {
         ),
       );
       expect(find.text('\u{1F31A}'), findsNothing); // no delegated child
-      final size = tester.getSize(find.byType(WindfoilRichText));
+      final size = tester.getSize(find.byType(GPURichText));
       expect(size.width, greaterThan(60)); // emoji advance included
     });
   });
@@ -215,7 +215,7 @@ void main() {
       (tester) async {
     await tester.pumpWidget(
       MaterialApp(
-        home: WindfoilRichText(
+        home: GPURichText(
           text: const TextSpan(
             style: TextStyle(fontFamily: 'Lato', fontSize: 16),
             text: 'hi 🌚',
@@ -223,7 +223,7 @@ void main() {
         ),
       ),
     );
-    final semantics = tester.getSemantics(find.byType(WindfoilRichText));
+    final semantics = tester.getSemantics(find.byType(GPURichText));
     expect(semantics.label, contains('🌚'));
   });
 }

@@ -1,14 +1,14 @@
 // Interactive playground for OpenType variable-font axes rendered through
-// WindfoilRichText. Google Sans Flex exposes opsz, wdth, wght, GRAD, ROND,
+// GPURichText. Google Sans Flex exposes opsz, wdth, wght, GRAD, ROND,
 // and slnt; sliders drive TextStyle.fontVariations and the span flattener
-// maps them onto WindfoilFont.variant() instances.
+// maps them onto GPUFont.variant() instances.
 //
-// Dev hook (demo only): WINDFOIL_DEMO=vars opens this page directly.
+// Dev hook (demo only): GPUTEXT_DEMO=vars opens this page directly.
 
 import 'package:flutter/material.dart';
 
 import 'src/font.dart';
-import 'windfoil_flutter.dart';
+import 'gputext.dart';
 
 const _fontFamily = 'Google Sans Flex';
 const _fontAsset =
@@ -23,7 +23,7 @@ const _headlineSize = 42.0;
 const _bodySize = 17.0;
 const _specimenSize = 28.0;
 
-const _headline = 'Variable fonts, rendered by windfoil';
+const _headline = 'Variable fonts, rendered by gputext';
 const _body =
     'Drag the axis sliders to morph weight, width, slant, optical size, '
     'grade, and roundness in real time. Every glyph is rasterized by the '
@@ -74,8 +74,8 @@ class _VariableFontDemoPageState extends State<VariableFontDemoPage> {
 
   Future<void> _bootstrap() async {
     try {
-      await Windfoil.instance.loadFontAsset(_fontFamily, _fontAsset);
-      final font = Windfoil.instance.resolveFont(_fontFamily);
+      await GPUText.instance.loadFontAsset(_fontFamily, _fontAsset);
+      final font = GPUText.instance.resolveFont(_fontFamily);
       if (font == null) {
         throw StateError('$_fontFamily failed to register');
       }
@@ -263,12 +263,12 @@ class _VariableFontDemoPageState extends State<VariableFontDemoPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('Variable font playground')),
       body: ListenableBuilder(
-        listenable: Windfoil.instance,
+        listenable: GPUText.instance,
         builder: (context, _) => ListView(
           padding: const EdgeInsets.all(16),
           children: [
             Text(
-              'OpenType design axes drive WindfoilFont.variant() through '
+              'OpenType design axes drive GPUFont.variant() through '
               'TextStyle.fontVariations. Outline deltas (gvar), advance '
               'widths (HVAR), and global metrics (MVAR) all interpolate '
               'live — no separate font files per weight.',
@@ -349,7 +349,7 @@ class _VariableFontDemoPageState extends State<VariableFontDemoPage> {
               ],
             ),
             const SizedBox(height: 16),
-            _previewPane('windfoil', WindfoilRichText(text: _previewSpan())),
+            _previewPane('gputext', GPURichText(text: _previewSpan())),
             if (_compareFlutter) ...[
               const SizedBox(height: 12),
               _previewPane('stock RichText', RichText(text: _previewSpan())),
@@ -425,7 +425,7 @@ class _WeightLadder extends StatelessWidget {
                     ),
                   ),
                   Expanded(
-                    child: WindfoilRichText(
+                    child: GPURichText(
                       text: TextSpan(
                         text: 'Ag',
                         style: style.copyWith(
@@ -436,7 +436,7 @@ class _WeightLadder extends StatelessWidget {
                     ),
                   ),
                   Expanded(
-                    child: WindfoilRichText(
+                    child: GPURichText(
                       text: TextSpan(
                         text: 'Ag',
                         style: style.copyWith(

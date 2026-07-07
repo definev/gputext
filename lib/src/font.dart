@@ -9,7 +9,7 @@ enum FillRule { nonzero, evenOdd }
 /// precomposed compatibility code points when the font maps them — a
 /// pragmatic GSUB-'liga' subset that rides the existing cmap pipeline.
 /// Callers should skip this when letterSpacing != 0 (typographic rule).
-String applyBasicLigatures(String text, WindfoilFont font) {
+String applyBasicLigatures(String text, GPUFont font) {
   var out = text;
   if (out.contains('ffi') && font.hasGlyph('ﬃ')) {
     out = out.replaceAll('ffi', 'ﬃ');
@@ -149,8 +149,8 @@ class _ByteReader {
   }
 }
 
-class WindfoilFont {
-  WindfoilFont._({
+class GPUFont {
+  GPUFont._({
     required this.unitsPerEm,
     required this.verticalMetrics,
     required this.decorationMetrics,
@@ -199,19 +199,19 @@ class WindfoilFont {
 
   /// Design-space coordinates this instance was created with (non-default
   /// axes only); empty for the base instance. See
-  /// [WindfoilFontVariations.variant].
+  /// [GPUFontVariations.variant].
   final Map<String, double> variationCoordinates;
 
   /// Normalized (F2Dot14-rounded, avar-mapped) coordinates; null on the base.
   final Float64List? _normCoords;
 
   /// Base font this variant was instanced from; null on the base.
-  final WindfoilFont? _base;
+  final GPUFont? _base;
 
   /// Variant instances by canonical coordinate key (base font only).
-  final Map<String, WindfoilFont> _variantCache = {};
+  final Map<String, GPUFont> _variantCache = {};
 
-  static WindfoilFont parse(Uint8List bytes) {
+  static GPUFont parse(Uint8List bytes) {
     final data = ByteData.sublistView(bytes);
     final r = _ByteReader(data);
     final scalerType = r.readU32();
@@ -384,7 +384,7 @@ class WindfoilFont {
       }
     }
 
-    return WindfoilFont._(
+    return GPUFont._(
       unitsPerEm: unitsPerEm,
       verticalMetrics: VerticalMetrics(
         ascender: ascender,

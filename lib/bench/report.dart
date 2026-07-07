@@ -4,11 +4,11 @@
 // entitlement files), so results leave the process on stdout: a marker
 // protocol tool/run_bench.sh greps back out of `flutter run` output.
 //
-//   WFBENCH:BEGIN v1
-//   WFBENCH:J:<≤6000-char slice of compact JSON>   (repeated)
-//   WFBENCH:END bytes=<total JSON length>
+//   GPUBENCH:BEGIN v1
+//   GPUBENCH:J:<≤6000-char slice of compact JSON>   (repeated)
+//   GPUBENCH:END bytes=<total JSON length>
 //
-// Schema id: windfoil-flutter-bench/v1. Entry shape mirrors the TS harness
+// Schema id: gputext-bench/v1. Entry shape mirrors the TS harness
 // snapshots in /pretext/benchmarks (label/ms/desc) extended per tier; every
 // entry carries {id, engine, label, desc, path} where path is one of
 // pure | hybrid | cache-disabled | no-counterpart.
@@ -17,7 +17,7 @@ import 'dart:convert';
 
 import 'stats.dart';
 
-const benchSchema = 'windfoil-flutter-bench/v1';
+const benchSchema = 'gputext-bench/v1';
 const _chunkSize = 6000;
 
 class BenchReport {
@@ -95,17 +95,17 @@ Map<String, Object?> frameResult({
 
 /// Split compact JSON into marker lines (pure so tests can round-trip it).
 List<String> chunkReportLines(String json) => [
-      'WFBENCH:BEGIN v1',
+      'GPUBENCH:BEGIN v1',
       for (var i = 0; i < json.length; i += _chunkSize)
-        'WFBENCH:J:${json.substring(i, i + _chunkSize > json.length ? json.length : i + _chunkSize)}',
-      'WFBENCH:END bytes=${json.length}',
+        'GPUBENCH:J:${json.substring(i, i + _chunkSize > json.length ? json.length : i + _chunkSize)}',
+      'GPUBENCH:END bytes=${json.length}',
     ];
 
 /// Reassemble what chunkReportLines produced (used by tests; the shell
 /// runner does the same with sed + tr).
 String reassembleChunks(Iterable<String> lines) => lines
-    .where((l) => l.startsWith('WFBENCH:J:'))
-    .map((l) => l.substring('WFBENCH:J:'.length))
+    .where((l) => l.startsWith('GPUBENCH:J:'))
+    .map((l) => l.substring('GPUBENCH:J:'.length))
     .join();
 
 void emitReport(BenchReport report) {
@@ -122,7 +122,7 @@ void emitReport(BenchReport report) {
 /// interactive runs are interpretable without the compare tool.
 String summaryTable(BenchReport report) {
   final b = StringBuffer();
-  b.writeln('── windfoil bench summary ──');
+  b.writeln('── gputext bench summary ──');
   if (report.cpuResults.isNotEmpty) {
     b.writeln('CPU (median ms/batch):');
     for (final r in _paired(report.cpuResults)) {

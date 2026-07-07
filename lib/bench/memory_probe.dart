@@ -1,8 +1,8 @@
 // Tier C — memory sampling.
 //
 // Two sources: process RSS (dart:io ProcessInfo, median of 3 samples 100 ms
-// apart to ride out GC noise), and windfoil-internal accounting collected by
-// walking the live render tree for RenderWindfoilParagraph objects. The
+// apart to ride out GC noise), and gputext-internal accounting collected by
+// walking the live render tree for RenderGPUParagraph objects. The
 // RichText pass reports RSS only — the engine's paragraph memory is opaque
 // from Dart.
 
@@ -23,8 +23,8 @@ Future<int> sampleRss() async {
   return samples[1];
 }
 
-class WindfoilMemorySnapshot {
-  WindfoilMemorySnapshot({
+class GPUTextMemorySnapshot {
+  GPUTextMemorySnapshot({
     required this.atlasGpuBytes,
     required this.atlasCpuBytes,
     required this.atlasGlyphEntries,
@@ -62,13 +62,13 @@ class WindfoilMemorySnapshot {
       };
 }
 
-/// Walk the render tree under [root] and total windfoil paragraph state.
-WindfoilMemorySnapshot snapshotWindfoil(RenderObject? root) {
+/// Walk the render tree under [root] and total gputext paragraph state.
+GPUTextMemorySnapshot snapshotGPUText(RenderObject? root) {
   var imageBytes = 0;
   var instanceBytes = 0;
   var paragraphs = 0;
   void visit(RenderObject node) {
-    if (node is RenderWindfoilParagraph) {
+    if (node is RenderGPUParagraph) {
       paragraphs++;
       instanceBytes += node.debugInstanceBytes;
       final size = node.debugImageSize;
@@ -78,14 +78,14 @@ WindfoilMemorySnapshot snapshotWindfoil(RenderObject? root) {
   }
 
   if (root != null) visit(root);
-  final atlas = Windfoil.instance.atlas;
-  return WindfoilMemorySnapshot(
+  final atlas = GPUText.instance.atlas;
+  return GPUTextMemorySnapshot(
     atlasGpuBytes: (atlas.curveFloatCount + atlas.rowCount) * 4,
     atlasCpuBytes: (atlas.curveFloatCount + atlas.rowCount) * 8,
     atlasGlyphEntries: atlas.glyphEntryCount,
     imageBytes: imageBytes,
     instanceBytes: instanceBytes,
     paragraphCount: paragraphs,
-    layoutCacheEntries: Windfoil.instance.debugLayoutCacheLength,
+    layoutCacheEntries: GPUText.instance.debugLayoutCacheLength,
   );
 }

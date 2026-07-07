@@ -3,25 +3,25 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:windfoil_flutter/src/widgets/emoji.dart';
-import 'package:windfoil_flutter/src/widgets/span_flattener.dart';
-import 'package:windfoil_flutter/src/paragraph.dart' as wf;
-import 'package:windfoil_flutter/windfoil_flutter.dart';
+import 'package:gputext/src/widgets/emoji.dart';
+import 'package:gputext/src/widgets/span_flattener.dart';
+import 'package:gputext/src/paragraph.dart' as wf;
+import 'package:gputext/gputext.dart';
 
 const _wideFontPath = '/System/Library/Fonts/Supplemental/Arial Unicode.ttf';
 
 void main() {
-  final engine = Windfoil.instance;
-  late WindfoilFont lato;
-  WindfoilFont? wide;
+  final engine = GPUText.instance;
+  late GPUFont lato;
+  GPUFont? wide;
 
   setUpAll(() {
-    lato = WindfoilFont.parse(
+    lato = GPUFont.parse(
         File('assets/Lato-Regular.ttf').readAsBytesSync());
     engine.registerFont('Lato', lato);
     final wideFile = File(_wideFontPath);
     if (wideFile.existsSync()) {
-      wide = WindfoilFont.parse(wideFile.readAsBytesSync());
+      wide = GPUFont.parse(wideFile.readAsBytesSync());
       engine.registerFont('WideFallback', wide!);
     }
   });
@@ -128,7 +128,7 @@ void main() {
     await tester.pumpWidget(
       const MaterialApp(
         home: Center(
-          child: WindfoilRichText(
+          child: GPURichText(
             text: TextSpan(
               style: TextStyle(fontFamily: 'Lato', fontSize: 16),
               text: 'mixed 漢字 here',
@@ -139,7 +139,7 @@ void main() {
     );
     expect(find.text('漢'), findsOneWidget);
     expect(find.text('字'), findsOneWidget);
-    final paraRect = tester.getRect(find.byType(WindfoilRichText));
+    final paraRect = tester.getRect(find.byType(GPURichText));
     final hanRect = tester.getRect(find.text('漢'));
     expect(paraRect.contains(hanRect.center), isTrue);
   });

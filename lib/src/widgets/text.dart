@@ -1,13 +1,13 @@
-// WindfoilText — convenience mirror of Text built on WindfoilRichText.
-// Unlike WindfoilRichText (which matches RichText's raw semantics), this
+// GPULabel — convenience mirror of Text built on GPURichText.
+// Unlike GPURichText (which matches RichText's raw semantics), this
 // applies the ambient DefaultTextStyle and MediaQuery text scaler.
 
 import 'package:flutter/widgets.dart';
 
 import 'rich_text.dart';
 
-class WindfoilText extends StatelessWidget {
-  const WindfoilText(
+class GPULabel extends StatelessWidget {
+  const GPULabel(
     this.data, {
     super.key,
     this.style,
@@ -41,7 +41,7 @@ class WindfoilText extends StatelessWidget {
     if (style == null || style!.inherit) {
       effectiveStyle = defaults.style.merge(style);
     }
-    Widget result = WindfoilRichText(
+    Widget result = GPURichText(
       text: TextSpan(text: data, style: effectiveStyle),
       textAlign: textAlign ?? defaults.textAlign ?? TextAlign.start,
       textDirection: textDirection,

@@ -1,12 +1,12 @@
-// WINDFOIL_DEMO=bench — the RichText vs WindfoilRichText benchmark runner.
+// GPUTEXT_DEMO=bench — the RichText vs GPURichText benchmark runner.
 //
 // Orchestration order: cold init (must be first — main.dart skips the eager
-// Windfoil.initialize() in bench mode) → font setup → CPU tier → atlas
+// GPUText.initialize() in bench mode) → font setup → CPU tier → atlas
 // cold/warm → frame scenarios × engines → memory tier → visual tier →
 // sanity checks → stdout report → exit(0).
 //
-// Env knobs: WINDFOIL_BENCH_QUICK=1 (short windows), WINDFOIL_BENCH_FILTER=
-// comma-separated id prefixes, WINDFOIL_BENCH_HOLD=1 (don't exit, for
+// Env knobs: GPUTEXT_BENCH_QUICK=1 (short windows), GPUTEXT_BENCH_FILTER=
+// comma-separated id prefixes, GPUTEXT_BENCH_HOLD=1 (don't exit, for
 // interactive inspection). Keep the window foregrounded during a run —
 // background throttling corrupts the numbers.
 
@@ -51,7 +51,7 @@ class _BenchPageState extends State<BenchPage>
 
   late final Ticker _ticker;
   BenchContext? _ctx;
-  WindfoilFont? _cjkFont;
+  GPUFont? _cjkFont;
 
   // Mounted scenario state (all frame-tick derived).
   Widget Function(int tick)? _contentBuilder;
@@ -68,10 +68,10 @@ class _BenchPageState extends State<BenchPage>
 
   String _status = 'starting…';
 
-  bool get _quick => io.Platform.environment['WINDFOIL_BENCH_QUICK'] == '1';
-  bool get _hold => io.Platform.environment['WINDFOIL_BENCH_HOLD'] == '1';
+  bool get _quick => io.Platform.environment['GPUTEXT_BENCH_QUICK'] == '1';
+  bool get _hold => io.Platform.environment['GPUTEXT_BENCH_HOLD'] == '1';
   List<String> get _filterPrefixes =>
-      io.Platform.environment['WINDFOIL_BENCH_FILTER']
+      io.Platform.environment['GPUTEXT_BENCH_FILTER']
           ?.split(',')
           .map((s) => s.trim())
           .where((s) => s.isNotEmpty)
@@ -99,7 +99,7 @@ class _BenchPageState extends State<BenchPage>
   void _progress(String s) {
     if (mounted) setState(() => _status = s);
     // ignore: avoid_print
-    print('windfoil-bench: $s');
+    print('gputext-bench: $s');
   }
 
   void _onTick(Duration _) {
@@ -142,7 +142,7 @@ class _BenchPageState extends State<BenchPage>
   }
 
   ({int curves, int rows, int glyphs}) _atlasCounters() {
-    final atlas = Windfoil.instance.atlas;
+    final atlas = GPUText.instance.atlas;
     return (
       curves: atlas.curveFloatCount,
       rows: atlas.rowCount,
@@ -171,14 +171,14 @@ class _BenchPageState extends State<BenchPage>
         (view.physicalSize.height / view.devicePixelRatio).round(),
       ];
 
-      // 1. Cold init — before any other windfoil use.
+      // 1. Cold init — before any other gputext use.
       if (_selected('frame.cold_init')) await _coldInit();
 
       // 2. Remaining fonts + settle out of the null-paragraph window.
       await _setupFonts();
-      if (Windfoil.instance.unsupported) {
+      if (GPUText.instance.unsupported) {
         _report.errors.add(
-          'flutter_gpu unavailable: windfoil paints blank '
+          'flutter_gpu unavailable: gputext paints blank '
           'on this device; benchmark aborted',
         );
         await _finish();
@@ -201,7 +201,7 @@ class _BenchPageState extends State<BenchPage>
           'id': 'mem.startup',
           'desc': 'after init, zero paragraphs mounted',
           'rssBytes': await sampleRss(),
-          ...snapshotWindfoil(null).toJson(),
+          ...snapshotGPUText(null).toJson(),
         });
       }
 
@@ -209,7 +209,7 @@ class _BenchPageState extends State<BenchPage>
       if (_selected('cpu.')) {
         final cpu = CpuTier(
           corpus: corpus,
-          engine: Windfoil.instance,
+          engine: GPUText.instance,
           quick: _quick,
           cjkFont: _cjkFont,
         );
@@ -255,7 +255,7 @@ class _BenchPageState extends State<BenchPage>
         color: Color(0xFF000000),
       ),
     );
-    final engine = Windfoil.instance;
+    final engine = GPUText.instance;
     final sw = Stopwatch()..start();
     await engine.loadFontAsset('Lato', 'assets/Lato-Regular.ttf');
     final fontMs = sw.elapsedMicroseconds / 1000;
@@ -264,13 +264,13 @@ class _BenchPageState extends State<BenchPage>
 
     final start = _recorder.currentFrame();
     await _mount(
-      (_) => SizedBox(width: 420, child: benchText(EngineKind.windfoil, span)),
+      (_) => SizedBox(width: 420, child: benchText(EngineKind.gputext, span)),
     );
     final win = await _recorder.drain(start, start + 3);
     _report.frameResults.add(
       frameResult(
         id: 'frame.cold_init',
-        engine: 'windfoil',
+        engine: 'gputext',
         label: 'font load → pipeline → first frame',
         desc:
             'Cold start: Lato parse+register, GPU pipeline build, then the '
@@ -310,7 +310,7 @@ class _BenchPageState extends State<BenchPage>
 
   Future<void> _setupFonts() async {
     _progress('registering fonts (Twemoji, GoogleSansFlex, CJK)');
-    final engine = Windfoil.instance;
+    final engine = GPUText.instance;
     // Cold-init may have been filtered out; make init unconditional here.
     await engine.ensureInitialized();
     if (engine.resolveFont('Lato') == null) {
@@ -330,7 +330,7 @@ class _BenchPageState extends State<BenchPage>
     }
     try {
       final bytes = await io.File(_cjkSystemFontPath).readAsBytes();
-      final font = WindfoilFont.parse(bytes);
+      final font = GPUFont.parse(bytes);
       engine.registerFont(benchCjkFamily, font);
       _cjkFont = font;
       await (FontLoader(
@@ -348,10 +348,10 @@ class _BenchPageState extends State<BenchPage>
     FrameScenario sc,
     EngineKind engine,
   ) async {
-    final engineName = engine == EngineKind.windfoil ? 'windfoil' : 'richtext';
+    final engineName = engine == EngineKind.gputext ? 'gputext' : 'richtext';
     _progress('${sc.id} [$engineName]');
-    Windfoil.instance.debugResetCacheCounters();
-    RenderWindfoilParagraph.debugSurfaceRenders = 0;
+    GPUText.instance.debugResetCacheCounters();
+    RenderGPUParagraph.debugSurfaceRenders = 0;
     final atlasBefore = _atlasCounters();
 
     _running = sc;
@@ -400,11 +400,11 @@ class _BenchPageState extends State<BenchPage>
         totalMs: win.totalMs,
         partial: win.partial,
         counters: {
-          'cacheHits': Windfoil.instance.debugLayoutCacheHits,
-          'cacheMisses': Windfoil.instance.debugLayoutCacheMisses,
+          'cacheHits': GPUText.instance.debugLayoutCacheHits,
+          'cacheMisses': GPUText.instance.debugLayoutCacheMisses,
           'atlasCurveFloatsDelta': atlasAfter.curves - atlasBefore.curves,
           'atlasGlyphsDelta': atlasAfter.glyphs - atlasBefore.glyphs,
-          'surfaceRenders': RenderWindfoilParagraph.debugSurfaceRenders,
+          'surfaceRenders': RenderGPUParagraph.debugSurfaceRenders,
         },
         extra: {
           if (wallMs > 0)
@@ -418,7 +418,7 @@ class _BenchPageState extends State<BenchPage>
       _report.meta['refreshRateHzEstimate'] ??=
           (win.totalMs.length / (wallMs / 1000)).round();
     }
-    if (sc.id == 'frame.varfont_anim' && engine == EngineKind.windfoil) {
+    if (sc.id == 'frame.varfont_anim' && engine == EngineKind.gputext) {
       _report.memoryResults.add({
         'id': 'mem.varfont_growth',
         'desc':
@@ -436,13 +436,13 @@ class _BenchPageState extends State<BenchPage>
     }
   }
 
-  // ---- atlas cold/warm (one-shot mounts, windfoil + richtext) ----
+  // ---- atlas cold/warm (one-shot mounts, gputext + richtext) ----
 
   Future<void> _atlasColdWarm(BenchContext ctx) async {
     if (_cjkFont == null) {
       _report.frameResults.add({
         'id': 'frame.atlas_cold',
-        'engine': 'windfoil',
+        'engine': 'gputext',
         'status': 'skipped',
         'desc': 'CJK font unavailable',
         'path': 'pure',
@@ -465,13 +465,13 @@ class _BenchPageState extends State<BenchPage>
       ),
     );
     for (final engine in EngineKind.values) {
-      final engineName = engine == EngineKind.windfoil
-          ? 'windfoil'
+      final engineName = engine == EngineKind.gputext
+          ? 'gputext'
           : 'richtext';
       for (final phase in ['cold', 'warm']) {
         _progress('frame.atlas_$phase [$engineName]');
-        Windfoil.instance.debugResetCacheCounters();
-        RenderWindfoilParagraph.debugSurfaceRenders = 0;
+        GPUText.instance.debugResetCacheCounters();
+        RenderGPUParagraph.debugSurfaceRenders = 0;
         final before = _atlasCounters();
         final start = _recorder.currentFrame();
         await _mount((_) => zhParagraph(engine));
@@ -492,22 +492,22 @@ class _BenchPageState extends State<BenchPage>
             desc:
                 'zh-zhufu (${zhText.length} chars, thousands of unique '
                 'glyphs): cold pays banding + full curves/rows texture '
-                're-upload on the windfoil side',
+                're-upload on the gputext side',
             path: 'pure',
             buildMs: win.buildMs,
             rasterMs: win.rasterMs,
             totalMs: win.totalMs,
             partial: win.partial,
             counters: {
-              'cacheHits': Windfoil.instance.debugLayoutCacheHits,
-              'cacheMisses': Windfoil.instance.debugLayoutCacheMisses,
+              'cacheHits': GPUText.instance.debugLayoutCacheHits,
+              'cacheMisses': GPUText.instance.debugLayoutCacheMisses,
               'atlasCurveFloatsDelta': after.curves - before.curves,
               'atlasGlyphsDelta': after.glyphs - before.glyphs,
-              'surfaceRenders': RenderWindfoilParagraph.debugSurfaceRenders,
+              'surfaceRenders': RenderGPUParagraph.debugSurfaceRenders,
             },
           ),
         );
-        if (engine == EngineKind.windfoil && phase == 'cold') {
+        if (engine == EngineKind.gputext && phase == 'cold') {
           _report.memoryResults.add({
             'id': 'mem.atlas_cjk',
             'desc': 'atlas cost of banding the zh corpus glyph set',
@@ -525,8 +525,8 @@ class _BenchPageState extends State<BenchPage>
   Future<void> _memoryParagraphs(BenchContext ctx) async {
     final paragraphs = ctx.corpus.commentTexts(200, unique: true);
     for (final engine in EngineKind.values) {
-      final engineName = engine == EngineKind.windfoil
-          ? 'windfoil'
+      final engineName = engine == EngineKind.gputext
+          ? 'gputext'
           : 'richtext';
       _progress('mem.paragraphs_200 [$engineName]');
       final before = await sampleRss();
@@ -548,8 +548,8 @@ class _BenchPageState extends State<BenchPage>
       );
       await _pumpFrames(_quick ? 30 : 60);
       final during = await sampleRss();
-      final snap = engine == EngineKind.windfoil && mounted
-          ? snapshotWindfoil(context.findRenderObject())
+      final snap = engine == EngineKind.gputext && mounted
+          ? snapshotGPUText(context.findRenderObject())
           : null;
       await _unmount();
       await _pumpFrames(_quick ? 30 : 60);
@@ -688,16 +688,16 @@ class _BenchPageState extends State<BenchPage>
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            RepaintBoundary(key: _visWfKey, child: cell(EngineKind.windfoil)),
+            RepaintBoundary(key: _visWfKey, child: cell(EngineKind.gputext)),
             const SizedBox(width: 16),
             RepaintBoundary(key: _visRtKey, child: cell(EngineKind.richtext)),
           ],
         ),
       );
-      await _pumpFrames(15); // windfoil render + heal settle
+      await _pumpFrames(15); // gputext render + heal settle
       final result = await diffPair(
         id: id,
-        windfoilKey: _visWfKey,
+        gputextKey: _visWfKey,
         richtextKey: _visRtKey,
         pixelRatio: dpr,
       );
@@ -723,17 +723,17 @@ class _BenchPageState extends State<BenchPage>
       if (!pass) _report.errors.add('sanity: $name — $detail');
     }
 
-    final gridShared = _frameEntry('frame.grid_shared', 'windfoil');
+    final gridShared = _frameEntry('frame.grid_shared', 'gputext');
     if (gridShared != null) {
       final hits = (gridShared['counters'] as Map?)?['cacheHits'] as int? ?? 0;
       check('grid_shared cache hits', hits >= 200, 'hits=$hits (want ≥200)');
     }
-    final idle = _frameEntry('frame.static_idle', 'windfoil');
+    final idle = _frameEntry('frame.static_idle', 'gputext');
     if (idle != null) {
       final p50 = ((idle['build'] as Map?)?['p50Ms'] as num?) ?? 0;
       check('static_idle build floor', p50 < 2.0, 'build p50=${p50}ms');
     }
-    final zoom = _frameEntry('frame.zoom_transform', 'windfoil');
+    final zoom = _frameEntry('frame.zoom_transform', 'gputext');
     if (zoom != null) {
       // 6 paragraphs × ~18 quantized 1.25× steps ⇒ ≥30 proves step
       // re-renders actually fire (==paragraph-count means adaptive zoom
@@ -749,7 +749,7 @@ class _BenchPageState extends State<BenchPage>
     Map<String, Object?>? cpu(String idPrefix) {
       for (final r in _report.cpuResults) {
         if ((r['id'] as String).startsWith(idPrefix) &&
-            r['engine'] == 'windfoil') {
+            r['engine'] == 'gputext') {
           return r;
         }
       }
@@ -785,7 +785,7 @@ class _BenchPageState extends State<BenchPage>
     emitReport(_report);
     await Future<void>.delayed(const Duration(milliseconds: 500));
     if (_hold) {
-      _progress('done (WINDFOIL_BENCH_HOLD=1 — not exiting)');
+      _progress('done (GPUTEXT_BENCH_HOLD=1 — not exiting)');
       return;
     }
     io.exit(0);
@@ -808,9 +808,9 @@ class _BenchPageState extends State<BenchPage>
                   height: 44,
                   child: Padding(
                     padding: const EdgeInsets.all(12),
-                    child: WindfoilRichText(
+                    child: GPURichText(
                       text: TextSpan(
-                        text: 'windfoil bench — $_status',
+                        text: 'gputext bench — $_status',
                         style: const TextStyle(
                           inherit: false,
                           fontSize: 18,

@@ -6,7 +6,7 @@ void main(List<String> args) async {
     await buildShaderBundleJson(
       buildInput: config,
       buildOutput: output,
-      manifestFileName: 'windfoil.shaderbundle.json',
+      manifestFileName: 'gputext.shaderbundle.json',
       glesLanguageVersion: 300,
       assetMode: ShaderBundleAssetMode.dataAssetsIfAvailable,
     );

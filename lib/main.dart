@@ -19,7 +19,7 @@ import 'src/renderer.dart';
 import 'src/scene.dart';
 import 'widget_demo.dart';
 
-gpu.PixelFormat windfoilSurfaceFormat(gpu.GpuContext context) {
+gpu.PixelFormat gpuTextSurfaceFormat(gpu.GpuContext context) {
   final preferred = context.defaultColorFormat;
   if (preferred != gpu.PixelFormat.unknown &&
       context.supportsTextureFormat(preferred, renderTarget: true)) {
@@ -32,49 +32,49 @@ gpu.PixelFormat windfoilSurfaceFormat(gpu.GpuContext context) {
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   // Bench mode measures cold init itself; everything else warms eagerly.
-  if (io.Platform.environment['WINDFOIL_DEMO'] != 'bench') {
-    Windfoil.initialize(); // warm fonts + pipeline for the widget demo
+  if (io.Platform.environment['GPUTEXT_DEMO'] != 'bench') {
+    GPUText.initialize(); // warm fonts + pipeline for the widget demo
   }
-  runApp(const WindfoilApp());
+  runApp(const GPUTextApp());
 }
 
-class WindfoilApp extends StatelessWidget {
-  const WindfoilApp({super.key});
+class GPUTextApp extends StatelessWidget {
+  const GPUTextApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     // Dev hook (demo only): open a specific demo page directly.
     final page =
-        io.Platform.environment['WINDFOIL_DEMO'] ??
-        const String.fromEnvironment('WINDFOIL_DEMO');
+        io.Platform.environment['GPUTEXT_DEMO'] ??
+        const String.fromEnvironment('GPUTEXT_DEMO');
     return MaterialApp(
       theme: ThemeData(useMaterial3: true),
-      // Bench mode stays OUTSIDE SelectionArea: WindfoilRichText registers
+      // Bench mode stays OUTSIDE SelectionArea: GPURichText registers
       // per-fragment selectables while bare RichText does not, so a
-      // selection scope would tax only the windfoil passes.
+      // selection scope would tax only the gputext passes.
       home: switch (page) {
         'bench' => const BenchPage(),
         'widgets' => const WidgetDemoPage(),
         'pretext' => const PretextDemoPage(),
         'justify' => const JustificationDemoPage(),
         'vars' => const VariableFontDemoPage(),
-        _ => const WindfoilDemoPage(),
+        _ => const GPUTextDemoPage(),
       },
     );
   }
 }
 
-class WindfoilDemoPage extends StatefulWidget {
-  const WindfoilDemoPage({super.key});
+class GPUTextDemoPage extends StatefulWidget {
+  const GPUTextDemoPage({super.key});
 
   @override
-  State<WindfoilDemoPage> createState() => _WindfoilDemoPageState();
+  State<GPUTextDemoPage> createState() => _GPUTextDemoPageState();
 }
 
-class _WindfoilDemoPageState extends State<WindfoilDemoPage>
+class _GPUTextDemoPageState extends State<GPUTextDemoPage>
     with SingleTickerProviderStateMixin {
-  WindfoilRenderer? _renderer;
-  WindfoilScene? _scene;
+  GPUTextRenderer? _renderer;
+  GPUTextScene? _scene;
   gpu.GpuImageSurface? _surface;
   String? _error;
 
@@ -94,7 +94,7 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
 
   ui.Image? _image;
   // Superseded surface+image generations, tagged with the frame number whose
-  // render replaced them (mirrors RenderWindfoilParagraph._retired).
+  // render replaced them (mirrors RenderGPUParagraph._retired).
   final List<(gpu.GpuImageSurface?, ui.Image, int)> _retired = [];
   bool _timingsHooked = false;
   late final Ticker _ticker;
@@ -145,9 +145,9 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
   Future<void> _bootstrap() async {
     try {
       final bytes = await rootBundle.load('assets/Lato-Regular.ttf');
-      final font = WindfoilFont.parse(bytes.buffer.asUint8List());
-      final scene = WindfoilScene.build(font);
-      final renderer = await WindfoilRenderer.create(
+      final font = GPUFont.parse(bytes.buffer.asUint8List());
+      final scene = GPUTextScene.build(font);
+      final renderer = await GPUTextRenderer.create(
         curves: scene.atlas.curves,
         rows: scene.atlas.rows,
         instances: scene.instances,
@@ -159,7 +159,7 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
         _surface = gpu.gpuContext.createImageSurface(
           1,
           1,
-          format: windfoilSurfaceFormat(gpu.gpuContext),
+          format: gpuTextSurfaceFormat(gpu.gpuContext),
         );
       });
     } catch (e) {
@@ -212,13 +212,13 @@ class _WindfoilDemoPageState extends State<WindfoilDemoPage>
     final width = (_size.width * _dpr).round().clamp(1, 100000);
     final height = (_size.height * _dpr).round().clamp(1, 100000);
     if (surface.width != width || surface.height != height) {
-      // Never resize() a live surface — see RenderWindfoilParagraph: resizing
+      // Never resize() a live surface — see RenderGPUParagraph: resizing
       // while a presented image is still referenced can leave later frames on
       // a stale-size backing texture. Recreate and retire the old one below.
       surface = gpu.gpuContext.createImageSurface(
         width,
         height,
-        format: windfoilSurfaceFormat(gpu.gpuContext),
+        format: gpuTextSurfaceFormat(gpu.gpuContext),
       );
     }
 

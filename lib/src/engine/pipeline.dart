@@ -1,4 +1,4 @@
-// Shared GPU state for windfoil draws: shader bundle, render pipeline,
+// Shared GPU state for gputext draws: shader bundle, render pipeline,
 // uniform slots, the 4-corner unit quad, and a per-frame host buffer.
 // Per-draw state (instance buffer, atlas textures, frame uniforms) is passed
 // into renderInstances so many widgets can share one pipeline.
@@ -10,8 +10,8 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 import '../atlas.dart';
 import '../layout.dart';
 
-const _bundleAsset = 'build/shaderbundles/windfoil.shaderbundle';
-const _bundleAssetPackaged = 'packages/windfoil_flutter/$_bundleAsset';
+const _bundleAsset = 'build/shaderbundles/gputext.shaderbundle';
+const _bundleAssetPackaged = 'packages/gputext/$_bundleAsset';
 
 class FrameUniforms {
   const FrameUniforms({
@@ -29,8 +29,8 @@ class FrameUniforms {
   final List<double> cam;
 }
 
-class WindfoilPipeline {
-  WindfoilPipeline._({
+class GPUTextPipeline {
+  GPUTextPipeline._({
     required this.pipeline,
     required this.frameSlot,
     required this.curvesSlot,
@@ -44,10 +44,10 @@ class WindfoilPipeline {
   final gpu.UniformSlot rowsSlot;
   final gpu.DeviceBuffer cornerBuffer;
 
-  static Future<WindfoilPipeline> create() async {
+  static Future<GPUTextPipeline> create() async {
     gpu.ShaderLibrary? library;
     // Bare key when the app IS this package (demo); packages/-prefixed when
-    // windfoil_flutter is consumed as a dependency.
+    // gputext is consumed as a dependency.
     for (final asset in const [_bundleAsset, _bundleAssetPackaged]) {
       try {
         library = await gpu.ShaderLibrary.fromAsset(asset);
@@ -57,14 +57,14 @@ class WindfoilPipeline {
       if (library != null) break;
     }
     if (library == null) {
-      throw Exception('Failed to load windfoil shader bundle '
+      throw Exception('Failed to load gputext shader bundle '
           '($_bundleAsset / $_bundleAssetPackaged)');
     }
 
-    final vert = library['WindfoilVertex'];
-    final frag = library['WindfoilFragment'];
+    final vert = library['GPUTextVertex'];
+    final frag = library['GPUTextFragment'];
     if (vert == null || frag == null) {
-      throw Exception('Missing Windfoil shaders in bundle');
+      throw Exception('Missing GPUText shaders in bundle');
     }
 
     final vertexLayout = gpu.VertexLayout(
@@ -112,7 +112,7 @@ class WindfoilPipeline {
       corners.buffer.asByteData(),
     );
 
-    return WindfoilPipeline._(
+    return GPUTextPipeline._(
       pipeline: pipeline,
       frameSlot: vert.getUniformSlot('FrameInfo'),
       curvesSlot: frag.getUniformSlot('curvesTex'),
@@ -145,7 +145,7 @@ class WindfoilPipeline {
     // Each render gets its own immutable uniform buffer. A shared HostBuffer
     // arena here is a use-after-recycle hazard: submit() only ENQUEUES GPU
     // work, so reset()+emplace from a later same-frame render (e.g. a nested
-    // WindfoilRichText inside a WidgetSpan, which renders during its parent's
+    // GPURichText inside a WidgetSpan, which renders during its parent's
     // paint) would overwrite this FrameInfo before Metal executes the draw —
     // the parent's surface then renders with the child's camera.
     final frameBuffer =

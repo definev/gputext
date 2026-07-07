@@ -1,14 +1,14 @@
 // Port of pretext's justification-comparison demo
 // (pretext/pages/demos/justification-comparison.*): three justified columns
 // of the same essay, from worst to best typographic colour — every glyph
-// rendered by windfoil itself (no TextPainter):
+// rendered by gputext itself (no TextPainter):
 //
 //   1. The default greedy breaker (the browser-CSS baseline).
 //   2. The same greedy breaker over soft-hyphenated text.
-//   3. WindfoilRichText(lineBreaker: KnuthPlassLineBreaker()) — the library's
+//   3. GPURichText(lineBreaker: KnuthPlassLineBreaker()) — the library's
 //      total-fit optimizer over the same hyphenated text.
 //
-// Every column is a plain justified WindfoilRichText; only the text and the
+// Every column is a plain justified GPURichText; only the text and the
 // lineBreaker differ. The model re-runs the same breakers over the same
 // prepared paragraphs to position the river overlay (red heat behind
 // over-stretched gaps) and compute lines / spacing deviation / river counts,
@@ -16,13 +16,13 @@
 // Paragraph text is pre-ligated with the flattener's fi/fl substitution so
 // model widths match rendered advances.
 //
-// Dev hooks (demo only): WINDFOIL_DEMO=justify opens this page;
-// WINDFOIL_DEMO_WIDTH=<px> presets the column width for screenshots.
+// Dev hooks (demo only): GPUTEXT_DEMO=justify opens this page;
+// GPUTEXT_DEMO_WIDTH=<px> presets the column width for screenshots.
 
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
-import 'package:windfoil_flutter/src/widgets/rich_text.dart';
+import 'package:gputext/src/widgets/rich_text.dart';
 
 import 'src/engine/engine.dart';
 import 'src/font.dart';
@@ -432,7 +432,7 @@ class _Resources {
     hyphenated = [for (final t in hyphenatedText) _prepare(t, font)];
   }
 
-  static wf.PreparedParagraph _prepare(String text, WindfoilFont font) =>
+  static wf.PreparedParagraph _prepare(String text, GPUFont font) =>
       wf.prepareParagraph([
         wf.TextRun(
           text: text,
@@ -442,7 +442,7 @@ class _Resources {
         ),
       ]);
 
-  final WindfoilFont font;
+  final GPUFont font;
 
   /// The exact strings the widgets render — the model prepares the SAME
   /// strings, so breaks agree.
@@ -463,7 +463,7 @@ bool _isInvisibleKind(SegmentBreakKind kind) =>
 
 /// Run any [LineBreaker] over a prepared paragraph, then re-derive per-line
 /// word/space stats for the river overlay and quality metrics. The same
-/// breaker instance goes to the WindfoilRichText widgets, so the model's
+/// breaker instance goes to the GPURichText widgets, so the model's
 /// breaks and the rendered breaks agree by construction.
 List<_MeasuredLine> _layoutWith(
   LineBreaker breaker,
@@ -547,9 +547,9 @@ _MeasuredLine _measuredLineFromSegments(
 
 // --- Column assembly, spacing decisions, and metrics ---
 
-/// Mirrors windfoil's native TextAlign.justify: every non-hard line
+/// Mirrors gputext's native TextAlign.justify: every non-hard line
 /// stretches (or compresses) its spaces to the box width, which is exactly
-/// what the WindfoilRichText columns paint.
+/// what the GPURichText columns paint.
 _LineSpacing _displaySpacing(_MeasuredLine line, double spaceWidth) {
   if (line.isParagraphEnd) return const _Ragged();
   if (line.spaceCount <= 0) return const _Ragged();
@@ -626,7 +626,7 @@ Color? _riverColor(double spaceWidth, double normalSpaceWidth) {
   );
 }
 
-// --- Rendering: windfoil widgets + river overlay ---
+// --- Rendering: gputext widgets + river overlay ---
 
 const _textColor = Color(0xFF2A2520);
 const _bodyStyle = TextStyle(
@@ -638,7 +638,7 @@ const _bodyStyle = TextStyle(
 
 /// River heat rectangles behind over-stretched justified gaps, positioned
 /// from the model's segment widths. The glyphs render on top via
-/// WindfoilRichText, which measures with the same font tables, so the x
+/// GPURichText, which measures with the same font tables, so the x
 /// advances agree.
 class _RiverOverlayPainter extends CustomPainter {
   _RiverOverlayPainter({required this.frame, required this.spaceWidth});
@@ -676,11 +676,11 @@ class _RiverOverlayPainter extends CustomPainter {
       old.frame != frame || old.spaceWidth != spaceWidth;
 }
 
-/// One fully windfoil-rendered column: river overlay underneath, one
-/// justified WindfoilRichText per paragraph on top, breaking with the same
+/// One fully gputext-rendered column: river overlay underneath, one
+/// justified GPURichText per paragraph on top, breaking with the same
 /// [LineBreaker] the model ran.
-class _WindfoilColumn extends StatelessWidget {
-  const _WindfoilColumn({
+class _GPUTextColumn extends StatelessWidget {
+  const _GPUTextColumn({
     required this.frame,
     required this.width,
     required this.showIndicators,
@@ -721,7 +721,7 @@ class _WindfoilColumn extends StatelessWidget {
               children: [
                 for (var i = 0; i < paragraphTexts.length; i++) ...[
                   if (i > 0) const SizedBox(height: _paraGap),
-                  WindfoilRichText(
+                  GPURichText(
                     text: TextSpan(text: paragraphTexts[i], style: _bodyStyle),
                     textAlign: TextAlign.justify,
                     lineBreaker: breaker,
@@ -754,7 +754,7 @@ class _JustificationDemoPageState extends State<JustificationDemoPage> {
   void initState() {
     super.initState();
     final preset = double.tryParse(
-      Platform.environment['WINDFOIL_DEMO_WIDTH'] ?? '',
+      Platform.environment['GPUTEXT_DEMO_WIDTH'] ?? '',
     );
     if (preset != null) _colWidth = preset.clamp(220.0, 460.0);
   }
@@ -783,7 +783,7 @@ class _JustificationDemoPageState extends State<JustificationDemoPage> {
                   '${metrics.lineCount} lines · '
                   '${metrics.riverCount} rivers · dev avg ',
                 ),
-                WindfoilRichText(
+                GPURichText(
                   text: TextSpan(
                     text: pct(metrics.avgDeviation),
                     style: TextStyle(
@@ -830,9 +830,9 @@ class _JustificationDemoPageState extends State<JustificationDemoPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('Justification: greedy vs Knuth-Plass')),
       body: ListenableBuilder(
-        listenable: Windfoil.instance,
+        listenable: GPUText.instance,
         builder: (context, _) {
-          final font = Windfoil.instance.resolveFont('Lato');
+          final font = GPUText.instance.resolveFont('Lato');
           if (font == null) {
             return const Center(child: Text('Loading fonts…'));
           }
@@ -860,7 +860,7 @@ class _JustificationDemoPageState extends State<JustificationDemoPage> {
               const Text(
                 'The same essay justified three ways. Red heat marks '
                 '"rivers" — inter-word gaps stretched past 1.5× the normal '
-                'space. Columns 2 and 3 break lines from windfoil\'s '
+                'space. Columns 2 and 3 break lines from gputext\'s '
                 'prepared segment widths; the Knuth-Plass column re-runs a '
                 'total-fit optimization live as you drag.',
                 style: TextStyle(fontSize: 13, color: Colors.black87),
@@ -892,11 +892,11 @@ class _JustificationDemoPageState extends State<JustificationDemoPage> {
                   runAlignment: WrapAlignment.center,
                   children: [
                     _column(
-                      '1 · Windfoil justify',
+                      '1 · GPUText justify',
                       'default greedy breaker, no hyphenation '
                           '(the browser-CSS baseline)',
                       baseFrame.metrics,
-                      _WindfoilColumn(
+                      _GPUTextColumn(
                         frame: baseFrame,
                         width: _colWidth,
                         showIndicators: _showIndicators,
@@ -909,7 +909,7 @@ class _JustificationDemoPageState extends State<JustificationDemoPage> {
                       '2 · Greedy + hyphenation',
                       'default breaker over soft-hyphenated text',
                       hyphenFrame.metrics,
-                      _WindfoilColumn(
+                      _GPUTextColumn(
                         frame: hyphenFrame,
                         width: _colWidth,
                         showIndicators: _showIndicators,
@@ -923,7 +923,7 @@ class _JustificationDemoPageState extends State<JustificationDemoPage> {
                       'lineBreaker: KnuthPlassLineBreaker() over the same '
                           'hyphenated text',
                       optimalFrame.metrics,
-                      _WindfoilColumn(
+                      _GPUTextColumn(
                         frame: optimalFrame,
                         width: _colWidth,
                         showIndicators: _showIndicators,

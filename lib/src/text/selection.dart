@@ -178,7 +178,7 @@ class ParagraphGeometry {
         justifySpaceExtra(para, line, boxWidth, align);
     var stretched = 0;
     String? prev;
-    WindfoilFont? prevFont;
+    GPUFont? prevFont;
 
     for (final item in line.items) {
       if (item is! LineRun) {

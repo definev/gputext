@@ -67,27 +67,27 @@ class DecorationLine {
 abstract class GlyphTable {
   const GlyphTable();
 
-  GlyphTableEntry? lookup(WindfoilFont font, String ch);
+  GlyphTableEntry? lookup(GPUFont font, String ch);
 
   /// Rune-based twin of [lookup] — the emit pen walk resolves code points
   /// directly. Default delegates for tables that only key by string.
-  GlyphTableEntry? lookupRune(WindfoilFont font, int rune) =>
+  GlyphTableEntry? lookupRune(GPUFont font, int rune) =>
       lookup(font, String.fromCharCode(rune));
 
   /// Lookup by raw glyph ID (COLR emoji layers); tables that only key by
   /// character return null.
-  GlyphTableEntry? lookupGlyphId(WindfoilFont font, int glyphId) => null;
+  GlyphTableEntry? lookupGlyphId(GPUFont font, int glyphId) => null;
 }
 
 /// Adapter over the single-font table produced by buildGlyphAtlas.
 class SingleFontGlyphTable extends GlyphTable {
   const SingleFontGlyphTable(this.font, this.table);
 
-  final WindfoilFont font;
+  final GPUFont font;
   final Map<String, GlyphTableEntry> table;
 
   @override
-  GlyphTableEntry? lookup(WindfoilFont f, String ch) =>
+  GlyphTableEntry? lookup(GPUFont f, String ch) =>
       identical(f, font) ? table[ch] : null;
 }
 
@@ -193,7 +193,7 @@ class LineRun extends LineItem {
         fillRule = run.fillRule;
 
   String text;
-  final WindfoilFont font;
+  final GPUFont font;
   final double fontSizePx;
   final List<double> color;
   final double letterSpacingPx;
@@ -280,12 +280,12 @@ class ParagraphLines {
   double get firstBaseline => lines.isEmpty ? 0 : lines.first.ascent;
 }
 
-double _measure(WindfoilFont font, String text, double sizePx, double ls) {
+double _measure(GPUFont font, String text, double sizePx, double ls) {
   if (text.isEmpty) return 0;
   return measureText(text, font, sizePx) + ls * text.runes.length;
 }
 
-double _lineHeightPx(WindfoilFont font, double sizePx, double lineHeight) {
+double _lineHeightPx(GPUFont font, double sizePx, double lineHeight) {
   final m = font.verticalMetrics;
   return (m.ascender - m.descender + m.lineGap) /
       font.unitsPerEm *
@@ -293,10 +293,10 @@ double _lineHeightPx(WindfoilFont font, double sizePx, double lineHeight) {
       lineHeight;
 }
 
-double _ascenderPx(WindfoilFont font, double sizePx) =>
+double _ascenderPx(GPUFont font, double sizePx) =>
     font.verticalMetrics.ascender / font.unitsPerEm * sizePx;
 
-double _descenderPx(WindfoilFont font, double sizePx) =>
+double _descenderPx(GPUFont font, double sizePx) =>
     -font.verticalMetrics.descender / font.unitsPerEm * sizePx;
 
 void _growMetrics(LineMetrics l, TextRun run, ParagraphStyle style) {
@@ -682,7 +682,7 @@ LineMetrics _materializeLine(
 
 /// Baseline-to-baseline line advance for a font/size (public: widgets use it
 /// to give empty text a sensible height).
-double lineExtentOf(WindfoilFont font, double sizePx, [double lineHeight = 1]) =>
+double lineExtentOf(GPUFont font, double sizePx, [double lineHeight = 1]) =>
     _lineHeightPx(font, sizePx, lineHeight);
 
 /// Public entry to [_ellipsize] (used for softWrap:false + ellipsis overflow).
@@ -930,7 +930,7 @@ ParagraphInstances emitInstances(
     final baselineY = y + line.ascent;
     var pen = x + offset;
     var prevGid = -1; // -1 → no kerning context (line/run-boundary reset)
-    WindfoilFont? prevFont;
+    GPUFont? prevFont;
     var stretched = 0;
 
     for (final item in line.items) {
