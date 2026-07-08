@@ -173,6 +173,7 @@ class GPUFont {
     this._gsub,
     this.variationCoordinates = const {},
     this._normCoords,
+    this._gvarSharedScalars,
     this._base,
   });
 
@@ -205,11 +206,34 @@ class GPUFont {
   /// Normalized (F2Dot14-rounded, avar-mapped) coordinates; null on the base.
   final Float64List? _normCoords;
 
+  /// gvar shared-tuple scalars at [_normCoords]; null on the base. Non-null
+  /// whenever both `_gvar` and `_normCoords` are.
+  final Float64List? _gvarSharedScalars;
+
   /// Base font this variant was instanced from; null on the base.
   final GPUFont? _base;
 
-  /// Variant instances by canonical coordinate key (base font only).
+  /// Variant instances by normalized coordinate key (base font only).
   final Map<String, GPUFont> _variantCache = {};
+
+  /// HVAR-adjusted advances, memoized per glyph id (variants only). NaN is the
+  /// "not yet computed" sentinel — 0 is a legitimate advance — which keeps the
+  /// warm read to one load and one compare, matching the base font's cost.
+  Float64List? _advCache;
+
+  /// Advance for `gid` in font units, with this instance's HVAR delta applied.
+  /// Out-of-range ids yield 0 (matching a .notdef-less lookup).
+  double _advanceFor(int gid) {
+    if (gid < 0 || gid >= _advances.length) return 0;
+    final hvar = _hvar;
+    final coords = _normCoords;
+    if (hvar == null || coords == null) return _advances[gid];
+    final cache = _advCache ??= Float64List(_advances.length)
+      ..fillRange(0, _advances.length, double.nan);
+    final cached = cache[gid];
+    if (cached == cached) return cached; // non-NaN → hit
+    return cache[gid] = _advances[gid] + hvar.advanceDelta(gid, coords);
+  }
 
   static GPUFont parse(Uint8List bytes) {
     final data = ByteData.sublistView(bytes);
@@ -627,14 +651,12 @@ class GPUFont {
     return colr.layersFor(gid);
   }
 
-  double advanceOfGlyphId(int gid) =>
-      gid >= 0 && gid < _advances.length ? _advances[gid] : 0;
+  double advanceOfGlyphId(int gid) => _advanceFor(gid);
 
   double advanceOf(String ch) {
     // cmap miss → .notdef (glyph 0) advance, so unsupported characters
     // occupy tofu-sized space instead of collapsing to zero width.
-    final id = _glyphId(ch) ?? 0;
-    return _advances[id];
+    return _advanceFor(_glyphId(ch) ?? 0);
   }
 
   double kerningOf(String a, String b) {
@@ -689,7 +711,7 @@ class GPUFont {
     }
     return GlyphOutline(
       quads: quads,
-      advance: _advances[id],
+      advance: _advanceFor(id),
       bbox: [x0, y0, x1, y1],
     );
   }
@@ -713,10 +735,15 @@ class GPUFont {
       final pts = _decodeSimplePoints(r, numberOfContours);
       final coords = _normCoords;
       final gvar = _gvar;
-      if (coords != null && gvar != null && pts.xs.isNotEmpty) {
+      final sharedScalars = _gvarSharedScalars;
+      if (coords != null &&
+          gvar != null &&
+          sharedScalars != null &&
+          pts.xs.isNotEmpty) {
         final deltas = gvar.deltasFor(
           id,
           coords,
+          sharedScalars,
           pointCount: pts.xs.length,
           xs: pts.xs,
           ys: pts.ys,
@@ -910,8 +937,17 @@ class GPUFont {
 
     final coords = _normCoords;
     final gvar = _gvar;
-    if (coords != null && gvar != null && comps.isNotEmpty) {
-      final deltas = gvar.deltasFor(id, coords, pointCount: comps.length);
+    final sharedScalars = _gvarSharedScalars;
+    if (coords != null &&
+        gvar != null &&
+        sharedScalars != null &&
+        comps.isNotEmpty) {
+      final deltas = gvar.deltasFor(
+        id,
+        coords,
+        sharedScalars,
+        pointCount: comps.length,
+      );
       if (deltas != null) {
         for (var i = 0; i < comps.length; i++) {
           // Only XY-offset placements vary; point-matched ones don't move.

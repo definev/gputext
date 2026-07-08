@@ -4,9 +4,16 @@
 //
 // Variable instances are exposed through [GPUFontVariations.variant]:
 // a per-coordinate GPUFont that shares every parsed table with its base
-// and is cached by canonical coordinates, so identity-keyed consumers (the
+// and is cached by NORMALIZED coordinates, so identity-keyed consumers (the
 // shared glyph atlas, segment-metrics Expando, kerning-run checks) treat each
-// instance like any other font with zero changes.
+// instance like any other font with zero changes. Normalized keying means two
+// design coordinates the font cannot distinguish (they round to the same
+// F2Dot14 tick) collapse to one instance instead of duplicating every glyph
+// they touch into the atlas.
+//
+// Note that instances are still unbounded: a continuous axis animation walks
+// through distinct ticks and each new one bands fresh outlines that are never
+// evicted. Coordinate quantization and atlas eviction remain to be done.
 //
 // Not implemented (static values from the default instance are used):
 // gvar phantom-point advances for fonts without HVAR, GPOS kerning deltas
@@ -30,8 +37,6 @@ String _tag4(ByteData d, int o) => String.fromCharCodes([
   d.getUint8(o + 2),
   d.getUint8(o + 3),
 ]);
-
-double _roundF2Dot14(double v) => (v * 16384).round() / 16384.0;
 
 class _Fvar {
   _Fvar(this.axes);
@@ -101,16 +106,20 @@ class _Avar {
 }
 
 /// Scalar weight of one variation region at `coords` (per-axis tent
-/// functions multiplied together).
+/// functions multiplied together). `peaks` is read from `peakOff` so shared
+/// tuples can be scored in place — this runs once per tuple per glyph, and a
+/// sublist copy here dominated variable-font outline decoding.
 double _tupleScalar(
   Float64List coords,
+  int axisCount,
   Float64List peaks,
+  int peakOff,
   Float64List? starts,
   Float64List? ends,
 ) {
   var scalar = 1.0;
-  for (var a = 0; a < peaks.length; a++) {
-    final peak = peaks[a];
+  for (var a = 0; a < axisCount; a++) {
+    final peak = peaks[peakOff + a];
     if (peak == 0) continue;
     final v = a < coords.length ? coords[a] : 0.0;
     if (v == peak) continue;
@@ -370,14 +379,39 @@ class _Gvar {
     return _Gvar(d, axisCount, shared, off + dataArrayOffset, offsets);
   }
 
+  /// Scalar of every shared tuple at `coords`, evaluated once per font
+  /// instance. Glyph tuple records overwhelmingly reference a shared peak with
+  /// an implicit region (Google Sans Flex: 110279 of 110455, i.e. 99.8%), and
+  /// on a single-axis coordinate all but ~0.8% of them score zero. Hoisting
+  /// this out of [deltasFor] turns the per-tuple cost of those into one array
+  /// read, and skips them before any allocation.
+  Float64List sharedTupleScalars(Float64List coords) {
+    if (_axisCount == 0) return Float64List(0);
+    final n = _sharedTuples.length ~/ _axisCount;
+    final out = Float64List(n);
+    for (var i = 0; i < n; i++) {
+      out[i] = _tupleScalar(
+        coords,
+        _axisCount,
+        _sharedTuples,
+        i * _axisCount,
+        null,
+        null,
+      );
+    }
+    return out;
+  }
+
   /// Accumulated (dx, dy) outline deltas for `gid` at `coords`, length
   /// [pointCount] (the four phantom points are decoded but dropped — metrics
-  /// come from HVAR/MVAR). For simple glyphs pass the original outline
+  /// come from HVAR/MVAR). `sharedScalars` comes from [sharedTupleScalars] for
+  /// the same `coords`. For simple glyphs pass the original outline
   /// (`xs`/`ys`/`endPts`) so sparse tuples infer unreferenced points via IUP;
   /// for composites leave them null (unreferenced components don't move).
   (Float64List, Float64List)? deltasFor(
     int gid,
-    Float64List coords, {
+    Float64List coords,
+    Float64List sharedScalars, {
     required int pointCount,
     List<double>? xs,
     List<double>? ys,
@@ -410,33 +444,60 @@ class _Gvar {
       final size = d.getUint16(header, Endian.big);
       final index = d.getUint16(header + 2, Endian.big);
       header += 4;
-      Float64List peaks;
-      if (index & 0x8000 != 0) {
-        peaks = Float64List(_axisCount);
-        for (var a = 0; a < _axisCount; a++) {
-          peaks[a] = d.getInt16(header + a * 2, Endian.big) / 16384.0;
-        }
-        header += _axisCount * 2;
-      } else {
-        final s = (index & 0x0FFF) * _axisCount;
-        if (s + _axisCount > _sharedTuples.length) return null; // malformed
-        peaks = _sharedTuples.sublist(s, s + _axisCount);
-      }
-      Float64List? starts;
-      Float64List? ends;
-      if (index & 0x4000 != 0) {
-        starts = Float64List(_axisCount);
-        ends = Float64List(_axisCount);
-        for (var a = 0; a < _axisCount; a++) {
-          starts[a] = d.getInt16(header + a * 2, Endian.big) / 16384.0;
-          ends[a] =
-              d.getInt16(header + (_axisCount + a) * 2, Endian.big) / 16384.0;
-        }
-        header += _axisCount * 4;
-      }
+      final embeddedPeak = index & 0x8000 != 0;
+      final intermediate = index & 0x4000 != 0;
+      final peakOff = header;
+      if (embeddedPeak) header += _axisCount * 2;
+      final regionOff = header;
+      if (intermediate) header += _axisCount * 4;
       final dataAt = tupleData;
       tupleData += size;
-      final scalar = _tupleScalar(coords, peaks, starts, ends);
+
+      double scalar;
+      if (!embeddedPeak && !intermediate) {
+        // Fast path: shared peak, implicit region — scalar is precomputed.
+        final si = index & 0x0FFF;
+        if (si >= sharedScalars.length) return null; // malformed
+        scalar = sharedScalars[si];
+      } else {
+        // Embedded peaks (176 in Google Sans Flex) and intermediate regions
+        // (1322) can't be table-driven: score them in place.
+        Float64List peaks;
+        int peaksOff;
+        if (embeddedPeak) {
+          peaks = Float64List(_axisCount);
+          for (var a = 0; a < _axisCount; a++) {
+            peaks[a] = d.getInt16(peakOff + a * 2, Endian.big) / 16384.0;
+          }
+          peaksOff = 0;
+        } else {
+          peaksOff = (index & 0x0FFF) * _axisCount;
+          if (peaksOff + _axisCount > _sharedTuples.length) {
+            return null; // malformed
+          }
+          peaks = _sharedTuples;
+        }
+        Float64List? starts;
+        Float64List? ends;
+        if (intermediate) {
+          starts = Float64List(_axisCount);
+          ends = Float64List(_axisCount);
+          for (var a = 0; a < _axisCount; a++) {
+            starts[a] = d.getInt16(regionOff + a * 2, Endian.big) / 16384.0;
+            ends[a] =
+                d.getInt16(regionOff + (_axisCount + a) * 2, Endian.big) /
+                16384.0;
+          }
+        }
+        scalar = _tupleScalar(
+          coords,
+          _axisCount,
+          peaks,
+          peaksOff,
+          starts,
+          ends,
+        );
+      }
       if (scalar == 0) continue;
 
       var p = dataAt;
@@ -617,38 +678,14 @@ extension GPUFontVariations on GPUFont {
 
   bool hasVariationAxis(String tag) => variationAxes.any((a) => a.tag == tag);
 
-  /// This font instanced at the given design-space coordinates (e.g.
-  /// {'wght': 700}). Unknown axes are ignored, values are clamped to the
-  /// axis range, and default-valued axes are dropped; if nothing remains the
-  /// base font itself is returned. Instances are cached by canonical
-  /// coordinates, so equal requests return the IDENTICAL object — everything
-  /// downstream (glyph atlas, metrics caches, kerning runs) keys by font
-  /// identity.
-  GPUFont variant(Map<String, double> coordinates) {
-    final base = _base ?? this;
-    final fvar = base._fvar;
-    if (fvar == null || fvar.axes.isEmpty) return this;
-    final merged = identical(this, base)
-        ? coordinates
-        : {...variationCoordinates, ...coordinates};
-    final canonical = <String, double>{};
-    for (final axis in fvar.axes) {
-      final requested = merged[axis.tag];
-      if (requested == null) continue;
-      final v = requested.clamp(axis.min, axis.max).toDouble();
-      if (v == axis.def) continue;
-      canonical[axis.tag] = v;
-    }
-    if (canonical.isEmpty) return base;
-    final key = (canonical.keys.toList()..sort())
-        .map((t) => '$t=${canonical[t]}')
-        .join(';');
-    return base._variantCache[key] ??= base._instantiate(canonical);
-  }
-
-  GPUFont _instantiate(Map<String, double> coords) {
+  /// Normalized (avar-mapped) coordinates as raw F2Dot14 ticks, one per fvar
+  /// axis. This — not the design-space request — is what actually drives
+  /// gvar/HVAR/MVAR, so it is the correct cache identity: `wght: 700.0` and
+  /// `wght: 700.01` normalize to the same tick and must not become two fonts.
+  Int16List _normalizeTicks(Map<String, double> coords) {
     final fvar = _fvar!;
-    final norm = Float64List(fvar.axes.length);
+    final ticks = Int16List(fvar.axes.length);
+    final avar = _avar;
     for (var i = 0; i < fvar.axes.length; i++) {
       final axis = fvar.axes[i];
       final v = coords[axis.tag];
@@ -659,20 +696,55 @@ extension GPUFontVariations on GPUFont {
       } else if (v > axis.def) {
         n = axis.max == axis.def ? 0 : (v - axis.def) / (axis.max - axis.def);
       }
-      n = _roundF2Dot14(n);
-      final avar = _avar;
-      if (avar != null) n = _roundF2Dot14(avar.map(i, n));
-      norm[i] = n;
+      var t = (n * 16384).round();
+      if (avar != null) t = (avar.map(i, t / 16384.0) * 16384).round();
+      ticks[i] = t.clamp(-16384, 16384);
     }
+    return ticks;
+  }
 
-    var advances = _advances;
-    final hvar = _hvar;
-    if (hvar != null) {
-      final adjusted = List<double>.of(_advances);
-      for (var gid = 0; gid < adjusted.length; gid++) {
-        adjusted[gid] += hvar.advanceDelta(gid, norm);
-      }
-      advances = adjusted;
+  /// This font instanced at the given design-space coordinates (e.g.
+  /// {'wght': 700}). Unknown axes are ignored, non-finite and default-valued
+  /// axes are dropped, and values are clamped to the axis range; if nothing
+  /// remains — or everything normalizes to the default — the base font itself
+  /// is returned.
+  ///
+  /// Instances are cached by NORMALIZED coordinates, so any two requests the
+  /// font cannot actually distinguish (they round to the same F2Dot14 tick)
+  /// return the IDENTICAL object — everything downstream (glyph atlas, metrics
+  /// caches, kerning runs) keys by font identity. [variationCoordinates] on
+  /// the result therefore reports the design coordinates of whichever request
+  /// created the instance, which may differ from this one below tick
+  /// resolution (~1/16384 of an axis half-range).
+  GPUFont variant(Map<String, double> coordinates) {
+    final base = _base ?? this;
+    final fvar = base._fvar;
+    if (fvar == null || fvar.axes.isEmpty) return this;
+    final merged = identical(this, base)
+        ? coordinates
+        : {...variationCoordinates, ...coordinates};
+    final canonical = <String, double>{};
+    for (final axis in fvar.axes) {
+      final requested = merged[axis.tag];
+      if (requested == null || !requested.isFinite) continue;
+      final v = requested.clamp(axis.min, axis.max).toDouble();
+      if (v == axis.def) continue;
+      canonical[axis.tag] = v;
+    }
+    if (canonical.isEmpty) return base;
+    final ticks = base._normalizeTicks(canonical);
+    var key = '';
+    for (final t in ticks) {
+      key = key.isEmpty ? '$t' : '$key,$t';
+    }
+    if (!ticks.any((t) => t != 0)) return base; // normalizes to the default
+    return base._variantCache[key] ??= base._instantiate(canonical, ticks);
+  }
+
+  GPUFont _instantiate(Map<String, double> coords, Int16List ticks) {
+    final norm = Float64List(ticks.length);
+    for (var i = 0; i < ticks.length; i++) {
+      norm[i] = ticks[i] / 16384.0;
     }
 
     var vMetrics = verticalMetrics;
@@ -704,7 +776,12 @@ extension GPUFontVariations on GPUFont {
       numGlyphs: _numGlyphs,
       indexToLocFormat: _indexToLocFormat,
       cmap: _cmap,
-      advances: advances,
+      // Static advances, shared with the base. HVAR deltas are applied per
+      // glyph on first use (see GPUFont._advanceFor) rather than swept over
+      // every glyph here, keeping variant() O(axisCount) instead of
+      // O(numGlyphs) — the difference between ~0.1ms and ~3ms per new
+      // coordinate on a large CJK variable font.
+      advances: _advances,
       lsbs: _lsbs,
       glyphOffsets: _glyphOffsets,
       kern: _kern,
@@ -718,6 +795,7 @@ extension GPUFontVariations on GPUFont {
       gsub: _gsub,
       variationCoordinates: Map.unmodifiable(coords),
       normCoords: norm,
+      gvarSharedScalars: _gvar?.sharedTupleScalars(norm),
       base: this,
     );
   }

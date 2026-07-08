@@ -9,7 +9,7 @@ workspace:
   - example
 
 dev_dependencies:
-  melos: ^8.2.0
+  melos: ^7.8.2
 
 melos:
   repository: https://github.com/definev/gputext
