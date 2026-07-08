@@ -4,14 +4,16 @@
             "name": "Main",
             "type": "dart",
             "request": "launch",
-            "program": "lib/main.dart",
+            "program": "example/lib/main.dart",
+            "cwd": "example",
             "flutterMode": "profile"
         },
         {
             "name": "Bench",
             "type": "dart",
             "request": "launch",
-            "program": "lib/main.dart",
+            "program": "example/lib/main.dart",
+            "cwd": "example",
             "flutterMode": "profile",
             "args": [
                 "--dart-define=GPUTEXT_DEMO=bench"

@@ -1,0 +1,37 @@
+name: gputext_example
+description: "Demo app for the gputext GPU vector text renderer."
+publish_to: 'none'
+version: 1.0.0+1
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0-252.0.dev
+
+dependencies:
+  characters: ^1.4.0
+  cupertino_icons: ^1.0.8
+  flutter:
+    sdk: flutter
+  flutter_gpu:
+    sdk: flutter
+  gputext: ^0.1.0
+  vector_math: ^2.1.4
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/Lato-Regular.ttf
+    - assets/TwemojiMozilla.ttf
+    - assets/Google_Sans_Flex/GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf
+    - assets/bench/en-gatsby-opening.txt
+    - assets/bench/zh-zhufu.txt
+    - assets/bench/mixed-app-text.txt
+  fonts:
+    - family: Lato
+      fonts:
+        - asset: assets/Lato-Regular.ttf

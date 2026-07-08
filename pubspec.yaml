@@ -1,37 +1,44 @@
-name: gputext
-description: GPUText vector text renderer ported to Flutter GPU.
+name: gputext_workspace
 publish_to: 'none'
-version: 0.1.0+1
 
 environment:
   sdk: ^3.13.0-252.0.dev
 
-dependencies:
-  characters: ^1.4.0
-  flutter:
-    sdk: flutter
-  flutter_gpu:
-    sdk: flutter
-  flutter_gpu_shaders: ^0.5.1
-  hooks: ^2.0.2
-  vector_math: ^2.1.4
+workspace:
+  - packages/**
+  - example
 
 dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^6.0.0
+  melos: ^8.2.0
 
-flutter:
-  uses-material-design: true
-  assets:
-    - assets/Lato-Regular.ttf
-    - assets/TwemojiMozilla.ttf
-    - assets/Google_Sans_Flex/GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf
-    - assets/bench/en-gatsby-opening.txt
-    - assets/bench/zh-zhufu.txt
-    - assets/bench/mixed-app-text.txt
-    - build/shaderbundles/
-  fonts:
-    - family: Lato
-      fonts:
-        - asset: assets/Lato-Regular.ttf
+melos:
+  repository: https://github.com/definev/gputext
+
+  scripts:
+    bootstrap:
+      run: melos bootstrap
+      description: Link local packages and install dependencies.
+
+    analyze:
+      run: melos exec -- dart analyze --fatal-infos
+      description: Run static analysis in all packages.
+
+    test:
+      run: melos exec --fail-fast -- flutter test
+      description: Run tests in all packages.
+
+    format:
+      run: melos exec -- dart format .
+      description: Format Dart sources in all packages.
+
+    format:check:
+      run: melos exec -- dart format --set-exit-if-changed .
+      description: Verify Dart formatting without writing changes.
+
+    build:
+      run: melos exec --scope="gputext" -- bash tool/build_shaders.sh
+      description: Build gputext shader bundles via the package hook.
+
+    clean:
+      run: melos exec -- flutter clean
+      description: Clean build artifacts in all packages.

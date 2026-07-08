@@ -17,7 +17,6 @@ migrate_working_dir/
 *.ipr
 *.iws
 .idea/
-melos_*.iml
 
 # The .vscode folder contains launch configuration and tasks you configure in
 # VS Code which you may wish to be included in version control, so this line
@@ -31,8 +30,8 @@ melos_*.iml
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
-build/
-coverage/
+/build/
+/coverage/
 
 # Symbolication related
 app.*.symbols
@@ -47,9 +46,3 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
-
-# FVM Version Cache
-.fvm/
-
-# Benchmark run outputs (baselines are committed, results are not)
-/benchmark/results/

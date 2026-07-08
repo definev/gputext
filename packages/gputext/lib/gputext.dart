@@ -1,0 +1,38 @@
+// gputext — vector text rendered by an exact box-filtered winding
+// integral on the GPU (flutter_gpu), with a drop-in RichText replacement.
+//
+//   await GPUText.initialize();                       // optional, no-FOUT
+//   GPURichText(text: TextSpan(...));             // swap for RichText
+//   GPULabel('hello');                             // swap for Text
+library;
+
+export 'src/engine/engine.dart' show GPUText, GPUTextEngine;
+export 'src/engine/pipeline.dart' show FrameUniforms;
+export 'src/font.dart'
+    show
+        GPUFont,
+        FillRule,
+        VerticalMetrics,
+        FontAxis,
+        GPUFontVariations,
+        applyBasicLigatures;
+export 'src/paragraph.dart'
+    show
+        InlineItem,
+        TextRun,
+        TextAlign,
+        ParagraphStyle,
+        PreparedParagraph,
+        ParagraphLines,
+        prepareParagraph,
+        breakLines,
+        layoutPreparedLines;
+export 'src/renderer.dart' show GPUTextRenderer;
+export 'src/scene.dart' show GPUTextScene, background, maxSize;
+export 'src/text/analysis.dart' show SegmentBreakKind;
+export 'src/text/line_breaker.dart'
+    show LineBreaker, GreedyLineBreaker, KnuthPlassLineBreaker;
+export 'src/text/metrics_cache.dart' show debugClearSegmentMetricsFor;
+export 'src/widgets/rich_text.dart' show GPURichText, RenderGPUParagraph;
+export 'src/widgets/span_flattener.dart' show flattenSpan;
+export 'src/widgets/text.dart' show GPULabel;

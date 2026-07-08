@@ -1,19 +1,43 @@
 # gputext
 
-GPUText vector text renderer ported to Flutter GPU. `GPURichText` is a
+GPUText vector text renderer ported to Flutter GPU. The library package lives
+in `packages/gputext/`; this repo is a [Melos](https://melos.invertase.dev/)
+workspace. `GPURichText` is a
 near drop-in replacement for `RichText` whose glyphs are rasterized by an
 analytic coverage shader (see `lib/src/widgets/rich_text.dart` for the API
 surface and current limits).
 
 ## Demos
 
-`GPUTEXT_DEMO=<page> flutter run -d macos` opens a page directly:
-`widgets`, `pretext`, `justify`, `vars`, or `bench`.
+The demo app lives in `example/` (it depends on the package via
+`path: ../packages/gputext`). Run it from there:
+
+```sh
+cd example
+flutter run -d macos
+GPUTEXT_DEMO=<page> flutter run -d macos   # open a page directly
+```
+
+`<page>` is one of `widgets`, `pretext`, `justify`, `vars`, or `bench`.
+
+## Workspace
+
+From the repo root:
+
+```sh
+dart pub global activate melos   # once
+dart pub get                     # install melos locally
+melos bootstrap                  # link packages and run hooks
+melos run build                  # compile shader bundles (required before analyze)
+melos run analyze
+melos run test
+melos run format                 # or melos run format:check
+```
 
 ## Benchmarks
 
-A full-matrix RichText vs GPURichText benchmark lives in `lib/bench/`
-and runs as an in-app mode:
+A full-matrix RichText vs GPURichText benchmark lives in `example/lib/bench/`
+and runs as an in-app mode. Run the scripts from `example/`:
 
 ```sh
 tool/run_bench.sh                          # full run, compares to baseline
