@@ -16,8 +16,9 @@ void main() {
   });
 
   group('splitEmojiSegments', () {
-    List<(String, bool)> seg(String s) =>
-        [for (final e in splitEmojiSegments(s)) (e.text, e.isEmoji)];
+    List<(String, bool)> seg(String s) => [
+      for (final e in splitEmojiSegments(s)) (e.text, e.isEmoji),
+    ];
 
     test('plain text stays one segment', () {
       expect(seg('hello world'), [('hello world', false)]);
@@ -64,10 +65,7 @@ void main() {
     });
 
     test('splits emoji into baseline WidgetSpans with inherited size', () {
-      const span = TextSpan(
-        style: TextStyle(fontSize: 24),
-        text: 'a🌚b',
-      );
+      const span = TextSpan(style: TextStyle(fontSize: 24), text: 'a🌚b');
       final out = expandEmojiSpans(span, GPUText.instance) as TextSpan;
       expect(out.text, isNull);
       final children = out.children!;
@@ -82,8 +80,9 @@ void main() {
     });
   });
 
-  testWidgets('GPURichText renders emoji as inline engine Text',
-      (tester) async {
+  testWidgets('GPURichText renders emoji as inline engine Text', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
@@ -114,7 +113,8 @@ void main() {
 
     setUpAll(() {
       twemoji = GPUFont.parse(
-          File('assets/TwemojiMozilla.ttf').readAsBytesSync());
+        File('assets/TwemojiMozilla.ttf').readAsBytesSync(),
+      );
     });
 
     setUp(() => GPUText.instance.registerEmojiFont(twemoji));
@@ -125,8 +125,7 @@ void main() {
       final layers = twemoji.colrForCodePoint('\u{1F31A}'.runes.first)!;
       expect(layers.length, greaterThanOrEqualTo(2));
       expect(layers.first.color, isNotNull);
-      expect(
-          twemoji.glyphOutlineById(layers.first.glyphId)!.quads, isNotEmpty);
+      expect(twemoji.glyphOutlineById(layers.first.glyphId)!.quads, isNotEmpty);
     });
 
     test('single-code-point emoji stay in text (no delegation)', () {
@@ -134,14 +133,14 @@ void main() {
         style: TextStyle(fontFamily: 'Lato', fontSize: 16),
         text: 'a \u{1F31A} b \u2764',
       );
-      expect(
-          identical(expandEmojiSpans(span, GPUText.instance), span), isTrue);
+      expect(identical(expandEmojiSpans(span, GPUText.instance), span), isTrue);
     });
 
     test('sequences still delegate (until GSUB lands)', () {
       const span = TextSpan(
         style: TextStyle(fontFamily: 'Lato', fontSize: 16),
-        text: 'family \u{1F468}\u200D\u{1F469}\u200D\u{1F467} '
+        text:
+            'family \u{1F468}\u200D\u{1F469}\u200D\u{1F467} '
             'flag \u{1F1FB}\u{1F1F3} tone \u{1F44D}\u{1F3FD}',
       );
       final out = expandEmojiSpans(span, GPUText.instance) as TextSpan;
@@ -179,8 +178,11 @@ void main() {
       for (final layer in emoji.layers) {
         atlas.ensureGlyphId(emoji.font, layer.glyphId);
       }
-      final para =
-          wf.breakLines(items, double.infinity, const wf.ParagraphStyle());
+      final para = wf.breakLines(
+        items,
+        double.infinity,
+        const wf.ParagraphStyle(),
+      );
       final emitted = wf.emitInstances(para, 100, wf.TextAlign.left, atlas);
       expect(emitted.glyphCount, emoji.layers.length);
       // First instance carries the first layer's palette color.
@@ -191,8 +193,9 @@ void main() {
       expect(emitted.inkBounds, isNotNull);
     });
 
-    testWidgets('widget renders native emoji with no inline Text child',
-        (tester) async {
+    testWidgets('widget renders native emoji with no inline Text child', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         const MaterialApp(
           home: Center(
@@ -211,8 +214,9 @@ void main() {
     });
   });
 
-  testWidgets('semantics label keeps the original emoji characters',
-      (tester) async {
+  testWidgets('semantics label keeps the original emoji characters', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       MaterialApp(
         home: GPURichText(

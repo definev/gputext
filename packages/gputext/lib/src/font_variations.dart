@@ -669,6 +669,17 @@ double _iupValue(double target, double c1, double d1, double c2, double d2) {
   return d1 + (d2 - d1) * (target - c1) / (c2 - c1);
 }
 
+/// Cache key for a normalized coordinate vector: one UTF-16 code unit per
+/// axis, biased into [0, 32768] so it never lands in the surrogate range.
+/// One allocation, no per-axis string concatenation.
+String _tickKey(Int16List ticks) {
+  final codes = Uint16List(ticks.length);
+  for (var i = 0; i < ticks.length; i++) {
+    codes[i] = ticks[i] + 16384;
+  }
+  return String.fromCharCodes(codes);
+}
+
 // ---------------------------------------------------------------------------
 // Public variation API.
 
@@ -678,14 +689,47 @@ extension GPUFontVariations on GPUFont {
 
   bool hasVariationAxis(String tag) => variationAxes.any((a) => a.tag == tag);
 
-  /// Normalized (avar-mapped) coordinates as raw F2Dot14 ticks, one per fvar
-  /// axis. This — not the design-space request — is what actually drives
-  /// gvar/HVAR/MVAR, so it is the correct cache identity: `wght: 700.0` and
-  /// `wght: 700.01` normalize to the same tick and must not become two fonts.
-  Int16List _normalizeTicks(Map<String, double> coords) {
+  /// Actual normalized coordinates of this instance, one per fvar axis, in
+  /// [-1, 1]. These — not [variationCoordinates] — are what drive gvar/HVAR/
+  /// MVAR, and after quantization they may not correspond exactly to the
+  /// design values that were requested. Empty on the base font.
+  List<double> get normalizedCoordinates =>
+      _normCoords?.toList(growable: false) ?? const <double>[];
+
+  /// Snap `coords` onto the quantization grid, returning both the design
+  /// coordinates this instance will actually render and the post-avar F2Dot14
+  /// ticks that drive gvar/HVAR/MVAR.
+  ///
+  /// The ticks — not the design-space request — are the correct cache identity:
+  /// `wght: 700.0` and `wght: 700.01` normalize to the same tick and must not
+  /// become two fonts.
+  ///
+  /// `steps` (null → full F2Dot14 resolution) is the number of grid points per
+  /// unit of normalized space; ticks snap to multiples of `16384 ~/ steps`.
+  /// Because 16384 is a power of two and `steps` must divide it, the default
+  /// coordinate (0) and both axis extremes (±16384) always land exactly on the
+  /// grid — quantization never nudges an axis off its default or its limit.
+  ///
+  /// Snapping happens BEFORE avar. Post-avar would bound the outline error more
+  /// directly (the variation tents are piecewise linear in that space), but
+  /// avar is not cheaply invertible, and we need the inverse to report an
+  /// honest design coordinate back. Pre-avar snapping keeps the reachable
+  /// instance count bounded all the same, and the linear normalization inverts
+  /// exactly.
+  (Map<String, double>, Int16List) _snapCoords(
+    Map<String, double> coords,
+    int? steps,
+  ) {
+    assert(
+      steps == null || (steps > 0 && steps <= 16384 && 16384 % steps == 0),
+      'variationQuantizationSteps must divide 16384 (a power of two), '
+      'so that 0 and ±1 stay exactly representable; got $steps',
+    );
     final fvar = _fvar!;
-    final ticks = Int16List(fvar.axes.length);
     final avar = _avar;
+    final grid = steps == null ? 1 : 16384 ~/ steps;
+    final ticks = Int16List(fvar.axes.length);
+    final snapped = <String, double>{};
     for (var i = 0; i < fvar.axes.length; i++) {
       final axis = fvar.axes[i];
       final v = coords[axis.tag];
@@ -697,10 +741,19 @@ extension GPUFontVariations on GPUFont {
         n = axis.max == axis.def ? 0 : (v - axis.def) / (axis.max - axis.def);
       }
       var t = (n * 16384).round();
-      if (avar != null) t = (avar.map(i, t / 16384.0) * 16384).round();
-      ticks[i] = t.clamp(-16384, 16384);
+      if (grid > 1) t = (t / grid).round() * grid;
+      t = t.clamp(-16384, 16384);
+      if (t == 0) continue; // snapped onto the axis default
+      final nq = t / 16384.0;
+      // Exact inverse of the normalization above.
+      snapped[axis.tag] = nq < 0
+          ? axis.def + nq * (axis.def - axis.min)
+          : axis.def + nq * (axis.max - axis.def);
+      ticks[i] = avar == null
+          ? t
+          : (avar.map(i, nq) * 16384).round().clamp(-16384, 16384);
     }
-    return ticks;
+    return (snapped, ticks);
   }
 
   /// This font instanced at the given design-space coordinates (e.g.
@@ -709,14 +762,31 @@ extension GPUFontVariations on GPUFont {
   /// remains — or everything normalizes to the default — the base font itself
   /// is returned.
   ///
-  /// Instances are cached by NORMALIZED coordinates, so any two requests the
-  /// font cannot actually distinguish (they round to the same F2Dot14 tick)
-  /// return the IDENTICAL object — everything downstream (glyph atlas, metrics
-  /// caches, kerning runs) keys by font identity. [variationCoordinates] on
-  /// the result therefore reports the design coordinates of whichever request
-  /// created the instance, which may differ from this one below tick
-  /// resolution (~1/16384 of an axis half-range).
-  GPUFont variant(Map<String, double> coordinates) {
+  /// Coordinates are snapped to the [GPUFont.variationQuantizationSteps] grid.
+  /// A continuous axis animation would otherwise mint a fresh instance every
+  /// frame, and each one bands its own copy of every glyph into an atlas that
+  /// never evicts. Snapping bounds the instance count per axis at the grid
+  /// resolution; the cost is a sub-pixel outline error (see that field). Use
+  /// [variantExact] where the exact requested coordinate matters — measuring
+  /// against reference metrics, or rendering a single static instance.
+  ///
+  /// Instances are cached by NORMALIZED coordinates, so any two requests that
+  /// land on the same grid point return the IDENTICAL object — everything
+  /// downstream (glyph atlas, metrics caches, kerning runs) keys by font
+  /// identity. [variationCoordinates] on the result therefore reports the
+  /// design coordinates of whichever request created the instance, which may
+  /// differ from this one; [normalizedCoordinates] is what actually rendered.
+  GPUFont variant(Map<String, double> coordinates) =>
+      _variant(coordinates, GPUFont.variationQuantizationSteps);
+
+  /// [variant] at full F2Dot14 resolution, bypassing quantization.
+  ///
+  /// Every call with a distinct coordinate creates an instance that bands its
+  /// own glyphs into the shared atlas, so do not drive this from an animation.
+  GPUFont variantExact(Map<String, double> coordinates) =>
+      _variant(coordinates, null);
+
+  GPUFont _variant(Map<String, double> coordinates, int? quantizeSteps) {
     final base = _base ?? this;
     final fvar = base._fvar;
     if (fvar == null || fvar.axes.isEmpty) return this;
@@ -732,13 +802,10 @@ extension GPUFontVariations on GPUFont {
       canonical[axis.tag] = v;
     }
     if (canonical.isEmpty) return base;
-    final ticks = base._normalizeTicks(canonical);
-    var key = '';
-    for (final t in ticks) {
-      key = key.isEmpty ? '$t' : '$key,$t';
-    }
-    if (!ticks.any((t) => t != 0)) return base; // normalizes to the default
-    return base._variantCache[key] ??= base._instantiate(canonical, ticks);
+    final (snapped, ticks) = base._snapCoords(canonical, quantizeSteps);
+    if (snapped.isEmpty) return base; // every axis snapped to its default
+    final key = _tickKey(ticks);
+    return base._variantCache[key] ??= base._instantiate(snapped, ticks);
   }
 
   GPUFont _instantiate(Map<String, double> coords, Int16List ticks) {

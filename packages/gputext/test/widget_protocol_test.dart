@@ -14,8 +14,9 @@ void main() {
 
   const style = TextStyle(fontFamily: 'Lato', fontSize: 16);
 
-  testWidgets('fills a tight width and wraps to multiple lines',
-      (tester) async {
+  testWidgets('fills a tight width and wraps to multiple lines', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
@@ -23,9 +24,11 @@ void main() {
             width: 160,
             child: GPURichText(
               text: TextSpan(
-                  style: style,
-                  text: 'a long sentence that definitely wraps onto '
-                      'several lines here'),
+                style: style,
+                text:
+                    'a long sentence that definitely wraps onto '
+                    'several lines here',
+              ),
             ),
           ),
         ),
@@ -37,8 +40,9 @@ void main() {
     expect(size.height, greaterThan(30));
   });
 
-  testWidgets('shrink-wraps to text width under loose constraints',
-      (tester) async {
+  testWidgets('shrink-wraps to text width under loose constraints', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
@@ -57,9 +61,11 @@ void main() {
 
   testWidgets('maxLines caps the height', (tester) async {
     const span = TextSpan(
-        style: style,
-        text: 'words words words words words words words words words '
-            'words words words words words words words words words');
+      style: style,
+      text:
+          'words words words words words words words words words '
+          'words words words words words words words words words',
+    );
     Future<Size> sizeFor(int? maxLines) async {
       await tester.pumpWidget(
         MaterialApp(
@@ -93,13 +99,17 @@ void main() {
             textBaseline: TextBaseline.alphabetic,
             children: [
               GPURichText(
-                  text: TextSpan(
-                      style: TextStyle(fontFamily: 'Lato', fontSize: 32),
-                      text: 'Big')),
+                text: TextSpan(
+                  style: TextStyle(fontFamily: 'Lato', fontSize: 32),
+                  text: 'Big',
+                ),
+              ),
               GPURichText(
-                  text: TextSpan(
-                      style: TextStyle(fontFamily: 'Lato', fontSize: 12),
-                      text: 'small')),
+                text: TextSpan(
+                  style: TextStyle(fontFamily: 'Lato', fontSize: 12),
+                  text: 'small',
+                ),
+              ),
             ],
           ),
         ),
@@ -115,8 +125,9 @@ void main() {
     expect((bigBaseline - smallBaseline).abs(), lessThan(1.0));
   });
 
-  testWidgets('IntrinsicWidth uses text intrinsics without crashing',
-      (tester) async {
+  testWidgets('IntrinsicWidth uses text intrinsics without crashing', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
@@ -125,9 +136,11 @@ void main() {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 GPURichText(
-                    text: TextSpan(style: style, text: 'short')),
+                  text: TextSpan(style: style, text: 'short'),
+                ),
                 GPURichText(
-                    text: TextSpan(style: style, text: 'a longer line')),
+                  text: TextSpan(style: style, text: 'a longer line'),
+                ),
               ],
             ),
           ),
@@ -139,8 +152,9 @@ void main() {
     expect(col.width, lessThan(200));
   });
 
-  testWidgets('WidgetSpan children lay out, position, and hit-test',
-      (tester) async {
+  testWidgets('WidgetSpan children lay out, position, and hit-test', (
+    tester,
+  ) async {
     var taps = 0;
     await tester.pumpWidget(
       MaterialApp(
@@ -148,24 +162,29 @@ void main() {
           child: SizedBox(
             width: 260,
             child: GPURichText(
-              text: TextSpan(style: style, children: [
-                const TextSpan(text: 'tap '),
-                WidgetSpan(
-                  alignment: PlaceholderAlignment.middle,
-                  child: GestureDetector(
-                    onTap: () => taps++,
-                    child: Container(
-                      key: const Key('box'),
-                      width: 24,
-                      height: 24,
-                      color: const Color(0xFF123456),
+              text: TextSpan(
+                style: style,
+                children: [
+                  const TextSpan(text: 'tap '),
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: GestureDetector(
+                      onTap: () => taps++,
+                      child: Container(
+                        key: const Key('box'),
+                        width: 24,
+                        height: 24,
+                        color: const Color(0xFF123456),
+                      ),
                     ),
                   ),
-                ),
-                const TextSpan(
-                    text: ' inline and wrap with more words following '
-                        'after it so the paragraph spans lines'),
-              ]),
+                  const TextSpan(
+                    text:
+                        ' inline and wrap with more words following '
+                        'after it so the paragraph spans lines',
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -186,13 +205,16 @@ void main() {
       MaterialApp(
         home: Center(
           child: GPURichText(
-            text: TextSpan(style: style, children: const [
-              TextSpan(text: 'x'),
-              WidgetSpan(
-                alignment: PlaceholderAlignment.middle,
-                child: SizedBox(width: 10, height: 40),
-              ),
-            ]),
+            text: TextSpan(
+              style: style,
+              children: const [
+                TextSpan(text: 'x'),
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: SizedBox(width: 10, height: 40),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -201,8 +223,9 @@ void main() {
     expect(size.height, greaterThanOrEqualTo(40));
   });
 
-  testWidgets('TextSpan recognizers receive taps on their runs',
-      (tester) async {
+  testWidgets('TextSpan recognizers receive taps on their runs', (
+    tester,
+  ) async {
     var linkTaps = 0;
     final recognizer = TapGestureRecognizer()..onTap = () => linkTaps++;
     addTearDown(recognizer.dispose);
@@ -212,14 +235,17 @@ void main() {
           child: SizedBox(
             width: 400,
             child: GPURichText(
-              text: TextSpan(style: style, children: [
-                const TextSpan(text: 'x '),
-                TextSpan(
-                  text: 'a long tappable link run of text',
-                  style: const TextStyle(color: Color(0xFF1144CC)),
-                  recognizer: recognizer,
-                ),
-              ]),
+              text: TextSpan(
+                style: style,
+                children: [
+                  const TextSpan(text: 'x '),
+                  TextSpan(
+                    text: 'a long tappable link run of text',
+                    style: const TextStyle(color: Color(0xFF1144CC)),
+                    recognizer: recognizer,
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -236,19 +262,23 @@ void main() {
     expect(linkTaps, 1);
   });
 
-  testWidgets('identical paragraphs share one layout via the engine cache',
-      (tester) async {
+  testWidgets('identical paragraphs share one layout via the engine cache', (
+    tester,
+  ) async {
     final engine = GPUText.instance;
     final hitsBefore = engine.debugLayoutCacheHits;
     const span = TextSpan(
-        style: style,
-        text: 'cached paragraph content that wraps across some lines');
+      style: style,
+      text: 'cached paragraph content that wraps across some lines',
+    );
     await tester.pumpWidget(
       const MaterialApp(
-        home: Column(children: [
-          SizedBox(width: 250, child: GPURichText(text: span)),
-          SizedBox(width: 250, child: GPURichText(text: span)),
-        ]),
+        home: Column(
+          children: [
+            SizedBox(width: 250, child: GPURichText(text: span)),
+            SizedBox(width: 250, child: GPURichText(text: span)),
+          ],
+        ),
       ),
     );
     expect(engine.debugLayoutCacheHits, greaterThan(hitsBefore));
@@ -262,7 +292,9 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
-          child: GPURichText(text: TextSpan(style: style, text: '')),
+          child: GPURichText(
+            text: TextSpan(style: style, text: ''),
+          ),
         ),
       ),
     );

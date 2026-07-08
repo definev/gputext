@@ -29,19 +29,17 @@ void main() {
   });
 
   wf.TextRun run(String text, {double size = 16}) => wf.TextRun(
-        text: text,
-        font: font,
-        fontSizePx: size,
-        color: const [0, 0, 0, 1],
-      );
+    text: text,
+    font: font,
+    fontSizePx: size,
+    color: const [0, 0, 0, 1],
+  );
 
   wf.ParagraphLines breakAt(String text, double width) =>
       wf.breakLines([run(text)], width, wf.ParagraphStyle(maxWidth: width));
 
-  String lineText(wf.LineMetrics line) => line.items
-      .whereType<wf.LineRun>()
-      .map((r) => r.text)
-      .join();
+  String lineText(wf.LineMetrics line) =>
+      line.items.whereType<wf.LineRun>().map((r) => r.text).join();
 
   group('segment analysis', () {
     test('punctuation is left-sticky, openers are forward-sticky', () {
@@ -51,13 +49,17 @@ void main() {
     });
 
     test('numeric and URL runs stay coherent', () {
-      expect(analyzeText('open 7:00-9:00 daily').texts,
-          containsAll(['7:00-', '9:00']));
+      expect(
+        analyzeText('open 7:00-9:00 daily').texts,
+        containsAll(['7:00-', '9:00']),
+      );
       final url = analyzeText('see https://example.com/docs?q=1 now').texts;
       expect(url, contains('https://example.com/docs?'));
       expect(url, contains('q=1'));
-      expect(analyzeText('mail user@host.com now').texts,
-          contains('user@host.com'));
+      expect(
+        analyzeText('mail user@host.com now').texts,
+        contains('user@host.com'),
+      );
     });
 
     test('kinsoku merges prohibited punctuation into CJK units', () {
@@ -67,8 +69,11 @@ void main() {
       expect(units.first.text, '「こ');
       expect(units.last.text, 'は。」');
       for (final u in units) {
-        expect(kinsokuStart.contains(u.text.substring(0, 1)), isFalse,
-            reason: 'unit "${u.text}" must not start with kinsoku');
+        expect(
+          kinsokuStart.contains(u.text.substring(0, 1)),
+          isFalse,
+          reason: 'unit "${u.text}" must not start with kinsoku',
+        );
       }
     });
   });
@@ -76,8 +81,11 @@ void main() {
   group('line breaking invariants', () {
     test('NBSP glue prevents a break inside the glued unit', () {
       final wrapW = measureText('aa bb', font, 16) + 1;
-      final glued = wf.breakLines([run('aa bb\u00A0cc dd')], wrapW,
-          wf.ParagraphStyle(maxWidth: wrapW));
+      final glued = wf.breakLines(
+        [run('aa bb\u00A0cc dd')],
+        wrapW,
+        wf.ParagraphStyle(maxWidth: wrapW),
+      );
       // 'bb cc' with an NBSP cannot split: it moves to line 2 whole.
       expect(lineText(glued.lines[0]), 'aa ');
       expect(lineText(glued.lines[1]), 'bb\u00A0cc ');
@@ -91,24 +99,30 @@ void main() {
       expect(lineText(para.lines[1]), 'aaa');
       // Unbroken, the ZWSP adds no width.
       final wide = breakAt('aaa\u200Baaa', double.infinity);
-      expect(wide.lines.single.width,
-          closeTo(measureText('aaaaaa', font, 16), 0.01));
+      expect(
+        wide.lines.single.width,
+        closeTo(measureText('aaaaaa', font, 16), 0.01),
+      );
     });
 
     test('soft hyphen: invisible unless chosen, then materializes "-"', () {
       final fits = breakAt('aaa\u00ADbbb', double.infinity);
       expect(fits.lines.length, 1);
       expect(lineText(fits.lines.single), isNot(contains('-')));
-      expect(fits.lines.single.width,
-          closeTo(measureText('aaabbb', font, 16), 0.01));
+      expect(
+        fits.lines.single.width,
+        closeTo(measureText('aaabbb', font, 16), 0.01),
+      );
 
       final wrapW = measureText('aaa-', font, 16) + 1;
       final broken = breakAt('aaa\u00ADbbb', wrapW);
       expect(broken.lines.length, 2);
       expect(lineText(broken.lines[0]), 'aaa-');
       expect(lineText(broken.lines[1]), 'bbb');
-      expect(broken.lines[0].width,
-          closeTo(measureText('aaa-', font, 16), 0.01));
+      expect(
+        broken.lines[0].width,
+        closeTo(measureText('aaa-', font, 16), 0.01),
+      );
     });
 
     test('kinsoku punctuation never starts a line', () {
@@ -120,10 +134,16 @@ void main() {
         for (final line in para.lines) {
           final t = lineText(line);
           if (t.isEmpty) continue;
-          expect(kinsokuStart.contains(t.substring(0, 1)), isFalse,
-              reason: 'line "$t" at width $w starts with kinsoku');
-          expect(kinsokuEnd.contains(t.substring(t.length - 1)), isFalse,
-              reason: 'line "$t" at width $w ends with an opener');
+          expect(
+            kinsokuStart.contains(t.substring(0, 1)),
+            isFalse,
+            reason: 'line "$t" at width $w starts with kinsoku',
+          );
+          expect(
+            kinsokuEnd.contains(t.substring(t.length - 1)),
+            isFalse,
+            reason: 'line "$t" at width $w ends with an opener',
+          );
         }
       }
     });
@@ -150,7 +170,10 @@ void main() {
       final worldW = measureText('world', font, 16);
       final wrapW = (helloW > worldW ? helloW : worldW) + 1;
       final para = wf.breakLines(
-          [red, blue], wrapW, wf.ParagraphStyle(maxWidth: wrapW));
+        [red, blue],
+        wrapW,
+        wf.ParagraphStyle(maxWidth: wrapW),
+      );
       // The trailing space hangs on line 1, like Flutter.
       expect(lineText(para.lines[0]), 'hello ');
       expect(lineText(para.lines[1]), 'world');
@@ -173,14 +196,17 @@ void main() {
         if (item is! wf.LineRun) continue;
         for (final cu in item.text.codeUnits) {
           // A well-formed run has no unpaired surrogate at its edges.
-          expect(cu >= 0xDC00 && cu <= 0xDFFF && item.text.codeUnits.first == cu,
-              isFalse);
+          expect(
+            cu >= 0xDC00 && cu <= 0xDFFF && item.text.codeUnits.first == cu,
+            isFalse,
+          );
         }
         expect(
-            item.text.codeUnits.last >= 0xD800 &&
-                item.text.codeUnits.last <= 0xDBFF,
-            isFalse,
-            reason: 'run "${item.text}" ends with an unpaired high surrogate');
+          item.text.codeUnits.last >= 0xD800 &&
+              item.text.codeUnits.last <= 0xDBFF,
+          isFalse,
+          reason: 'run "${item.text}" ends with an unpaired high surrogate',
+        );
       }
     });
 
@@ -190,7 +216,10 @@ void main() {
       for (final w in [50.0, 80.0, 120.0, 200.0, 400.0]) {
         final oneShot = breakAt(text, w);
         final split = wf.layoutPreparedLines(
-            prepared, w, wf.ParagraphStyle(maxWidth: w));
+          prepared,
+          w,
+          wf.ParagraphStyle(maxWidth: w),
+        );
         expect(split.lines.length, oneShot.lines.length);
         for (var i = 0; i < split.lines.length; i++) {
           expect(split.lines[i].width, closeTo(oneShot.lines[i].width, 1e-9));
@@ -201,17 +230,22 @@ void main() {
     });
 
     test('URLs wrap as path+query units, driving min intrinsic width', () {
-      final para =
-          breakAt('see https://example.com/docs?q=1 now', double.infinity);
+      final para = breakAt(
+        'see https://example.com/docs?q=1 now',
+        double.infinity,
+      );
       expect(
-          para.minIntrinsicWidth,
-          closeTo(measureText('https://example.com/docs?', font, 16), 0.01));
+        para.minIntrinsicWidth,
+        closeTo(measureText('https://example.com/docs?', font, 16), 0.01),
+      );
     });
 
     test('multiple mid-line spaces are preserved', () {
       final para = breakAt('a  b', double.infinity);
-      expect(para.lines.single.width,
-          closeTo(measureText('a  b', font, 16), 0.01));
+      expect(
+        para.lines.single.width,
+        closeTo(measureText('a  b', font, 16), 0.01),
+      );
     });
   });
 
@@ -230,8 +264,7 @@ void main() {
     ];
     const widths = [43.0, 61.0, 87.0, 118.0, 166.0, 231.0, 320.0];
 
-    testWidgets('line counts match Flutter for a mixed corpus',
-        (tester) async {
+    testWidgets('line counts match Flutter for a mixed corpus', (tester) async {
       for (final text in corpus) {
         for (final w in widths) {
           final painter = TextPainter(
@@ -245,8 +278,11 @@ void main() {
           painter.dispose();
 
           final ours = breakAt(text, w).lines.length;
-          expect(ours, oracle,
-              reason: '"$text" at width $w: gputext=$ours flutter=$oracle');
+          expect(
+            ours,
+            oracle,
+            reason: '"$text" at width $w: gputext=$ours flutter=$oracle',
+          );
         }
       }
     });

@@ -16,8 +16,7 @@ void main() {
   GPUFont? wide;
 
   setUpAll(() {
-    lato = GPUFont.parse(
-        File('assets/Lato-Regular.ttf').readAsBytesSync());
+    lato = GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync());
     engine.registerFont('Lato', lato);
     final wideFile = File(_wideFontPath);
     if (wideFile.existsSync()) {
@@ -30,27 +29,22 @@ void main() {
 
   test('resolveFontForChar walks the family chain', () {
     expect(lato.hasGlyph('你'), isFalse); // precondition
-    expect(
-      engine.resolveFontForChar('a', families: const ['Lato']),
-      isNotNull,
-    );
-    expect(
-      engine.resolveFontForChar('你', families: const ['Lato']),
-      isNull,
-    );
+    expect(engine.resolveFontForChar('a', families: const ['Lato']), isNotNull);
+    expect(engine.resolveFontForChar('你', families: const ['Lato']), isNull);
     if (wide == null) return;
     expect(
       identical(
-        engine.resolveFontForChar('你',
-            families: const ['Lato', 'WideFallback']),
+        engine.resolveFontForChar(
+          '你',
+          families: const ['Lato', 'WideFallback'],
+        ),
         wide,
       ),
       isTrue,
     );
     engine.setFallbackFamilies(const ['WideFallback']);
     expect(
-      identical(
-          engine.resolveFontForChar('你', families: const ['Lato']), wide),
+      identical(engine.resolveFontForChar('你', families: const ['Lato']), wide),
       isTrue,
     );
   });
@@ -80,8 +74,7 @@ void main() {
     expect(identical(runs[2].font, lato), isTrue);
   });
 
-  test('expandUncoveredSpans delegates uncovered chars, per CJK character',
-      () {
+  test('expandUncoveredSpans delegates uncovered chars, per CJK character', () {
     const span = TextSpan(
       style: TextStyle(fontFamily: 'Lato', fontSize: 18),
       text: 'go 中文 now',
@@ -117,14 +110,16 @@ void main() {
       color: const [0, 0, 0, 1],
     );
     final oneChar = 16.0; // full-width advance = 1em at 16px (2048/2048)
-    final para = wf.breakLines([cjkRun], oneChar * 3 + 1,
-        wf.ParagraphStyle(maxWidth: oneChar * 3 + 1));
+    final para = wf.breakLines(
+      [cjkRun],
+      oneChar * 3 + 1,
+      wf.ParagraphStyle(maxWidth: oneChar * 3 + 1),
+    );
     expect(para.lines.length, greaterThanOrEqualTo(3)); // wraps mid-"word"
     expect(para.minIntrinsicWidth, lessThanOrEqualTo(oneChar + 0.1));
   });
 
-  testWidgets('uncovered CJK renders as delegated inline Text',
-      (tester) async {
+  testWidgets('uncovered CJK renders as delegated inline Text', (tester) async {
     await tester.pumpWidget(
       const MaterialApp(
         home: Center(

@@ -20,15 +20,18 @@ void main() {
   });
 
   wf.TextRun run(String text, {double size = 16}) => wf.TextRun(
-        text: text,
-        font: font,
-        fontSizePx: size,
-        color: const [0, 0, 0, 1],
-      );
+    text: text,
+    font: font,
+    fontSizePx: size,
+    color: const [0, 0, 0, 1],
+  );
 
   test('wraps greedily and reports intrinsic widths', () {
     final para = wf.breakLines(
-        [run('aaa bbb ccc ddd')], 60, const wf.ParagraphStyle(maxWidth: 60));
+      [run('aaa bbb ccc ddd')],
+      60,
+      const wf.ParagraphStyle(maxWidth: 60),
+    );
     expect(para.lines.length, greaterThan(1));
     for (final line in para.lines) {
       expect(line.width, lessThanOrEqualTo(60.01));
@@ -37,10 +40,15 @@ void main() {
     expect(para.minIntrinsicWidth, lessThanOrEqualTo(para.maxIntrinsicWidth));
 
     final unwrapped = wf.breakLines(
-        [run('aaa bbb ccc ddd')], double.infinity, const wf.ParagraphStyle());
+      [run('aaa bbb ccc ddd')],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
     expect(unwrapped.lines.length, 1);
-    expect(unwrapped.maxIntrinsicWidth,
-        closeTo(unwrapped.lines.single.width, 0.01));
+    expect(
+      unwrapped.maxIntrinsicWidth,
+      closeTo(unwrapped.lines.single.width, 0.01),
+    );
   });
 
   test('maxLines truncates; ellipsis appended within the wrap width', () {
@@ -57,40 +65,57 @@ void main() {
   });
 
   test('hard newlines produce empty lines with nonzero height', () {
-    final para =
-        wf.breakLines([run('a\n\nb')], double.infinity, const wf.ParagraphStyle());
+    final para = wf.breakLines(
+      [run('a\n\nb')],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
     expect(para.lines.length, 3);
     expect(para.lines[1].items, isEmpty);
     expect(para.lines[1].height, greaterThan(0));
-    expect(para.height,
-        closeTo(para.lines.fold<double>(0, (h, l) => h + l.height), 1e-9));
+    expect(
+      para.height,
+      closeTo(para.lines.fold<double>(0, (h, l) => h + l.height), 1e-9),
+    );
   });
 
   test('trailing spaces are excluded from the alignment width', () {
     final spaced = wf.breakLines(
-        [run('ab   ')], double.infinity, const wf.ParagraphStyle());
-    final bare =
-        wf.breakLines([run('ab')], double.infinity, const wf.ParagraphStyle());
+      [run('ab   ')],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
+    final bare = wf.breakLines(
+      [run('ab')],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
     expect(spaced.lines.single.width, closeTo(bare.lines.single.width, 1e-6));
   });
 
-  test('emitInstances aligns against the box width and reports ink bounds',
-      () {
+  test('emitInstances aligns against the box width and reports ink bounds', () {
     final atlas = SharedGlyphAtlas();
     atlas.ensureGlyphs(font, 'ab');
-    final para =
-        wf.breakLines([run('ab')], double.infinity, const wf.ParagraphStyle());
+    final para = wf.breakLines(
+      [run('ab')],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
     final left = wf.emitInstances(para, 200, wf.TextAlign.left, atlas);
     final center = wf.emitInstances(para, 200, wf.TextAlign.center, atlas);
     final right = wf.emitInstances(para, 200, wf.TextAlign.right, atlas);
     expect(left.glyphCount, 2);
     final lineW = para.lines.single.width;
-    expect(center.inkBounds!.minX - left.inkBounds!.minX,
-        closeTo((200 - lineW) / 2, 0.5));
+    expect(
+      center.inkBounds!.minX - left.inkBounds!.minX,
+      closeTo((200 - lineW) / 2, 0.5),
+    );
     expect(right.inkBounds!.maxX, lessThanOrEqualTo(200.01));
     // Ink stays within one line of vertical extent.
-    expect(left.inkBounds!.maxY - left.inkBounds!.minY,
-        lessThanOrEqualTo(para.lines.single.height * 1.5));
+    expect(
+      left.inkBounds!.maxY - left.inkBounds!.minY,
+      lessThanOrEqualTo(para.lines.single.height * 1.5),
+    );
   });
 
   test('atlas growth keeps earlier entries stable', () {
@@ -121,8 +146,11 @@ void main() {
       ),
       run(' bb'),
     ];
-    final para =
-        wf.breakLines(items, double.infinity, const wf.ParagraphStyle());
+    final para = wf.breakLines(
+      items,
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
     expect(para.lines.length, 1);
     expect(para.lines.single.ascent, greaterThanOrEqualTo(24));
     expect(para.lines.single.descent, greaterThanOrEqualTo(6));
@@ -134,21 +162,30 @@ void main() {
     expect(emitted.placeholders.single.width, 50);
 
     // A narrow wrap width forces the placeholder onto its own line.
-    final wrapped =
-        wf.breakLines(items, 55, const wf.ParagraphStyle(maxWidth: 55));
+    final wrapped = wf.breakLines(
+      items,
+      55,
+      const wf.ParagraphStyle(maxWidth: 55),
+    );
     expect(wrapped.lines.length, greaterThanOrEqualTo(2));
     // Tall middle-aligned placeholder grows the line box.
-    final tall = wf.breakLines([
-      run('x'),
-      const wf.PlaceholderItem(
-        index: 0,
-        width: 10,
-        height: 60,
-        alignment: wf.InlinePlaceholderAlignment.middle,
-      ),
-    ], double.infinity, const wf.ParagraphStyle());
-    expect(tall.lines.single.ascent + tall.lines.single.descent,
-        greaterThanOrEqualTo(60));
+    final tall = wf.breakLines(
+      [
+        run('x'),
+        const wf.PlaceholderItem(
+          index: 0,
+          width: 10,
+          height: 60,
+          alignment: wf.InlinePlaceholderAlignment.middle,
+        ),
+      ],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
+    expect(
+      tall.lines.single.ascent + tall.lines.single.descent,
+      greaterThanOrEqualTo(60),
+    );
   });
 
   test('flattenSpan maps PlaceholderSpans to indexed placeholder items', () {
@@ -170,9 +207,13 @@ void main() {
       GPUText.instance,
       placeholderDimensions: const [
         PlaceholderDimensions(
-            size: Size(20, 10), alignment: ui.PlaceholderAlignment.bottom),
+          size: Size(20, 10),
+          alignment: ui.PlaceholderAlignment.bottom,
+        ),
         PlaceholderDimensions(
-            size: Size(30, 12), alignment: ui.PlaceholderAlignment.middle),
+          size: Size(30, 12),
+          alignment: ui.PlaceholderAlignment.middle,
+        ),
       ],
     );
     expect(items, isNotNull);
@@ -190,15 +231,17 @@ void main() {
     final wBB = measureText('bb', font, 16);
     final wSpace = measureText(' ', font, 16);
     final wrapW = wAA + wSpace + wBB + 2;
-    final para = wf.breakLines([run('aa bb cc')], wrapW,
-        wf.ParagraphStyle(maxWidth: wrapW, align: wf.TextAlign.justify));
+    final para = wf.breakLines(
+      [run('aa bb cc')],
+      wrapW,
+      wf.ParagraphStyle(maxWidth: wrapW, align: wf.TextAlign.justify),
+    );
     expect(para.lines.length, 2);
     expect(para.lines[0].hardBreak, isFalse);
     expect(para.lines[1].hardBreak, isTrue);
 
     final atlas = SharedGlyphAtlas()..ensureGlyphs(font, 'abc');
-    final emitted =
-        wf.emitInstances(para, wrapW, wf.TextAlign.justify, atlas);
+    final emitted = wf.emitInstances(para, wrapW, wf.TextAlign.justify, atlas);
     // First glyph of 'bb' (3rd glyph overall) starts at wrapW - width('bb').
     final bbX = emitted.instances[2 * 16];
     expect(bbX, closeTo(wrapW - wBB, 0.5));
@@ -206,16 +249,23 @@ void main() {
 
   test('TextStyle.height multiplier sets the line extent', () {
     final normal = wf.breakLines(
-        [run('hello')], double.infinity, const wf.ParagraphStyle());
-    final doubled = wf.breakLines([
-      wf.TextRun(
-        text: 'hello',
-        font: font,
-        fontSizePx: 16,
-        color: const [0, 0, 0, 1],
-        height: 2,
-      ),
-    ], double.infinity, const wf.ParagraphStyle());
+      [run('hello')],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
+    final doubled = wf.breakLines(
+      [
+        wf.TextRun(
+          text: 'hello',
+          font: font,
+          fontSizePx: 16,
+          color: const [0, 0, 0, 1],
+          height: 2,
+        ),
+      ],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
     expect(doubled.height, closeTo(32, 0.001));
     expect(doubled.height, greaterThan(normal.height));
     final l = doubled.lines.single;
@@ -236,7 +286,10 @@ void main() {
       ),
     );
     final para = wf.breakLines(
-        [decorated], double.infinity, const wf.ParagraphStyle());
+      [decorated],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
     final emitted = wf.emitInstances(para, 500, wf.TextAlign.left, null);
     final under = emitted.decorations.where((d) => !d.aboveText).toList();
     final over = emitted.decorations.where((d) => d.aboveText).toList();
@@ -264,24 +317,37 @@ void main() {
       color: const [0, 0, 0, 1],
       wordSpacingPx: 10,
     );
-    final wide =
-        wf.breakLines([spaced], double.infinity, const wf.ParagraphStyle());
-    final narrow =
-        wf.breakLines([run('a b c')], double.infinity, const wf.ParagraphStyle());
-    expect(wide.lines.single.width - narrow.lines.single.width,
-        closeTo(20, 0.001));
+    final wide = wf.breakLines(
+      [spaced],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
+    final narrow = wf.breakLines(
+      [run('a b c')],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
+    expect(
+      wide.lines.single.width - narrow.lines.single.width,
+      closeTo(20, 0.001),
+    );
   });
 
   test('astral characters map to .notdef instead of vanishing', () {
     expect(font.advanceOf('🌚'), greaterThan(0));
     final para = wf.breakLines(
-        [run('🌚a')], double.infinity, const wf.ParagraphStyle());
+      [run('🌚a')],
+      double.infinity,
+      const wf.ParagraphStyle(),
+    );
     // One notdef advance + one 'a' — not two surrogate halves.
     expect(
-        para.lines.single.width,
-        closeTo(
-            (font.advanceOf('🌚') + font.advanceOf('a')) * 16 / font.unitsPerEm,
-            0.5));
+      para.lines.single.width,
+      closeTo(
+        (font.advanceOf('🌚') + font.advanceOf('a')) * 16 / font.unitsPerEm,
+        0.5,
+      ),
+    );
   });
 
   test('engine resolves nearest weight/style variant', () {
@@ -318,7 +384,10 @@ void main() {
     final knownW = measureText('known', font, 16);
     final wrapW = (wellW > knownW ? wellW : knownW) + 1;
     final para = wf.breakLines(
-        [run('well-known')], wrapW, wf.ParagraphStyle(maxWidth: wrapW));
+      [run('well-known')],
+      wrapW,
+      wf.ParagraphStyle(maxWidth: wrapW),
+    );
     expect(para.lines.length, 2);
     expect((para.lines[0].items.last as wf.LineRun).text, 'well-');
     expect((para.lines[1].items.first as wf.LineRun).text, 'known');
@@ -358,7 +427,10 @@ void main() {
     final runs = flattenSpan(
       const TextSpan(
         style: TextStyle(
-            fontFamily: 'Lato', fontSize: 20, color: Color(0xFF112233)),
+          fontFamily: 'Lato',
+          fontSize: 20,
+          color: Color(0xFF112233),
+        ),
         children: [
           TextSpan(text: 'a'),
           TextSpan(text: 'b', style: TextStyle(fontSize: 30)),

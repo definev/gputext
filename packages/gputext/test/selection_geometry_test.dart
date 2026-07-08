@@ -17,8 +17,7 @@ void main() {
   late GPUFont font;
 
   setUpAll(() {
-    font = GPUFont.parse(
-        File('assets/Lato-Regular.ttf').readAsBytesSync());
+    font = GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync());
     GPUText.instance.registerFont('Lato', font);
   });
 
@@ -38,9 +37,16 @@ void main() {
     double boxWidth = 400,
   }) {
     final para = wf.breakLines(
-        items, width, wf.ParagraphStyle(maxWidth: width, align: align));
+      items,
+      width,
+      wf.ParagraphStyle(maxWidth: width, align: align),
+    );
     return wf.ParagraphGeometry(
-        items: items, para: para, boxWidth: boxWidth, align: align);
+      items: items,
+      para: para,
+      boxWidth: boxWidth,
+      align: align,
+    );
   }
 
   group('cluster maps', () {
@@ -65,8 +71,9 @@ void main() {
     test('flattener produces sourceText for ligated runs', () {
       final items = flattenSpan(
         const TextSpan(
-            text: 'first',
-            style: TextStyle(fontFamily: 'Lato', fontSize: 16)),
+          text: 'first',
+          style: TextStyle(fontFamily: 'Lato', fontSize: 16),
+        ),
         TextScaler.noScaling,
         GPUText.instance,
       )!;
@@ -107,7 +114,9 @@ void main() {
       // between f and i at half the ligature advance.
       final items = flattenSpan(
         const TextSpan(
-            text: 'fi', style: TextStyle(fontFamily: 'Lato', fontSize: 16)),
+          text: 'fi',
+          style: TextStyle(fontFamily: 'Lato', fontSize: 16),
+        ),
         TextScaler.noScaling,
         GPUText.instance,
       )!;
@@ -158,8 +167,7 @@ void main() {
       }
     });
 
-    test('newlines separate line ranges without being selectable-in-line',
-        () {
+    test('newlines separate line ranges without being selectable-in-line', () {
       final g = geometryOf([run('ab\ncd')]);
       expect(g.para.lines.length, 2);
       expect(g.lineRange(0), (start: 0, end: 2));
@@ -191,15 +199,22 @@ void main() {
       ];
       const width = 150.0;
       const align = wf.TextAlign.justify;
-      final para = wf.breakLines(items, width,
-          const wf.ParagraphStyle(maxWidth: width, align: align));
+      final para = wf.breakLines(
+        items,
+        width,
+        const wf.ParagraphStyle(maxWidth: width, align: align),
+      );
       final atlas = SharedGlyphAtlas();
       for (final i in items) {
         atlas.ensureGlyphs((i as wf.TextRun).font, i.text);
       }
       final emitted = wf.emitInstances(para, width, align, atlas);
       final g = wf.ParagraphGeometry(
-          items: items, para: para, boxWidth: width, align: align);
+        items: items,
+        para: para,
+        boxWidth: width,
+        align: align,
+      );
 
       // Reconstruct expected glyph x's from geometry boundaries, in order.
       final expected = <double>[];
@@ -223,8 +238,7 @@ void main() {
         }
       }
       final actual = <double>[
-        for (var k = 0; k < emitted.glyphCount; k++)
-          emitted.instances[k * 16],
+        for (var k = 0; k < emitted.glyphCount; k++) emitted.instances[k * 16],
       ];
       expect(actual.length, expected.length);
       for (var k = 0; k < actual.length; k++) {

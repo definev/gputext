@@ -22,11 +22,11 @@ void main() {
   });
 
   wf.TextRun run(String text) => wf.TextRun(
-        text: text,
-        font: font,
-        fontSizePx: 16,
-        color: const [0, 0, 0, 1],
-      );
+    text: text,
+    font: font,
+    fontSizePx: 16,
+    color: const [0, 0, 0, 1],
+  );
 
   wf.ParagraphLines breakWith(
     String text,
@@ -34,17 +34,16 @@ void main() {
     wf.LineBreaker breaker, {
     int? maxLines,
     bool addEllipsis = false,
-  }) =>
-      wf.breakLines(
-        [run(text)],
-        width,
-        wf.ParagraphStyle(
-          maxWidth: width,
-          lineBreaker: breaker,
-          maxLines: maxLines,
-          addEllipsis: addEllipsis,
-        ),
-      );
+  }) => wf.breakLines(
+    [run(text)],
+    width,
+    wf.ParagraphStyle(
+      maxWidth: width,
+      lineBreaker: breaker,
+      maxLines: maxLines,
+      addEllipsis: addEllipsis,
+    ),
+  );
 
   String lineText(wf.LineMetrics line) =>
       line.items.whereType<wf.LineRun>().map((r) => r.text).join();
@@ -116,10 +115,13 @@ void main() {
   // unambiguously identifiable.
   String softHyphenate(String text) => text
       .split(' ')
-      .map((w) => RegExp('.{1,3}')
-          .allMatches(w)
-          .map((m) => m.group(0))
-          .join('\u00AD'))
+      .map(
+        (w) =>
+            RegExp('.{1,3}')
+                .allMatches(w)
+                .map((m) => m.group(0))
+                .join('\u00AD'),
+      )
       .join(' ');
 
   const prose =
@@ -130,14 +132,19 @@ void main() {
     const text =
         'The quick brown zebra jumps over the lazy dog and keeps on running';
     for (final w in [60.0, 120.0, 240.0]) {
-      final byDefault =
-          wf.breakLines([run(text)], w, wf.ParagraphStyle(maxWidth: w));
+      final byDefault = wf.breakLines(
+        [run(text)],
+        w,
+        wf.ParagraphStyle(maxWidth: w),
+      );
       final explicit = breakWith(text, w, const wf.GreedyLineBreaker());
       expect(explicit.lines.length, byDefault.lines.length);
       for (var i = 0; i < byDefault.lines.length; i++) {
         expect(lineText(explicit.lines[i]), lineText(byDefault.lines[i]));
-        expect(explicit.lines[i].width,
-            closeTo(byDefault.lines[i].width, 1e-9));
+        expect(
+          explicit.lines[i].width,
+          closeTo(byDefault.lines[i].width, 1e-9),
+        );
       }
     }
   });
@@ -154,13 +161,18 @@ void main() {
         // COMPRESS at paint, TeX-style), but word content alone must fit,
         // and shrink is bounded by the infeasible ratio.
         final s = lineStats(line);
-        expect(s.word, lessThanOrEqualTo(w + 0.01),
-            reason: 'line "${lineText(line)}" word content overflows at $w');
+        expect(
+          s.word,
+          lessThanOrEqualTo(w + 0.01),
+          reason: 'line "${lineText(line)}" word content overflows at $w',
+        );
         if (s.spaces > 0 && !line.hardBreak) {
           final justified = (w - s.word) / s.spaces;
-          expect(justified,
-              greaterThanOrEqualTo(s.spaceW / s.spaces * 0.4 - 0.01),
-              reason: 'line "${lineText(line)}" over-compressed at $w');
+          expect(
+            justified,
+            greaterThanOrEqualTo(s.spaceW / s.spaces * 0.4 - 0.01),
+            reason: 'line "${lineText(line)}" over-compressed at $w',
+          );
         } else {
           expect(line.width, lessThanOrEqualTo(w + 0.01));
         }
@@ -177,7 +189,11 @@ void main() {
 
   test('Knuth-Plass honors the chosen-soft-hyphen contract', () {
     final wrapW = measureText('aaa-', font, 16) + 1;
-    final para = breakWith('aaa\u00ADbbb', wrapW, const wf.KnuthPlassLineBreaker());
+    final para = breakWith(
+      'aaa\u00ADbbb',
+      wrapW,
+      const wf.KnuthPlassLineBreaker(),
+    );
     expect(para.lines.length, 2);
     expect(lineText(para.lines[0]), 'aaa-');
     expect(para.lines[0].width, closeTo(measureText('aaa-', font, 16), 0.01));
@@ -192,16 +208,23 @@ void main() {
     for (final w in [110.0, 170.0, 260.0]) {
       final kp = breakWith(text, w, const wf.KnuthPlassLineBreaker());
       final greedy = breakWith(text, w, wf.LineBreaker.greedy);
-      expect(totalBadness(kp, w),
-          lessThanOrEqualTo(totalBadness(greedy, w) + 1e-6),
-          reason: 'KP worse than greedy at width $w');
+      expect(
+        totalBadness(kp, w),
+        lessThanOrEqualTo(totalBadness(greedy, w) + 1e-6),
+        reason: 'KP worse than greedy at width $w',
+      );
     }
   });
 
   test('maxLines and ellipsis compose with a custom breaker', () {
     final text = softHyphenate(prose);
-    final para = breakWith(text, 150, const wf.KnuthPlassLineBreaker(),
-        maxLines: 2, addEllipsis: true);
+    final para = breakWith(
+      text,
+      150,
+      const wf.KnuthPlassLineBreaker(),
+      maxLines: 2,
+      addEllipsis: true,
+    );
     expect(para.lines.length, 2);
     expect(para.didExceedMaxLines, isTrue);
     expect(para.ellipsized, isTrue);
@@ -211,7 +234,10 @@ void main() {
 
   test('blank lines and multi-paragraph text work with a custom breaker', () {
     final para = breakWith(
-        'first block\n\nsecond block here', 70, const wf.KnuthPlassLineBreaker());
+      'first block\n\nsecond block here',
+      70,
+      const wf.KnuthPlassLineBreaker(),
+    );
     // Blank chunk stays a framework-level empty line.
     final texts = para.lines.map(lineText).toList();
     expect(texts, contains(''));

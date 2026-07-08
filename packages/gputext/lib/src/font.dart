@@ -198,9 +198,14 @@ class GPUFont {
   final _Mvar? _mvar;
   final _Gsub? _gsub;
 
-  /// Design-space coordinates this instance was created with (non-default
-  /// axes only); empty for the base instance. See
-  /// [GPUFontVariations.variant].
+  /// Design-space coordinates this instance actually renders (non-default axes
+  /// only); empty for the base instance.
+  ///
+  /// These are the requested coordinates after clamping to the axis range and
+  /// snapping to the [variationQuantizationSteps] grid, so they can differ from
+  /// what was passed to [GPUFontVariations.variant] — deterministically, and
+  /// never by more than half a grid step. Even [GPUFontVariations.variantExact]
+  /// rounds to F2Dot14 resolution, which not every design value survives.
   final Map<String, double> variationCoordinates;
 
   /// Normalized (F2Dot14-rounded, avar-mapped) coordinates; null on the base.
@@ -212,6 +217,27 @@ class GPUFont {
 
   /// Base font this variant was instanced from; null on the base.
   final GPUFont? _base;
+
+  /// Grid resolution for [GPUFontVariations.variant]: grid points per unit of
+  /// normalized coordinate space, so normalized coordinates snap to multiples
+  /// of `16384 ~/ steps` F2Dot14 ticks. Must divide 16384 (i.e. be a power of
+  /// two ≤ 16384); null disables snapping.
+  ///
+  /// This exists because nothing else bounds variable-font memory: every
+  /// distinct coordinate is a distinct font identity, which bands a fresh copy
+  /// of every glyph it touches into a shared atlas that never evicts. An
+  /// unquantized axis animation therefore grows the atlas without limit. At the
+  /// default of 32 an axis has 64 reachable instances end to end.
+  ///
+  /// The cost is a bounded outline error, worst-case half a grid step. Measured
+  /// on Google Sans Flex `wght` at this default: ≈7 font units, i.e. 0.08px at
+  /// 22px and 0.34px at 96px. Raise it for large display text, lower it to make
+  /// animation cheaper, or set null (see [GPUFontVariations.variantExact]) when
+  /// exact coordinates matter more than memory.
+  ///
+  /// Note the atlas is size-independent — outlines are stored in font units and
+  /// scaled per draw — so one grid must serve every size the font renders at.
+  static int? variationQuantizationSteps = 32;
 
   /// Variant instances by normalized coordinate key (base font only).
   final Map<String, GPUFont> _variantCache = {};

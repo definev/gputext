@@ -29,7 +29,8 @@ import 'package:gputext/src/font.dart';
 import 'package:gputext/src/paragraph.dart' as wf;
 import 'package:gputext/src/widgets/span_flattener.dart';
 
-const _asset = 'assets/Google_Sans_Flex/'
+const _asset =
+    'assets/Google_Sans_Flex/'
     'GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf';
 const _proxyBase = 0xF0000;
 
@@ -58,16 +59,121 @@ void main() {
       expect(identical(font.variant({'wght': 400}), font), isTrue);
       expect(identical(font.variant({'nope': 3}), font), isTrue);
       // Out-of-range values clamp onto an existing instance.
-      expect(identical(font.variant({'wght': 1200}), font.variant({'wght': 1000})),
-          isTrue);
+      expect(
+        identical(font.variant({'wght': 1200}), font.variant({'wght': 1000})),
+        isTrue,
+      );
       // variant() on a variant composes against the base.
       final boldNarrow = bold.variant({'wdth': 25});
       expect(boldNarrow.variationCoordinates, {'wght': 700, 'wdth': 25});
       // Non-variable fonts pass through.
-      final lato =
-          GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync());
+      final lato = GPUFont.parse(
+        File('assets/Lato-Regular.ttf').readAsBytesSync(),
+      );
       expect(lato.variationAxes, isEmpty);
       expect(identical(lato.variant({'wght': 700}), lato), isTrue);
+    });
+  });
+
+  group('coordinate quantization', () {
+    test('bounds the instance count of a continuous animation', () {
+      // A raw Tween<double> driver: 600 distinct design values across wght.
+      final steps = GPUFont.variationQuantizationSteps!;
+      final quantized = <GPUFont>{};
+      final exact = <GPUFont>{};
+      for (var i = 0; i < 600; i++) {
+        final w = 1 + 999 * (i / 599);
+        quantized.add(font.variant({'wght': w}));
+        exact.add(font.variantExact({'wght': w}));
+      }
+      // wght spans the full [-1, 1] normalized range, so 2 * steps grid points
+      // are reachable, plus the base font for whatever snaps onto the default.
+      expect(quantized.length, lessThanOrEqualTo(2 * steps + 1));
+      expect(exact.length, greaterThan(quantized.length * 4));
+    });
+
+    test('leaves the default, the extremes, and on-grid values exact', () {
+      // 0 and ±16384 always land on a power-of-two grid.
+      expect(identical(font.variant({'wght': 400}), font), isTrue);
+      for (final coords in [
+        {'wght': 1000.0}, // +16384
+        {'wght': 1.0}, // -16384
+        {'wght': 700.0}, // +8192
+        {'wdth': 62.5}, // -8192
+        {'GRAD': 50.0}, // +8192
+        {'slnt': -10.0}, // -16384
+      ]) {
+        expect(
+          identical(font.variant(coords), font.variantExact(coords)),
+          isTrue,
+          reason: 'on-grid $coords must not be snapped',
+        );
+      }
+    });
+
+    test('snap error stays sub-pixel at body sizes', () {
+      const probe = 'Hoxleadingm0';
+      var worstUnits = 0.0;
+      for (var i = 0; i < 200; i++) {
+        final w = 400 + 600 * (i / 199); // upper half of the wght axis
+        final q = font.variant({'wght': w});
+        final e = font.variantExact({'wght': w});
+        for (final ch in probe.split('')) {
+          final qo = q.glyphQuads(ch)!;
+          final eo = e.glyphQuads(ch)!;
+          expect(qo.quads.length, eo.quads.length); // topology never changes
+          for (var k = 0; k < qo.quads.length; k++) {
+            final d = (qo.quads[k] - eo.quads[k]).abs();
+            if (d > worstUnits) worstUnits = d;
+          }
+          final da = (qo.advance - eo.advance).abs();
+          if (da > worstUnits) worstUnits = da;
+        }
+      }
+      final px22 = worstUnits * 22 / font.unitsPerEm; // upem is 2000 here
+      expect(px22, lessThan(0.15), reason: 'worst snap error ${px22}px @22');
+      expect(worstUnits, lessThan(15));
+    });
+
+    test('quantized and exact share the cache when they agree', () {
+      // Same normalized ticks -> same key -> one instance, one atlas copy.
+      expect(
+        identical(
+          font.variant({'wght': 700}),
+          font.variantExact({'wght': 700}),
+        ),
+        isTrue,
+      );
+      // Off-grid: quantized and exact are deliberately different instances.
+      expect(
+        identical(
+          font.variant({'wght': 650}),
+          font.variantExact({'wght': 650}),
+        ),
+        isFalse,
+      );
+    });
+
+    test('reports the coordinates it renders, not the ones requested', () {
+      // wght=650 is 6827 ticks; the 512-tick grid snaps it to 6656, i.e.
+      // 400 + (6656 / 16384) * 600 = 643.75 design units.
+      final q = font.variant({'wght': 650});
+      expect(q.variationCoordinates, {'wght': 643.75});
+
+      // This must NOT depend on who reached the bucket first: a neighbouring
+      // request lands on the same instance and reads the same coords back.
+      final neighbour = font.variant({'wght': 641});
+      expect(identical(neighbour, q), isTrue);
+      expect(neighbour.variationCoordinates, {'wght': 643.75});
+
+      // And it round-trips: re-requesting the reported coordinate is a no-op.
+      expect(identical(font.variant(q.variationCoordinates), q), isTrue);
+
+      // normalizedCoordinates exposes the ticks that actually drove gvar.
+      final wght = font.variationAxes.indexWhere((a) => a.tag == 'wght');
+      final ticks = (q.normalizedCoordinates[wght] * 16384).round();
+      expect(ticks, 6656);
+      expect(ticks % (16384 ~/ GPUFont.variationQuantizationSteps!), 0);
     });
   });
 
@@ -116,15 +222,20 @@ void main() {
       expect(slanted.bbox[2], closeTo(459, 1));
       // The upright stem is narrower than the sheared box.
       final upright = font.glyphQuads('l')!;
-      expect(upright.bbox[2] - upright.bbox[0],
-          lessThan(slanted.bbox[2] - slanted.bbox[0]));
+      expect(
+        upright.bbox[2] - upright.bbox[0],
+        lessThan(slanted.bbox[2] - slanted.bbox[0]),
+      );
     });
 
     test('multi-axis coordinates combine region scalars correctly', () {
       // hb-shape --variations="wght=650,wdth=62.5,GRAD=50" "Hox":
       //   [60=0+1199|263=1+1018|329=2+896], H extents <113,1432,973,-1432>.
-      final mixed =
-          font.variant({'wght': 650, 'wdth': 62.5, 'GRAD': 50});
+      // variantExact: this asserts region-scalar math against HarfBuzz, so it
+      // must not go through the quantization grid. wght=650 is the one
+      // coordinate here that lands off-grid (6827 ticks); wdth=62.5 (-8192)
+      // and GRAD=50 (8192) are exact at any power-of-two step.
+      final mixed = font.variantExact({'wght': 650, 'wdth': 62.5, 'GRAD': 50});
       expect(mixed.advanceOf('H'), closeTo(1199, 1));
       expect(mixed.advanceOf('o'), closeTo(1018, 1));
       expect(mixed.advanceOf('x'), closeTo(896, 1));
@@ -148,8 +259,9 @@ void main() {
       expect(black[2], closeTo(41 + 1127, 1));
       expect(black[3], closeTo(-1559 + 1597, 1));
 
-      final lato =
-          GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync());
+      final lato = GPUFont.parse(
+        File('assets/Lato-Regular.ttf').readAsBytesSync(),
+      );
       final latoBox = lato.glyphQuads('é')!.bbox;
       expect(latoBox[0], closeTo(74, 1));
       expect(latoBox[2], closeTo(74 + 893, 1));
@@ -224,8 +336,9 @@ void main() {
       expect(font.hasGlyph(fi), isTrue);
       // GPOS kerning is glyph-id based, so proxies participate.
       expect(font.kerningOf('A', 'V'), lessThan(0));
-      final tabularOne =
-          String.fromCharCode(_proxyBase + 416); // tnum '1' from above
+      final tabularOne = String.fromCharCode(
+        _proxyBase + 416,
+      ); // tnum '1' from above
       expect(font.advanceOf(tabularOne), closeTo(1290, 0.5));
     });
   });
@@ -235,8 +348,10 @@ void main() {
       final black = font.variant({'wght': 1000});
       expect(black.unitsPerEm, font.unitsPerEm);
       expect(black.verticalMetrics.ascender, greaterThan(0));
-      expect(black.decorationMetrics.underlineThickness,
-          greaterThanOrEqualTo(font.decorationMetrics.underlineThickness));
+      expect(
+        black.decorationMetrics.underlineThickness,
+        greaterThanOrEqualTo(font.decorationMetrics.underlineThickness),
+      );
     });
   });
 
@@ -275,8 +390,10 @@ void main() {
         TextScaler.noScaling,
         engine,
       )!;
-      expect((weighted.single as wf.TextRun).font.advanceOf('H'),
-          closeTo(1497, 1));
+      expect(
+        (weighted.single as wf.TextRun).font.advanceOf('H'),
+        closeTo(1497, 1),
+      );
 
       // Explicit fontVariations win over fontWeight.
       final both = flattenSpan(
@@ -292,8 +409,9 @@ void main() {
         TextScaler.noScaling,
         engine,
       )!;
-      expect((both.single as wf.TextRun).font.variationCoordinates,
-          {'wght': 1000});
+      expect((both.single as wf.TextRun).font.variationCoordinates, {
+        'wght': 1000,
+      });
     });
 
     test('italic style leans on the slnt axis', () {
@@ -303,7 +421,10 @@ void main() {
         const TextSpan(
           text: 'l',
           style: TextStyle(
-              fontFamily: 'Flex', fontSize: 16, fontStyle: FontStyle.italic),
+            fontFamily: 'Flex',
+            fontSize: 16,
+            fontStyle: FontStyle.italic,
+          ),
         ),
         TextScaler.noScaling,
         engine,
@@ -335,27 +456,37 @@ void main() {
       final engine = GPUText.instance;
       engine.registerFont('Flex', font);
       List<wf.InlineItem> flatten(TextStyle style) => flattenSpan(
-            TextSpan(text: 'fi', style: style),
-            TextScaler.noScaling,
-            engine,
-          )!;
+        TextSpan(text: 'fi', style: style),
+        TextScaler.noScaling,
+        engine,
+      )!;
 
-      final ligated = flatten(
-          const TextStyle(fontFamily: 'Flex', fontSize: 16)).single
-          as wf.TextRun;
+      final ligated =
+          flatten(const TextStyle(fontFamily: 'Flex', fontSize: 16)).single
+              as wf.TextRun;
       expect(ligated.text.runes.single, _proxyBase + 371);
 
-      final tracked = flatten(const TextStyle(
-              fontFamily: 'Flex', fontSize: 16, letterSpacing: 2))
-          .single as wf.TextRun;
+      final tracked =
+          flatten(
+                const TextStyle(
+                  fontFamily: 'Flex',
+                  fontSize: 16,
+                  letterSpacing: 2,
+                ),
+              ).single
+              as wf.TextRun;
       expect(tracked.text, 'fi');
 
-      final explicit = flatten(const TextStyle(
-        fontFamily: 'Flex',
-        fontSize: 16,
-        letterSpacing: 2,
-        fontFeatures: [FontFeature('liga')],
-      )).single as wf.TextRun;
+      final explicit =
+          flatten(
+                const TextStyle(
+                  fontFamily: 'Flex',
+                  fontSize: 16,
+                  letterSpacing: 2,
+                  fontFeatures: [FontFeature('liga')],
+                ),
+              ).single
+              as wf.TextRun;
       expect(explicit.text.runes.single, _proxyBase + 371);
     });
   });
