@@ -4,6 +4,12 @@
 // glyphs from different fonts can interleave freely in one curves/rows pair:
 // existing GlyphTableEntry values never move when the atlas grows, which means
 // atlas growth never invalidates an already-rendered paragraph.
+//
+// The backing stores are typed (Float32Buf/Uint32Buf) rather than
+// List<double>/List<int>: a growable List<double> boxes every element, and
+// this atlas reaches hundreds of thousands of curve floats once variable-font
+// instances start banding their own outlines. Nothing evicts, so the footprint
+// is a ceiling, not a transient.
 
 import 'dart:typed_data';
 
@@ -13,8 +19,8 @@ import '../geometry.dart';
 import '../paragraph.dart';
 
 class SharedGlyphAtlas implements GlyphTable {
-  final _curves = <double>[];
-  final _rows = <int>[];
+  final _curves = Float32Buf();
+  final _rows = Uint32Buf();
   // Keyed by code point (not char string): the emit pen walk and banding
   // resolve runes directly. Distinct from _gidTable despite the same key
   // shape — one is rune-keyed, the other glyph-id-keyed.
@@ -29,11 +35,13 @@ class SharedGlyphAtlas implements GlyphTable {
 
   bool get isEmpty => _rows.isEmpty;
 
-  /// Curve floats appended so far. GPU-side bytes are count*4 (RGBA32F
-  /// upload); the CPU-side `List<double>` holds 8 bytes per element.
+  /// Curve floats appended so far; 4 bytes each on the CPU. GPU-side these
+  /// cost count*8 bytes, not count*4: the uploader writes one vec2 per
+  /// RGBA32F texel, leaving `.zw` unused (see atlas.dart / gputext.frag).
   int get curveFloatCount => _curves.length;
 
-  /// Row entries appended so far (uploaded as Uint32, 4 bytes each).
+  /// Row entries appended so far; 4 bytes each on the CPU. GPU-side a band is
+  /// 5 entries spread over two RGBA32F texels, i.e. 6.4 bytes per entry.
   int get rowCount => _rows.length;
 
   /// Banded glyph entries across both keying schemes (char and glyph-id).
@@ -111,11 +119,14 @@ class SharedGlyphAtlas implements GlyphTable {
       _gidTable[(font, glyphId)];
 
   /// Live append-only backing stores, exposed for the incremental texture
-  /// uploader (do not mutate).
-  List<double> get curves => _curves;
-  List<int> get rows => _rows;
+  /// uploader (do not mutate). These are zero-copy views over the filled
+  /// prefix, so re-read them after any [ensureGlyphs] / [ensureGlyphId] call
+  /// rather than caching the reference — an append that grows the buffer
+  /// leaves the old view pointing at the old store.
+  Float32List get curves => _curves.view;
+  Uint32List get rows => _rows.view;
 
-  Float32List curvesData() => Float32List.fromList(_curves);
+  Float32List curvesData() => _curves.toTypedList();
 
-  Uint32List rowsData() => Uint32List.fromList(_rows);
+  Uint32List rowsData() => _rows.toTypedList();
 }

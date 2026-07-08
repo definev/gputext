@@ -22,6 +22,84 @@ int chooseBands(int pieceCount, [int target = targetPerBand]) {
   return ((pieceCount + target - 1) ~/ target).clamp(1, maxBands);
 }
 
+// Append-only growable typed buffers for the atlas backing stores.
+//
+// A growable `List<double>` boxes every element — measured at ~30.6 bytes each
+// against 8 for a Float64List and 4 for a Float32List. The shared atlas holds
+// ~500k curve floats after a single variable-font weight sweep, so the boxed
+// form cost ~15 MB of Dart heap for data that is 2 MB as f32. Curves are
+// truncated to f32 at upload anyway (the textures are RGBA32F), so storing
+// them as f32 here is bit-identical on the GPU and simply moves the single
+// rounding step from upload time to insert time.
+
+const _minBufCapacity = 1024;
+
+/// Append-only Float32List with capacity doubling.
+class Float32Buf {
+  Float32Buf([int capacity = _minBufCapacity])
+    : _data = Float32List(capacity < 1 ? _minBufCapacity : capacity);
+
+  Float32List _data;
+  int _length = 0;
+
+  int get length => _length;
+  bool get isEmpty => _length == 0;
+
+  double operator [](int i) => _data[i];
+
+  @pragma('vm:prefer-inline')
+  void add(double v) {
+    if (_length == _data.length) _grow();
+    _data[_length++] = v;
+  }
+
+  void _grow() {
+    final next = Float32List(_data.length * 2);
+    next.setRange(0, _length, _data);
+    _data = next;
+  }
+
+  /// Zero-copy view of the filled prefix. Invalidated by any [add] that grows
+  /// the backing store, so re-read it rather than holding onto it.
+  Float32List get view => Float32List.sublistView(_data, 0, _length);
+
+  /// Right-sized copy, for owners that must not see capacity slack.
+  Float32List toTypedList() => Float32List.fromList(view);
+}
+
+/// Append-only Uint32List with capacity doubling. Row entries are u32 already
+/// (indices, counts, and bit-punned f32s), so nothing is lost versus the
+/// `List<int>` this replaces.
+class Uint32Buf {
+  Uint32Buf([int capacity = _minBufCapacity])
+    : _data = Uint32List(capacity < 1 ? _minBufCapacity : capacity);
+
+  Uint32List _data;
+  int _length = 0;
+
+  int get length => _length;
+  bool get isEmpty => _length == 0;
+
+  int operator [](int i) => _data[i];
+
+  @pragma('vm:prefer-inline')
+  void add(int v) {
+    if (_length == _data.length) _grow();
+    _data[_length++] = v;
+  }
+
+  void _grow() {
+    final next = Uint32List(_data.length * 2);
+    next.setRange(0, _length, _data);
+    _data = next;
+  }
+
+  /// See [Float32Buf.view].
+  Uint32List get view => Uint32List.sublistView(_data, 0, _length);
+
+  Uint32List toTypedList() => Uint32List.fromList(view);
+}
+
 int bandIndex(double y, double y0, double invH, int r) {
   if (invH <= 0) return 0;
   return ((y - y0) * invH).floor().clamp(0, r - 1);
@@ -131,8 +209,8 @@ BandHeader bandPieces(
   List<double> pieces,
   double y0,
   double y1,
-  List<double> curveOut,
-  List<int> rowOut, [
+  Float32Buf curveOut,
+  Uint32Buf rowOut, [
   int target = targetPerBand,
 ]) {
   final n = pieces.length ~/ 6;
@@ -192,13 +270,11 @@ BandHeader bandPieces(
             y0 + (b + 1) * bandH,
           )
         : 0.0;
-    rowOut.addAll([
-      start,
-      bucket.length,
-      f32bits(area),
-      f32bits(bxMin),
-      f32bits(bxMax),
-    ]);
+    rowOut.add(start);
+    rowOut.add(bucket.length);
+    rowOut.add(f32bits(area));
+    rowOut.add(f32bits(bxMin));
+    rowOut.add(f32bits(bxMax));
   }
   return BandHeader(rowBase: rowBase, bandCount: r, y0: y0, invH: invH);
 }
@@ -257,8 +333,8 @@ GlyphAtlas buildGlyphAtlas(GPUFont font, String text) {
       .map(String.fromCharCode)
       .where((ch) => ch != ' ')
       .toList();
-  final curves = <double>[];
-  final rows = <int>[];
+  final curves = Float32Buf();
+  final rows = Uint32Buf();
   final table = <String, GlyphTableEntry>{};
   var monotoneTotal = 0;
 
@@ -283,8 +359,9 @@ GlyphAtlas buildGlyphAtlas(GPUFont font, String text) {
 
   final bandedPieces = curves.length ~/ 6;
   return GlyphAtlas(
-    curves: Float32List.fromList(curves),
-    rows: Uint32List.fromList(rows),
+    // Right-sized copies: GlyphAtlas is handed to callers, capacity slack isn't.
+    curves: curves.toTypedList(),
+    rows: rows.toTypedList(),
     table: table,
     stats: AtlasStats(
       uniqueGlyphs: table.length,

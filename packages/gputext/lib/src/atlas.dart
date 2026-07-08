@@ -42,8 +42,8 @@ class AtlasTextureUploader {
 
   AtlasTextures upload(
     gpu.GpuContext context,
-    List<double> curves,
-    List<int> rows,
+    Float32List curves,
+    Uint32List rows,
   ) {
     const format = gpu.PixelFormat.r32g32b32a32Float;
     if (!context.supportsTextureFormat(format, shaderRead: true)) {
