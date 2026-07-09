@@ -9,7 +9,7 @@ import 'dart:io' show File, Platform;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
-import 'package:gputext/gputext.dart' hide TextAlign;
+import 'package:gputext/gputext.dart';
 
 const _ink = Color(0xFF0C0F1C);
 const _accentRed = Color(0xFF8C1F14);

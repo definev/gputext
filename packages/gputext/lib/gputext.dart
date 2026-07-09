@@ -4,6 +4,9 @@
 //   await GPUText.initialize();                       // optional, no-FOUT
 //   GPURichText(text: TextSpan(...));             // swap for RichText
 //   GPULabel('hello');                             // swap for Text
+//
+// Layout types that collide with Flutter (`TextAlign`, `ParagraphStyle`)
+// live in `package:gputext/internal.dart` — import with a prefix.
 library;
 
 export 'src/engine/engine.dart' show AtlasFontUser, GPUText, GPUTextEngine;
@@ -20,8 +23,6 @@ export 'src/paragraph.dart'
     show
         InlineItem,
         TextRun,
-        TextAlign,
-        ParagraphStyle,
         PreparedParagraph,
         ParagraphLines,
         prepareParagraph,

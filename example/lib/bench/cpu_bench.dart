@@ -17,6 +17,7 @@ import 'package:flutter/scheduler.dart';
 
 import 'package:gputext/gputext.dart';
 import 'package:gputext/gputext.dart' as wf;
+import 'package:gputext/internal.dart' as wf;
 
 import 'corpus.dart';
 import 'report.dart';

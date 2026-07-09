@@ -8,6 +8,7 @@ environment:
   sdk: ^3.13.0-252.0.dev
 
 dependencies:
+  bitsdojo_window: ^0.1.6
   characters: ^1.4.0
   cupertino_icons: ^1.0.8
   flutter:

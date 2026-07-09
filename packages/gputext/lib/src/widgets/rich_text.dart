@@ -44,6 +44,7 @@
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -55,6 +56,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../engine/engine.dart';
 import '../engine/pipeline.dart';
+import '../font.dart' show GPUFont;
 import '../layout.dart' as wf show LayoutBounds;
 import '../paragraph.dart' as wf;
 import 'emoji.dart';
@@ -299,7 +301,8 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
 class RenderGPUParagraph extends RenderBox
     with
         ContainerRenderObjectMixin<RenderBox, TextParentData>,
-        RenderInlineChildrenContainerDefaults {
+        RenderInlineChildrenContainerDefaults
+    implements AtlasFontUser {
   RenderGPUParagraph({
     required this._text,
     required this._semanticsSource,
@@ -338,6 +341,7 @@ class RenderGPUParagraph extends RenderBox
   // ---- paint artifacts ----
   wf.ParagraphInstances? _emitted;
   int _emittedGen = -1;
+  int _emittedStructureGen = -1; // atlas.structureGeneration at emit time
   gpu.DeviceBuffer? _instanceBuffer;
   gpu.GpuImageSurface? _surface;
   ui.Image? _image;
@@ -355,6 +359,12 @@ class RenderGPUParagraph extends RenderBox
 
   /// Bytes of the emitted per-glyph instance buffer (64 per glyph).
   int get debugInstanceBytes => _emitted?.instances.lengthInBytes ?? 0;
+
+  /// Emitted per-glyph instance data (16 floats per glyph, rowBase at index
+  /// 12). Baked against a specific atlas layout, so an atlas compaction must
+  /// force it to be rebuilt — that is what the eviction tests assert.
+  @visibleForTesting
+  Float32List? get debugInstances => _emitted?.instances;
 
   /// Device-pixel size of the cached glyph image, null before first render.
   (int, int)? get debugImageSize {
@@ -581,6 +591,7 @@ class RenderGPUParagraph extends RenderBox
   void attach(PipelineOwner owner) {
     super.attach(owner);
     _engine.addListener(_onEngineChanged);
+    _engine.registerAtlasClient(this);
     _scaleHint?.addListener(_onScaleHint);
     unawaited(_engine.ensureInitialized());
   }
@@ -588,6 +599,7 @@ class RenderGPUParagraph extends RenderBox
   @override
   void detach() {
     _engine.removeListener(_onEngineChanged);
+    _engine.unregisterAtlasClient(this);
     _scaleHint?.removeListener(_onScaleHint);
     super.detach();
   }
@@ -619,6 +631,9 @@ class RenderGPUParagraph extends RenderBox
   @override
   void dispose() {
     _disposeFragments();
+    // detach() normally does this; belt-and-braces so a disposed render object
+    // can never pin fonts in the atlas forever.
+    _engine.unregisterAtlasClient(this);
     if (_timingsHooked) {
       _timingsHooked = false;
       SchedulerBinding.instance.removeTimingsCallback(_onFrameTimings);
@@ -1164,6 +1179,25 @@ class RenderGPUParagraph extends RenderBox
 
   // ---- paint ----
 
+  /// Every font this paragraph has (or will have) banded, so the engine's atlas
+  /// sweep keeps them. Must stay in step with the ensureGlyphs walk in
+  /// [_prepareContent] — a font missed here is evicted and re-banded next
+  /// paint, which is correct but wasteful.
+  @override
+  void visitAtlasFonts(void Function(GPUFont font) visit) {
+    final para = _para;
+    if (para == null) return;
+    for (final line in para.lines) {
+      for (final item in line.items) {
+        if (item is wf.LineRun) {
+          visit(item.font);
+        } else if (item is wf.LineEmoji) {
+          visit(item.item.font);
+        }
+      }
+    }
+  }
+
   void _prepareContent() {
     if (_paraDirty) {
       // Paint-only span change (e.g. colors): re-break at the same widths;
@@ -1177,7 +1211,12 @@ class RenderGPUParagraph extends RenderBox
     }
     final para = _para;
     if (para == null) return;
-    if (_emitted == null || _emittedGen != _contentGen) {
+    // A compaction relocated every rowBase, so instances emitted against the
+    // old layout are stale even when our own content hasn't changed.
+    final structureGen = _engine.atlas.structureGeneration;
+    if (_emitted == null ||
+        _emittedGen != _contentGen ||
+        _emittedStructureGen != structureGen) {
       for (final line in para.lines) {
         for (final item in line.items) {
           if (item is wf.LineRun) {
@@ -1198,8 +1237,12 @@ class RenderGPUParagraph extends RenderBox
       _hitBoxes = _emitted!.hitBoxes;
       _instanceBuffer = null;
       _emittedGen = _contentGen;
+      // Re-read: ensureGlyphs above cannot compact, but it can only grow, and
+      // emitInstances read the table as it stands now.
+      _emittedStructureGen = _engine.atlas.structureGeneration;
       _cacheKey = null;
     }
+    _engine.scheduleAtlasSweepIfNeeded();
   }
 
   double _quantizeScale(double s) {
@@ -1237,16 +1280,9 @@ class RenderGPUParagraph extends RenderBox
     canvas.saveLayer(bounds, Paint());
     _paintContents(context, offset);
     final fade = _fadeExtentPx().clamp(1.0, size.width);
-    var overflowsWidth = false;
-    for (final l in _para?.lines ?? const <wf.LineMetrics>[]) {
-      if (l.width > size.width + 0.01) {
-        overflowsWidth = true;
-        break;
-      }
-    }
     final Offset from;
     final Offset to;
-    if (overflowsWidth) {
+    if (_overflowsWidth()) {
       final rtl = _textDirection == TextDirection.rtl;
       from = Offset(rtl ? bounds.left + fade : bounds.right - fade, 0);
       to = Offset(rtl ? bounds.left : bounds.right, 0);
@@ -1278,13 +1314,25 @@ class RenderGPUParagraph extends RenderBox
     return fontSize;
   }
 
+  /// RenderParagraph's rule: visual overflow is measured against the LINE
+  /// BOXES, never the glyph ink.
+  ///
+  /// Ink routinely spills past its own line box — italic overhang, a negative
+  /// left side bearing on 'j', diacritics above the ascender, emoji — and
+  /// `size` is itself the line-box extent (see _computeLayout). Testing ink
+  /// here would therefore push a clip rect that shaves off the very ink that
+  /// triggered it, in a font-dependent way. Flutter accepts the same trade-off
+  /// (rendering/paragraph.dart carries a standing note about it): ink outside
+  /// the box paints outside the box.
+  ///
+  /// inkBounds stays what it is good for: the extent of the glyph surface we
+  /// rasterize in _paintContents.
   bool _contentsOverflow() {
-    final ink = _emitted?.inkBounds;
-    if (ink != null &&
-        (ink.minX < -0.01 ||
-            ink.minY < -0.01 ||
-            ink.maxX > size.width + 0.01 ||
-            ink.maxY > size.height + 0.01)) {
+    final para = _para;
+    if (para != null &&
+        (para.didExceedMaxLines ||
+            para.height > size.height + 0.01 ||
+            _overflowsWidth())) {
       return true;
     }
     for (final b in _emitted?.placeholders ?? const <wf.PlaceholderBox>[]) {
@@ -1294,6 +1342,15 @@ class RenderGPUParagraph extends RenderBox
           b.top + b.height > size.height + 0.01) {
         return true;
       }
+    }
+    return false;
+  }
+
+  /// A line advancing past the box edge. Only reachable with softWrap:false (a
+  /// wrapped or ellipsized line is broken at the box edge by construction).
+  bool _overflowsWidth() {
+    for (final l in _para?.lines ?? const <wf.LineMetrics>[]) {
+      if (l.width > size.width + 0.01) return true;
     }
     return false;
   }

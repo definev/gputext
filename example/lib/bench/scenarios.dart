@@ -11,7 +11,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import 'package:gputext/gputext.dart' hide TextAlign;
+import 'package:gputext/gputext.dart';
 import 'package:gputext/gputext.dart'
     as wf
     show KnuthPlassLineBreaker, LineBreaker;

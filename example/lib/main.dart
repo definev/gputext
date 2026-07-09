@@ -2,6 +2,7 @@ import 'dart:io' as io;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:bitsdojo_window/bitsdojo_window.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -35,6 +36,17 @@ void main() {
     GPUText.initialize(); // warm fonts + pipeline for the widget demo
   }
   runApp(const GPUTextApp());
+
+  if (io.Platform.isMacOS) {
+    doWhenWindowReady(() {
+      const initialSize = Size(1280, 800);
+      appWindow.minSize = const Size(640, 480);
+      appWindow.size = initialSize;
+      appWindow.alignment = Alignment.center;
+      appWindow.title = 'gputext';
+      appWindow.show();
+    });
+  }
 }
 
 class GPUTextApp extends StatelessWidget {
@@ -48,6 +60,7 @@ class GPUTextApp extends StatelessWidget {
         const String.fromEnvironment('GPUTEXT_DEMO');
     return MaterialApp(
       theme: ThemeData(useMaterial3: true),
+      builder: (context, child) => _macFramelessShell(child),
       // Bench mode stays OUTSIDE SelectionArea: GPURichText registers
       // per-fragment selectables while bare RichText does not, so a
       // selection scope would tax only the gputext passes.
@@ -62,6 +75,43 @@ class GPUTextApp extends StatelessWidget {
       },
     );
   }
+}
+
+Widget _macFramelessShell(Widget? child) {
+  if (!io.Platform.isMacOS) {
+    return child ?? const SizedBox.shrink();
+  }
+
+  final buttonColors = WindowButtonColors(
+    iconNormal: const Color(0xFF805E5E5E),
+    mouseOver: const Color(0xFFF6F6F6),
+    mouseDown: const Color(0xFFDDDDDD),
+    iconMouseOver: const Color(0xFF505050),
+    iconMouseDown: const Color(0xFF505050),
+  );
+
+  return WindowTitleBarBox(
+    child: Stack(
+      children: [
+        SizedBox(
+          height: 28,
+          child: Row(
+            children: [
+              CloseWindowButton(colors: buttonColors),
+              MinimizeWindowButton(colors: buttonColors),
+              MaximizeWindowButton(colors: buttonColors),
+              Expanded(
+                child: MoveWindow(
+                  child: Container(color: Colors.transparent),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Positioned.fill(child: child ?? const SizedBox.shrink()),
+      ],
+    ),
+  );
 }
 
 class GPUTextDemoPage extends StatefulWidget {

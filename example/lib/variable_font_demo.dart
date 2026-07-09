@@ -7,7 +7,7 @@
 
 import 'package:flutter/material.dart';
 
-import 'package:gputext/gputext.dart' hide TextAlign;
+import 'package:gputext/gputext.dart';
 
 const _fontFamily = 'Google Sans Flex';
 const _fontAsset =

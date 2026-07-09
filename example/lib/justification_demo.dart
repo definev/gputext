@@ -22,7 +22,7 @@
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
-import 'package:gputext/gputext.dart' hide TextAlign;
+import 'package:gputext/gputext.dart';
 import 'package:gputext/gputext.dart' as wf;
 
 // --- Data (ported verbatim from justification-comparison.data.ts) ---

@@ -19,7 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' show FontLoader, rootBundle;
 
-import 'package:gputext/gputext.dart' hide TextAlign;
+import 'package:gputext/gputext.dart';
 
 import 'corpus.dart';
 import 'cpu_bench.dart';
@@ -799,8 +799,10 @@ class _BenchPageState extends State<BenchPage>
             RepaintBoundary(
               child: Padding(
                 padding: EdgeInsets.only(top: 150),
+                // 48, not 44: an 18px Lato line box is 21.6px tall (1.2em), so
+                // 44 minus 24 of padding left 20px and clipped the descenders.
                 child: SizedBox(
-                  height: 44,
+                  height: 48,
                   child: Padding(
                     padding: const EdgeInsets.all(12),
                     child: GPURichText(
@@ -812,6 +814,11 @@ class _BenchPageState extends State<BenchPage>
                           color: Colors.red,
                         ),
                       ),
+                      // ellipsis only truncates a line that is not allowed to
+                      // wrap; with softWrap a long status would wrap to a
+                      // second line and clip vertically instead.
+                      maxLines: 1,
+                      softWrap: false,
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),

@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 
 import 'package:gputext/gputext.dart';
 import 'package:gputext/gputext.dart' as wf;
+import 'package:gputext/internal.dart' as wf;
 
 const _ink = Color(0xFF0C0F1C);
 const _accentRed = Color(0xFF8C1F14);
