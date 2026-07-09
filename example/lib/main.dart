@@ -83,7 +83,7 @@ Widget _macFramelessShell(Widget? child) {
   }
 
   final buttonColors = WindowButtonColors(
-    iconNormal: const Color(0xFF805E5E5E),
+    iconNormal: const Color(0xFF5E5E5E),
     mouseOver: const Color(0xFFF6F6F6),
     mouseDown: const Color(0xFFDDDDDD),
     iconMouseOver: const Color(0xFF505050),
@@ -101,9 +101,7 @@ Widget _macFramelessShell(Widget? child) {
               MinimizeWindowButton(colors: buttonColors),
               MaximizeWindowButton(colors: buttonColors),
               Expanded(
-                child: MoveWindow(
-                  child: Container(color: Colors.transparent),
-                ),
+                child: MoveWindow(child: Container(color: Colors.transparent)),
               ),
             ],
           ),

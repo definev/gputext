@@ -523,7 +523,7 @@ class GPUFont {
     int subOffset,
     _ByteReader sr,
   ) {
-    final length = sr.readU16();
+    final _ = sr.readU16();
     sr.readU16(); // language
     final segCountX2 = sr.readU16();
     final segCount = segCountX2 ~/ 2;

@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gputext/src/widgets/emoji.dart';
-import 'package:gputext/src/widgets/span_flattener.dart';
 import 'package:gputext/src/paragraph.dart' as wf;
 import 'package:gputext/gputext.dart';
 

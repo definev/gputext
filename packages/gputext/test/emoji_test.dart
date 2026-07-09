@@ -6,7 +6,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gputext/src/engine/shared_atlas.dart';
 import 'package:gputext/src/paragraph.dart' as wf;
 import 'package:gputext/src/widgets/emoji.dart';
-import 'package:gputext/src/widgets/span_flattener.dart';
 import 'package:gputext/gputext.dart';
 
 void main() {

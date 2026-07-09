@@ -31,7 +31,9 @@ void main() {
     double? height,
   }) => tester.pumpWidget(
     MaterialApp(
-      home: Center(child: SizedBox(width: width, height: height, child: child)),
+      home: Center(
+        child: SizedBox(width: width, height: height, child: child),
+      ),
     ),
   );
 
