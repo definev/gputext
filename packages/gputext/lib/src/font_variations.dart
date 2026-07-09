@@ -764,11 +764,11 @@ extension GPUFontVariations on GPUFont {
   ///
   /// Coordinates are snapped to the [GPUFont.variationQuantizationSteps] grid.
   /// A continuous axis animation would otherwise mint a fresh instance every
-  /// frame, and each one bands its own copy of every glyph into an atlas that
-  /// never evicts. Snapping bounds the instance count per axis at the grid
-  /// resolution; the cost is a sub-pixel outline error (see that field). Use
-  /// [variantExact] where the exact requested coordinate matters — measuring
-  /// against reference metrics, or rendering a single static instance.
+  /// frame, and each one bands its own copy of every glyph into the shared
+  /// atlas. Snapping bounds how many instances are live at once; the cost is a
+  /// sub-pixel outline error (see that field). Use [variantExact] where the
+  /// exact requested coordinate matters — measuring against reference metrics,
+  /// or rendering a single static instance.
   ///
   /// Instances are cached by NORMALIZED coordinates, so any two requests that
   /// land on the same grid point return the IDENTICAL object — everything

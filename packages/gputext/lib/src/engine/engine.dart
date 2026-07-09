@@ -13,6 +13,7 @@
 import 'dart:ui' as ui show FontStyle, FontWeight;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_gpu/gpu.dart' as gpu;
 
@@ -64,6 +65,7 @@ class GPUTextEngine extends ChangeNotifier {
 
   AtlasTextures? _textures;
   var _texturesGeneration = -1;
+  var _texturesStructureGen = 0;
 
   // Shared paragraph-prepare cache: identical (span, scaler) paragraphs
   // across widgets — think list items — reuse one flatten+prepare result.
@@ -300,12 +302,114 @@ class GPUTextEngine extends ChangeNotifier {
   /// has grown. Null until the atlas has any glyph data.
   AtlasTextures? prepareTextures() {
     if (atlas.isEmpty) return null;
+    if (_texturesStructureGen != atlas.structureGeneration) {
+      // Compaction moved existing texels. AtlasTextureUploader only ever
+      // appends, and its in-place overwrite of a live texture is safe only
+      // because the prefix is immutable — which compaction just broke. Drop it
+      // and build fresh textures; draws still in flight keep the old ones alive
+      // through their command buffers, exactly as retired surfaces do.
+      _uploader = null;
+      _textures = null;
+      _texturesGeneration = -1;
+      _texturesStructureGen = atlas.structureGeneration;
+    }
     if (_texturesGeneration != atlas.generation) {
       _uploader ??= AtlasTextureUploader();
       _textures = _uploader!.upload(gpu.gpuContext, atlas.curves, atlas.rows);
       _texturesGeneration = atlas.generation;
     }
     return _textures;
+  }
+
+  // ---- atlas eviction ----
+
+  /// Curve floats the atlas may hold before it compacts. 4 bytes each on the
+  /// CPU and 8 on the GPU, so the default is ~2 MB / ~4 MB. null disables
+  /// eviction entirely (the pre-eviction behaviour: the atlas only ever grows).
+  ///
+  /// Nothing else bounds the atlas over an app's lifetime: every distinct font
+  /// — including every variable-font instance — bands its own copy of every
+  /// glyph it touches. [GPUFont.variationQuantizationSteps] caps how many
+  /// instances a single animating axis can mint, but not how many axes,
+  /// families, or instances an app visits before the user navigates away.
+  int? atlasCurveFloatBudget = 512 * 1024;
+
+  final _atlasClients = <AtlasFontUser>{};
+  var _sweepScheduled = false;
+  var _nextSweepAt = 0;
+  // Bumped whenever the live client set changes. A sweep can only reclaim
+  // something if the atlas grew or a client left, so this is the second of the
+  // two signals that unblock the hysteresis below.
+  var _clientEpoch = 0;
+  var _sweptAtClientEpoch = -1;
+
+  /// Register a live consumer of the atlas. Its fonts are retained by
+  /// [compactAtlas]; everything else is fair game. Render objects do this on
+  /// attach and undo it on detach.
+  void registerAtlasClient(AtlasFontUser client) {
+    if (_atlasClients.add(client)) _clientEpoch++;
+  }
+
+  void unregisterAtlasClient(AtlasFontUser client) {
+    if (_atlasClients.remove(client)) _clientEpoch++;
+  }
+
+  /// Compactions that actually reclaimed something.
+  int debugAtlasCompactions = 0;
+
+  /// Sweeps attempted, reclaiming or not. Hysteresis keeps this from tracking
+  /// the frame count when the live set alone exceeds the budget.
+  int debugAtlasSweeps = 0;
+
+  /// Ask for a compaction at the next frame boundary if the atlas is over
+  /// [atlasCurveFloatBudget]. Cheap enough to call on every emit.
+  ///
+  /// Deferred rather than immediate because a compaction invalidates every
+  /// rowBase, and mid-paint some render objects have already emitted instances
+  /// against the current layout. After a frame, all of them re-emit.
+  void scheduleAtlasSweepIfNeeded() {
+    if (_sweepScheduled) return;
+    final budget = atlasCurveFloatBudget;
+    if (budget == null || atlas.curveFloatCount <= budget) return;
+    // Nothing has changed since the last sweep decided it could not help:
+    // the atlas hasn't grown past the back-off mark and no client has left.
+    // Without this a live set larger than the budget would compact every frame,
+    // and each compaction re-emits and re-uploads everything.
+    if (_clientEpoch == _sweptAtClientEpoch &&
+        atlas.curveFloatCount < _nextSweepAt) {
+      return;
+    }
+    _sweepScheduled = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _sweepScheduled = false;
+      compactAtlas();
+    });
+  }
+
+  /// Drop every glyph whose font no client still uses, and compact what's left.
+  /// Returns the curve floats reclaimed.
+  ///
+  /// Safe to call at any frame boundary. Evicting a font that is in fact still
+  /// on screen is not incorrect — its owner re-emits and re-bands it — so a
+  /// missing [registerAtlasClient] costs performance, never correctness.
+  int compactAtlas() {
+    debugAtlasSweeps++;
+    final keep = <GPUFont>{};
+    for (final client in _atlasClients) {
+      client.visitAtlasFonts(keep.add);
+    }
+    final reclaimed = atlas.retainFonts(keep);
+    if (reclaimed > 0) {
+      debugAtlasCompactions++;
+      // Re-emit (rowBase moved) and re-render (cached images are still valid
+      // pixels, but the instance buffers that produced them are not).
+      notifyListeners();
+    }
+    _sweptAtClientEpoch = _clientEpoch;
+    final budget = atlasCurveFloatBudget ?? 0;
+    final doubled = atlas.curveFloatCount * 2;
+    _nextSweepAt = doubled > budget ? doubled : budget;
+    return reclaimed;
   }
 
   /// Test/hot-restart hook: drop GPU state so the next ensureInitialized
@@ -316,9 +420,17 @@ class GPUTextEngine extends ChangeNotifier {
     _pipeline = null;
     _textures = null;
     _texturesGeneration = -1;
+    _texturesStructureGen = 0;
     _uploader = null;
     _unsupported = false;
   }
+}
+
+/// Something that keeps atlas glyphs alive. Implemented by render objects; see
+/// [GPUTextEngine.registerAtlasClient].
+abstract interface class AtlasFontUser {
+  /// Call `visit` with every font this user still needs banded.
+  void visitAtlasFonts(void Function(GPUFont font) visit);
 }
 
 class _FontVariant {

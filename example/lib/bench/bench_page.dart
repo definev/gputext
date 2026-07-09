@@ -421,8 +421,8 @@ class _BenchPageState extends State<BenchPage>
       _report.memoryResults.add({
         'id': 'mem.varfont_growth',
         'desc':
-            'atlas growth across the wght animation (variants never '
-            'evict)',
+            'atlas growth across the wght animation (every instance stays '
+            'on screen, so eviction cannot reclaim any of it)',
         'atlasCurveFloatsDelta': atlasAfter.curves - atlasBefore.curves,
         'atlasGpuBytesDelta':
             (atlasAfter.curves -

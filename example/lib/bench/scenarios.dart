@@ -397,8 +397,9 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
       label: 'variable-font wght animation',
       desc:
           'GoogleSansFlex wght 100↔1000 in 64 quantized steps: each new '
-          'coordinate bands fresh outlines into the atlas (variants never '
-          'evict — see mem.varfont_growth).',
+          'coordinate bands fresh outlines into the atlas. All of them stay '
+          'live for the whole scenario, so nothing evicts here — see '
+          'mem.varfont_growth for the resident cost.',
       path: 'pure',
       build: (ctx, e, tick) {
         final step = (_triangle(tick / ctx.measureFrames) * 63).round();

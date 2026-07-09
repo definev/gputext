@@ -6,7 +6,7 @@
 //   GPULabel('hello');                             // swap for Text
 library;
 
-export 'src/engine/engine.dart' show GPUText, GPUTextEngine;
+export 'src/engine/engine.dart' show AtlasFontUser, GPUText, GPUTextEngine;
 export 'src/engine/pipeline.dart' show FrameUniforms;
 export 'src/font.dart'
     show

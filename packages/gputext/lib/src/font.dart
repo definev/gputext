@@ -223,11 +223,11 @@ class GPUFont {
   /// of `16384 ~/ steps` F2Dot14 ticks. Must divide 16384 (i.e. be a power of
   /// two ≤ 16384); null disables snapping.
   ///
-  /// This exists because nothing else bounds variable-font memory: every
-  /// distinct coordinate is a distinct font identity, which bands a fresh copy
-  /// of every glyph it touches into a shared atlas that never evicts. An
-  /// unquantized axis animation therefore grows the atlas without limit. At the
-  /// default of 32 an axis has 64 reachable instances end to end.
+  /// This exists because every distinct coordinate is a distinct font identity,
+  /// which bands a fresh copy of every glyph it touches into the shared atlas.
+  /// Eviction reclaims those once nothing displays them, but only quantization
+  /// bounds how many a single animating axis can mint WHILE it is on screen.
+  /// At the default of 32 an axis has 64 reachable instances end to end.
   ///
   /// The cost is a bounded outline error, worst-case half a grid step. Measured
   /// on Google Sans Flex `wght` at this default: ≈7 font units, i.e. 0.08px at
