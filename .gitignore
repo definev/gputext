@@ -53,3 +53,5 @@ app.*.map.json
 
 # Benchmark run outputs (baselines are committed, results are not)
 /benchmark/results/
+
+windfoil

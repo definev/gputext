@@ -5,6 +5,12 @@
 //   GPURichText(text: TextSpan(...));             // swap for RichText
 //   GPULabel('hello');                             // swap for Text
 //
+// Paint is hybrid: covered glyphs use the GPU coverage shader; color emoji
+// and uncovered/CJK characters delegate to platform Text via WidgetSpans.
+// Optional coverageGamma / coverageSharp / minificationGuardPx on
+// GPURichText (and FrameUniforms.style / guardPx) match windfoil's styling
+// and minification-guard dials; defaults leave coverage exact.
+//
 // Layout types that collide with Flutter (`TextAlign`, `ParagraphStyle`)
 // live in `package:gputext/internal.dart` — import with a prefix.
 library;

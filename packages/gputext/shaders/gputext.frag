@@ -13,10 +13,10 @@
 const uint SORT_MIN = 4u; // MUST equal bandSortMin in bands.dart
 const int CURVE_TEX_WIDTH = 1024;
 
-// Below GUARD_PX device pixels (whole glyph, both axes) coverage comes from
+// Below guardPx device pixels (whole glyph, both axes) coverage comes from
 // the banded ink profile (profile_face) instead of the exact gather.
+// Threshold is a flat varying from FrameInfo.guardPx (default 3.7).
 const bool MINIFICATION_GUARD = true;
-const float GUARD_PX = 3.7;
 
 uniform sampler2D curvesTex;
 uniform sampler2D rowsTex;
@@ -26,6 +26,8 @@ in vec4 v_place;
 in vec4 v_bbox;
 in vec4 v_color;
 in vec4 v_band;
+flat in vec2 v_style;
+flat in float v_guardPx;
 
 out vec4 frag_color;
 
@@ -82,8 +84,7 @@ vec4 fold_shade(float f, float fillRule, vec4 color) {
   } else {
     cov = clamp(abs(f), 0.0, 1.0);  // nonzero (saturating)
   }
-  // style uniforms are wired when the demo exposes gamma/sharp tuning.
-  return shade(color, style_coverage(cov, 1.0, 1.0));
+  return shade(color, style_coverage(cov, v_style.x, v_style.y));
 }
 
 // Solve the monotone quadratic component A2·t² + A1·t + A0 = v on [0,1],
@@ -277,8 +278,8 @@ void main() {
 
   vec2 glyphSize = v_bbox.zw - v_bbox.xy;
   if (MINIFICATION_GUARD &&
-      s.x * GUARD_PX >= glyphSize.x &&
-      s.y * GUARD_PX >= glyphSize.y) {
+      s.x * v_guardPx >= glyphSize.x &&
+      s.y * v_guardPx >= glyphSize.y) {
     frag_color = fold_shade(
         profile_face(v_band, v_bbox, rc, s) / (s.x * s.y), v_place.w, v_color);
     return;

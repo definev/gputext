@@ -69,6 +69,13 @@ const _maxSurfaceDim = 8192;
 /// font covers into inline engine-Text spans (consulting loaded fonts via
 /// ListenableBuilder, so late-loading fonts re-expand), then builds the
 /// render-object widget.
+///
+/// **Hybrid paint:** covered Latin/variable-font glyphs render via the GPU
+/// coverage shader into a cached image blit. Color-emoji clusters and
+/// characters no registered font covers are rewritten to baseline-aligned
+/// platform [Text] WidgetSpans (`expandEmojiSpans` /
+/// `expandUncoveredSpans`); explicit [WidgetSpan] children paint on top.
+/// Benchmark `pure` vs `hybrid` rows are not comparable.
 class GPURichText extends StatelessWidget {
   const GPURichText({
     super.key,
@@ -89,6 +96,9 @@ class GPURichText extends StatelessWidget {
     this.scaleHint,
     this.filterQuality = FilterQuality.low,
     this.lineBreaker = wf.LineBreaker.greedy,
+    this.coverageGamma = 1.0,
+    this.coverageSharp = 1.0,
+    this.minificationGuardPx = 3.7,
   }) : assert(maxLines == null || maxLines > 0);
 
   final InlineSpan text;
@@ -128,6 +138,16 @@ class GPURichText extends StatelessWidget {
 
   final FilterQuality filterQuality;
 
+  /// Perceptual coverage gamma (`FrameUniforms.style[0]`). `1.0` is exact.
+  final double coverageGamma;
+
+  /// Coverage contrast curve (`FrameUniforms.style[1]`). `1.0` is exact.
+  final double coverageSharp;
+
+  /// Device-px threshold for the banded-ink minification guard. Default
+  /// `3.7` matches windfoil; raise toward `8` for thumbnail-heavy UIs.
+  final double minificationGuardPx;
+
   @override
   Widget build(BuildContext context) {
     final registrar = selectionRegistrar ?? SelectionContainer.maybeOf(context);
@@ -159,6 +179,9 @@ class GPURichText extends StatelessWidget {
           scaleHint: scaleHint,
           filterQuality: filterQuality,
           lineBreaker: lineBreaker,
+          coverageGamma: coverageGamma,
+          coverageSharp: coverageSharp,
+          minificationGuardPx: minificationGuardPx,
         );
       },
     );
@@ -193,6 +216,9 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
     this.scaleHint,
     this.filterQuality = FilterQuality.low,
     this.lineBreaker = wf.LineBreaker.greedy,
+    this.coverageGamma = 1.0,
+    this.coverageSharp = 1.0,
+    this.minificationGuardPx = 3.7,
   }) : assert(maxLines == null || maxLines > 0),
        super(
          children: WidgetSpan.extractFromInlineSpan(effectiveText, textScaler),
@@ -215,6 +241,10 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
   final Locale? locale;
   final SelectionRegistrar? selectionRegistrar;
   final Color? selectionColor;
+
+  final double coverageGamma;
+  final double coverageSharp;
+  final double minificationGuardPx;
 
   final StrutStyle? strutStyle;
   final TextWidthBasis textWidthBasis;
@@ -253,6 +283,9 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
         scaleHint: scaleHint,
         filterQuality: filterQuality,
         lineBreaker: lineBreaker,
+        coverageGamma: coverageGamma,
+        coverageSharp: coverageSharp,
+        minificationGuardPx: minificationGuardPx,
         strutStyle: strutStyle,
         textWidthBasis: textWidthBasis,
         textHeightBehavior: textHeightBehavior,
@@ -282,6 +315,9 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
       ..scaleHint = scaleHint
       ..filterQuality = filterQuality
       ..lineBreaker = lineBreaker
+      ..coverageGamma = coverageGamma
+      ..coverageSharp = coverageSharp
+      ..minificationGuardPx = minificationGuardPx
       ..strutStyle = strutStyle
       ..textWidthBasis = textWidthBasis
       ..textHeightBehavior = textHeightBehavior
@@ -317,6 +353,9 @@ class RenderGPUParagraph extends RenderBox
     required this._scaleHint,
     required this._filterQuality,
     required this._lineBreaker,
+    this._coverageGamma = 1.0,
+    this._coverageSharp = 1.0,
+    this._minificationGuardPx = 3.7,
     this._strutStyle,
     this._textWidthBasis = TextWidthBasis.parent,
     this._textHeightBehavior,
@@ -575,6 +614,30 @@ class RenderGPUParagraph extends RenderBox
   set filterQuality(FilterQuality value) {
     if (_filterQuality == value) return;
     _filterQuality = value;
+    markNeedsPaint();
+  }
+
+  double _coverageGamma;
+  set coverageGamma(double value) {
+    if (_coverageGamma == value) return;
+    _coverageGamma = value;
+    _contentGen++;
+    markNeedsPaint();
+  }
+
+  double _coverageSharp;
+  set coverageSharp(double value) {
+    if (_coverageSharp == value) return;
+    _coverageSharp = value;
+    _contentGen++;
+    markNeedsPaint();
+  }
+
+  double _minificationGuardPx;
+  set minificationGuardPx(double value) {
+    if (_minificationGuardPx == value) return;
+    _minificationGuardPx = value;
+    _contentGen++;
     markNeedsPaint();
   }
 
@@ -1614,7 +1677,9 @@ class RenderGPUParagraph extends RenderBox
         frame: FrameUniforms(
           width: w.toDouble(),
           height: h.toDouble(),
+          style: [_coverageGamma, _coverageSharp],
           cam: [scale, scale, -devLeft.toDouble(), -devTop.toDouble()],
+          guardPx: _minificationGuardPx,
         ),
         instances: _instanceBuffer!,
         instanceCount: emitted.glyphCount,

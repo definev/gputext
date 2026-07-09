@@ -2,8 +2,9 @@
 
 uniform FrameInfo {
   vec2 res;
-  vec2 style;
+  vec2 style;   // (gamma, sharp); (1, 1) = exact coverage
   vec4 cam;
+  float guardPx; // minification-guard threshold in device px
 } frame_info;
 
 in vec2 corner;
@@ -17,6 +18,9 @@ out vec4 v_place;
 out vec4 v_bbox;
 out vec4 v_color;
 out vec4 v_band;
+// Flat: same for every fragment of an instance; fragment stage has no FrameInfo.
+flat out vec2 v_style;
+flat out float v_guardPx;
 
 void main() {
   float unitsToPx = place.z;
@@ -37,4 +41,6 @@ void main() {
   v_bbox = bbox;
   v_color = color;
   v_band = band;
+  v_style = frame_info.style;
+  v_guardPx = frame_info.guardPx;
 }

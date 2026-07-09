@@ -19,14 +19,21 @@ class FrameUniforms {
     required this.height,
     this.style = const [1, 1],
     this.cam = const [1, 1, 0, 0],
+    this.guardPx = 3.7,
   });
 
   final double width;
   final double height;
+
+  /// `(gamma, sharp)` coverage styling; `(1, 1)` leaves exact coverage untouched.
   final List<double> style;
 
   /// device px = world px * (cam[0], cam[1]) + (cam[2], cam[3]).
   final List<double> cam;
+
+  /// Minification-guard threshold in device pixels (whole glyph, both axes).
+  /// Default `3.7` matches windfoil; raise toward `8` for thumbnail workloads.
+  final double guardPx;
 }
 
 class GPUTextPipeline {
@@ -140,6 +147,7 @@ class GPUTextPipeline {
     required AtlasTextures textures,
   }) {
     if (instanceCount == 0) return;
+    // std140 FrameInfo: vec2 res, vec2 style, vec4 cam, float guardPx + pad.
     final frameData = Float32List.fromList([
       frame.width,
       frame.height,
@@ -149,6 +157,10 @@ class GPUTextPipeline {
       frame.cam[1],
       frame.cam[2],
       frame.cam[3],
+      frame.guardPx,
+      0,
+      0,
+      0,
     ]);
     // Each render gets its own immutable uniform buffer. A shared HostBuffer
     // arena here is a use-after-recycle hazard: submit() only ENQUEUES GPU

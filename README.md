@@ -78,6 +78,29 @@ favor it; weigh them against the dynamic ones (`repaint_color`,
 idle floor, zoom re-render counts) are embedded in `meta.sanity` and fail the
 report's status when violated.
 
+## Hybrid rendering
+
+`GPURichText` is not a single paint path:
+
+- **GPU blit** — glyphs covered by a registered `GPUFont` (including in-engine
+  `fontFamilyFallback`) are rasterized by the coverage shader into a cached
+  `ui.Image`, then blitted.
+- **Platform `Text`** — color-emoji clusters (`expandEmojiSpans`) and characters
+  no registered font covers (`expandUncoveredSpans`, often CJK) become
+  baseline-aligned WidgetSpans whose child is stock Flutter `Text`.
+- **WidgetSpan children** — measured in layout and painted on top of the text
+  image, same as `RichText`.
+
+Benchmark rows tagged `pure` isolate the GPU path; `hybrid` /
+`cache-disabled` rows exercise platform delegation and are not comparable.
+Coverage styling knobs on `GPURichText` / `FrameUniforms`: `coverageGamma`,
+`coverageSharp` (default `1, 1` = exact), and `minificationGuardPx` (default
+`3.7`; raise toward `8` for thumbnail-heavy UIs).
+
+**Limits:** Impeller / `flutter_gpu` only (widgets paint blank otherwise); no
+bidi/RTL shaping; `locale` is accepted but unused; `foreground` Paint is flat
+color only.
+
 ## API (migrated from windfoil_flutter)
 
 | windfoil_flutter | gputext |
