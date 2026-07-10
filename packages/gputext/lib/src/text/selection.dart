@@ -183,39 +183,67 @@ class ParagraphGeometry {
       align,
     );
     var stretched = 0;
-    String? prev;
+    var prevGid = -1;
     GPUFont? prevFont;
 
     for (final item in line.items) {
       if (item is! LineRun) {
         placed.add(_PlacedItem(item, pen, pen + item.width, null));
         pen += item.width;
-        prev = null;
+        prevGid = -1;
         prevFont = null;
         continue;
       }
       final run = item;
       final scale = run.fontSizePx / run.font.unitsPerEm;
+      final shaped = run.shaped;
+      final pipe = shaped.pipelineText;
       final b = Float64List(run.text.length + 1);
-      var i = 0;
       b[0] = pen;
-      for (final rune in run.text.runes) {
-        final units = rune >= 0x10000 ? 2 : 1;
-        if (!isZeroWidthCodePoint(rune)) {
-          final ch = String.fromCharCode(rune);
-          if (prev != null && identical(prevFont, run.font)) {
-            pen += run.font.kerningOf(prev, ch) * scale;
-            b[i] = pen; // the caret sits where the kerned glyph starts
+      // Fill every UTF-16 boundary; glyphs may skip ZW code points.
+      var shapedCursor = 0;
+      for (final g in shaped.glyphs) {
+        // Boundaries before this glyph stay at the current pen (ZW gaps).
+        while (shapedCursor < g.shapedStart && shapedCursor < b.length - 1) {
+          shapedCursor++;
+          b[shapedCursor] = pen;
+        }
+        if (shaped.appliesKerning &&
+            prevGid >= 0 &&
+            identical(prevFont, run.font)) {
+          pen += run.font.kerningOfGlyphIds(prevGid, g.glyphId) * scale;
+          if (g.shapedStart < b.length) b[g.shapedStart] = pen;
+        }
+        final startPen = pen;
+        pen += g.xAdvance * scale + run.letterSpacingPx;
+        if (g.shapedEnd - g.shapedStart == 1 &&
+            g.shapedStart < pipe.length &&
+            pipe.codeUnitAt(g.shapedStart) == 0x20) {
+          pen += run.wordSpacingPx;
+        }
+        // Interior UTF-16 boundaries of a multi-unit cluster keep startPen
+        // so caret interpolation (selection) can divide the advance; only
+        // the cluster end advances to [pen].
+        final units = g.shapedEnd - g.shapedStart;
+        if (units <= 1) {
+          if (g.shapedEnd < b.length) b[g.shapedEnd] = pen;
+        } else {
+          for (
+            var u = g.shapedStart + 1;
+            u < g.shapedEnd && u < b.length;
+            u++
+          ) {
+            b[u] = startPen; // overwritten by interpolation callers via c0/c1
           }
-          pen += run.font.advanceOf(ch) * scale + run.letterSpacingPx;
-          if (ch == ' ') pen += run.wordSpacingPx;
-          prev = ch;
-          prevFont = run.font;
+          if (g.shapedEnd < b.length) b[g.shapedEnd] = pen;
         }
-        for (var u = 1; u <= units; u++) {
-          b[i + u] = pen;
-        }
-        i += units;
+        shapedCursor = g.shapedEnd;
+        prevGid = g.glyphId;
+        prevFont = run.font;
+      }
+      while (shapedCursor < run.text.length) {
+        shapedCursor++;
+        b[shapedCursor] = pen;
       }
       if (run.isSpace && stretched < stretchable) {
         pen += spaceExtra; // justified gap
@@ -266,19 +294,17 @@ class ParagraphGeometry {
       final run = pi.item as LineRun;
       final source = items[run.itemIndex] as TextRun;
       final base = _itemStarts[run.itemIndex];
-      var u = 0;
-      for (final rune in run.text.runes) {
-        final units = rune >= 0x10000 ? 2 : 1;
-        final c0 = base + source.sourceOffsetAt(run.startInItem + u);
-        final c1 = base + source.sourceOffsetAt(run.startInItem + u + units);
-        final x0 = b[u];
-        final x1 = b[u + units];
+      for (final g in run.shaped.glyphs) {
+        final c0 =
+            base + source.sourceOffsetAt(run.startInItem + g.shapedStart);
+        final c1 = base + source.sourceOffsetAt(run.startInItem + g.shapedEnd);
+        final x0 = b[g.shapedStart];
+        final x1 = b[g.shapedEnd];
         candidate(x0, c0);
         final n = c1 - c0;
         for (var t = 1; t < n; t++) {
           candidate(x0 + (x1 - x0) * t / n, c0 + t);
         }
-        u += units;
       }
       candidate(
         b[b.length - 1],
@@ -338,19 +364,18 @@ class ParagraphGeometry {
       final run = pi.item as LineRun;
       final source = items[run.itemIndex] as TextRun;
       final base = _itemStarts[run.itemIndex];
-      var u = 0;
-      for (final rune in run.text.runes) {
-        final units = rune >= 0x10000 ? 2 : 1;
-        final c0 = base + source.sourceOffsetAt(run.startInItem + u);
-        final c1 = base + source.sourceOffsetAt(run.startInItem + u + units);
-        if (offset == c0) return b[u];
+      for (final g in run.shaped.glyphs) {
+        final c0 =
+            base + source.sourceOffsetAt(run.startInItem + g.shapedStart);
+        final c1 = base + source.sourceOffsetAt(run.startInItem + g.shapedEnd);
+        if (offset == c0) return b[g.shapedStart];
         if (offset < c1) {
           // Inside this cluster: interpolate across its advance.
           final n = c1 - c0;
-          if (n <= 1) return b[u];
-          return b[u] + (b[u + units] - b[u]) * (offset - c0) / n;
+          if (n <= 1) return b[g.shapedStart];
+          return b[g.shapedStart] +
+              (b[g.shapedEnd] - b[g.shapedStart]) * (offset - c0) / n;
         }
-        u += units;
       }
       return b[b.length - 1];
     }
@@ -380,8 +405,8 @@ class ParagraphGeometry {
       if (p.boundaries != null) (p.penStart, p.boundaries!),
   ];
 
-  /// Selection rects for a source range: one per intersecting line
-  /// (logical order == visual order — no bidi).
+  /// Selection rects for a source range: one per intersecting line, split
+  /// further when a line mixes LTR/RTL runs (visual gaps).
   List<SelectionRect> boxesForRange(int start, int end) {
     if (start >= end || para.lines.isEmpty) return const [];
     final out = <SelectionRect>[];
@@ -391,16 +416,50 @@ class ParagraphGeometry {
       final s = start > ls ? start : ls;
       final e = end < le ? end : le;
       if (s >= e) continue;
-      final x0 = _xForOffsetInLine(i, s);
-      final x1 = _xForOffsetInLine(i, e);
-      out.add(
-        SelectionRect(
-          x0 < x1 ? x0 : x1,
-          _lineTops[i],
-          x0 < x1 ? x1 : x0,
-          _lineTops[i] + _lineBoxHeight(para.lines[i]),
-        ),
-      );
+      final placed = _placeLine(i);
+      final top = _lineTops[i];
+      final bottom = top + _lineBoxHeight(para.lines[i]);
+      // Per-item rects, then coalesce adjacent same-direction spans so
+      // plain LTR lines still yield one box (Flutter parity).
+      final parts = <SelectionRect>[];
+      for (final pi in placed) {
+        final range = _itemRange(pi.item);
+        if (range == null) continue;
+        final iStart = s > range.$1 ? s : range.$1;
+        final iEnd = e < range.$2 ? e : range.$2;
+        if (iStart >= iEnd) continue;
+        final x0 = _xForOffsetInLine(i, iStart);
+        final x1 = _xForOffsetInLine(i, iEnd);
+        parts.add(
+          SelectionRect(x0 < x1 ? x0 : x1, top, x0 < x1 ? x1 : x0, bottom),
+        );
+      }
+      if (parts.isEmpty) {
+        final x0 = _xForOffsetInLine(i, s);
+        final x1 = _xForOffsetInLine(i, e);
+        out.add(
+          SelectionRect(x0 < x1 ? x0 : x1, top, x0 < x1 ? x1 : x0, bottom),
+        );
+        continue;
+      }
+      parts.sort((a, b) => a.left.compareTo(b.left));
+      var cur = parts.first;
+      for (var p = 1; p < parts.length; p++) {
+        final next = parts[p];
+        // Merge when touching / overlapping (same visual band).
+        if (next.left <= cur.right + 0.5) {
+          cur = SelectionRect(
+            cur.left,
+            top,
+            next.right > cur.right ? next.right : cur.right,
+            bottom,
+          );
+        } else {
+          out.add(cur);
+          cur = next;
+        }
+      }
+      out.add(cur);
     }
     return out;
   }

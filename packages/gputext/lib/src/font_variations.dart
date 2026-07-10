@@ -805,7 +805,18 @@ extension GPUFontVariations on GPUFont {
     final (snapped, ticks) = base._snapCoords(canonical, quantizeSteps);
     if (snapped.isEmpty) return base; // every axis snapped to its default
     final key = _tickKey(ticks);
-    return base._variantCache[key] ??= base._instantiate(snapped, ticks);
+    final cache = base._variantCache;
+    final cached = cache.remove(key);
+    if (cached != null) {
+      cache[key] = cached; // LRU touch
+      return cached;
+    }
+    final instance = base._instantiate(snapped, ticks);
+    cache[key] = instance;
+    while (cache.length > GPUFont.variantCacheCapacity) {
+      cache.remove(cache.keys.first);
+    }
+    return instance;
   }
 
   GPUFont _instantiate(Map<String, double> coords, Int16List ticks) {

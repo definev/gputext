@@ -37,7 +37,10 @@ List<(double, double)> _rotate(
   final s = math.sin(a);
   return [
     for (final p in pts)
-      (cx + (p.$1 - cx) * c - (p.$2 - cy) * s, cy + (p.$1 - cx) * s + (p.$2 - cy) * c),
+      (
+        cx + (p.$1 - cx) * c - (p.$2 - cy) * s,
+        cy + (p.$1 - cx) * s + (p.$2 - cy) * c,
+      ),
   ];
 }
 
@@ -89,29 +92,19 @@ void main() {
   final shapes = <(String, List<double>, bool, double, double)>[
     (
       'rotated square 30°',
-      _polygon(
-        _rotate([(14, 14), (50, 14), (50, 50), (14, 50)], 30),
-      ),
+      _polygon(_rotate([(14, 14), (50, 14), (50, 50), (14, 50)], 30)),
       false,
       simpleMean,
       simpleMax,
     ),
     (
       'thin diagonal sliver',
-      _polygon(
-        _rotate([(6, 31.5), (58, 31.5), (58, 32.5), (6, 32.5)], 27),
-      ),
+      _polygon(_rotate([(6, 31.5), (58, 31.5), (58, 32.5), (6, 32.5)], 27)),
       false,
       simpleMean,
       simpleMax,
     ),
-    (
-      'circle r=22',
-      _circle(32, 32, 22, n: 24),
-      false,
-      simpleMean,
-      simpleMax,
-    ),
+    ('circle r=22', _circle(32, 32, 22, n: 24), false, simpleMean, simpleMax),
     (
       'star {5/2} nonzero',
       _polygon(_starPts(32, 32, 26, 5, 2)),
@@ -150,13 +143,15 @@ void main() {
       expect(
         d.mean,
         lessThan(meanLimit),
-        reason: '$label mean |Δ|=${d.mean.toStringAsFixed(5)} '
+        reason:
+            '$label mean |Δ|=${d.mean.toStringAsFixed(5)} '
             '(limit $meanLimit); max=${d.max.toStringAsFixed(5)}',
       );
       expect(
         d.max,
         lessThan(maxLimit),
-        reason: '$label max |Δ|=${d.max.toStringAsFixed(5)} '
+        reason:
+            '$label max |Δ|=${d.max.toStringAsFixed(5)} '
             '(limit $maxLimit); mean=${d.mean.toStringAsFixed(5)}',
       );
     });

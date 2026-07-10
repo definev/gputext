@@ -16,6 +16,7 @@ import 'bench/bench_page.dart';
 import 'google_sans_flex_demo.dart';
 import 'justification_demo.dart';
 import 'pretext_demo.dart';
+import 'rtl_demo.dart';
 import 'variable_font_demo.dart';
 import 'widget_demo.dart';
 
@@ -71,6 +72,7 @@ class GPUTextApp extends StatelessWidget {
         'justify' => const JustificationDemoPage(),
         'gsf' => const GoogleSansFlexDemoPage(),
         'vars' => const VariableFontDemoPage(),
+        'rtl' => const RtlDemoPage(),
         _ => const GPUTextDemoPage(),
       },
     );
@@ -510,6 +512,7 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                                 'GSF flex demo',
                                 const GoogleSansFlexDemoPage(),
                               ),
+                              _demoButton('RTL', const RtlDemoPage()),
                               _demoButton(
                                 'Variable fonts',
                                 const VariableFontDemoPage(),

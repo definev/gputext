@@ -74,6 +74,7 @@ class SharedGlyphAtlas implements GlyphTable {
 
   /// Make sure every unique character of `text` has a banded entry for
   /// `font`. Returns true when new glyph data was appended.
+  /// Prefer [ensureShaped] / [ensureGlyphId] for shaped glyph runs.
   bool ensureGlyphs(GPUFont font, String text) {
     var grew = false;
     for (final rune in text.runes) {
@@ -103,6 +104,15 @@ class SharedGlyphAtlas implements GlyphTable {
       grew = true;
     }
     if (grew) _generation++;
+    return grew;
+  }
+
+  /// Band every glyph in [shaped] by glyph id (paint path).
+  bool ensureShaped(ShapedGlyphRun shaped) {
+    var grew = false;
+    for (final g in shaped.glyphs) {
+      if (ensureGlyphId(shaped.font, g.glyphId)) grew = true;
+    }
     return grew;
   }
 

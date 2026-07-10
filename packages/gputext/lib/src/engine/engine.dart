@@ -19,7 +19,11 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 
 import '../atlas.dart';
 import '../font.dart';
+import '../native/harfbuzz_bindings.dart';
 import '../paragraph.dart' as wf;
+import '../text/harfbuzz_shaper.dart';
+import '../text/metrics_cache.dart';
+import '../text/shaper.dart';
 import 'pipeline.dart';
 import 'shared_atlas.dart';
 
@@ -29,6 +33,13 @@ const _defaultFontFamily = 'Lato';
 /// Public facade.
 abstract final class GPUText {
   static GPUTextEngine get instance => GPUTextEngine._instance;
+
+  /// When true (default), prefer HarfBuzz for shaping if the native library
+  /// loaded; otherwise [LegacyGsubShaper]. Set false to force the legacy path.
+  static bool useHarfBuzz = true;
+
+  /// True after a successful HarfBuzz native load (read-only diagnostic).
+  static bool get harfBuzzAvailable => instance._harfBuzzAvailable;
 
   /// Load fonts and build the GPU pipeline up front (no first-frame flash).
   /// `fallbackFamilies` are tried, in order, for characters the styled
@@ -62,6 +73,52 @@ class GPUTextEngine extends ChangeNotifier {
   final _fallbackFamilies = <String>[];
   String? _defaultFamily;
   var _unsupported = false;
+
+  /// Active text shaper (legacy GSUB until HarfBuzz loads).
+  TextShaper get shaper {
+    _ensureShaper();
+    return _shaper;
+  }
+
+  TextShaper _shaper = const LegacyGsubShaper();
+  var _shaperResolved = false;
+  var _harfBuzzAvailable = false;
+  var _loggedHbFallback = false;
+
+  /// Replace the shaper (tests). Marks resolution done so auto-load won't
+  /// overwrite.
+  set shaper(TextShaper value) {
+    _shaper = value;
+    _shaperResolved = true;
+  }
+
+  void _ensureShaper() {
+    if (_shaperResolved && (_harfBuzzAvailable || !GPUText.useHarfBuzz)) {
+      return;
+    }
+    if (!GPUText.useHarfBuzz) {
+      _shaper = const LegacyGsubShaper();
+      _shaperResolved = true;
+      return;
+    }
+    final hb = HarfBuzzBindings.tryLoad();
+    if (hb != null) {
+      _shaper = HarfBuzzShaper(hb);
+      _harfBuzzAvailable = true;
+      _shaperResolved = true;
+    } else {
+      _shaper = const LegacyGsubShaper();
+      // Keep unresolved so a later successful load (e.g. after hooks build)
+      // can upgrade; log once.
+      if (!_loggedHbFallback) {
+        _loggedHbFallback = true;
+        debugPrint(
+          'gputext: HarfBuzz native library unavailable; '
+          'using LegacyGsubShaper',
+        );
+      }
+    }
+  }
 
   AtlasTextures? _textures;
   var _texturesGeneration = -1;
@@ -264,6 +321,52 @@ class GPUTextEngine extends ChangeNotifier {
       ..removeWhere((v) => v.weight == w && v.italic == italic)
       ..add(_FontVariant(w, italic, font));
     _defaultFamily ??= family;
+    _fontGeneration++;
+    notifyListeners();
+  }
+
+  /// Remove a registered font family, or a single weight/style variant.
+  ///
+  /// When [weight] and [style] are both omitted, the entire [family] is
+  /// removed. Otherwise only the matching variant is removed. Evicts HarfBuzz
+  /// face caches and segment metrics for removed fonts (including variable
+  /// variants), bumps [fontGeneration], and clears coverage cache.
+  void unregisterFont(
+    String family, {
+    ui.FontWeight? weight,
+    ui.FontStyle? style,
+  }) {
+    final variants = _fonts[family];
+    if (variants == null || variants.isEmpty) return;
+
+    final List<_FontVariant> removed;
+    if (weight == null && style == null) {
+      removed = List<_FontVariant>.from(variants);
+      _fonts.remove(family);
+    } else {
+      final w = (weight ?? ui.FontWeight.w400).value;
+      final italic = (style ?? ui.FontStyle.normal) == ui.FontStyle.italic;
+      removed = variants
+          .where((v) => v.weight == w && v.italic == italic)
+          .toList(growable: false);
+      variants.removeWhere((v) => v.weight == w && v.italic == italic);
+      if (variants.isEmpty) _fonts.remove(family);
+    }
+    if (removed.isEmpty) return;
+
+    final shaper = this.shaper;
+    for (final v in removed) {
+      v.font.releaseShaperCaches(
+        shaper.evictFont,
+        onEach: debugClearSegmentMetricsFor,
+      );
+    }
+
+    if (_defaultFamily == family && !_fonts.containsKey(family)) {
+      _defaultFamily = _fonts.isEmpty ? null : _fonts.keys.first;
+    }
+    _coverageCache.clear();
+    _coverageGeneration = -1;
     _fontGeneration++;
     notifyListeners();
   }

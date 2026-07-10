@@ -28,6 +28,7 @@ import 'bands.dart';
 import 'font.dart';
 import 'layout.dart';
 import 'text/analysis.dart' show SegmentBreakKind;
+import 'text/bidi.dart' as bidi;
 import 'text/inline_items.dart';
 import 'text/line_break.dart';
 import 'text/line_breaker.dart';
@@ -173,7 +174,9 @@ class LineRun extends LineItem {
     this.source,
     this.itemIndex = -1,
     this.startInItem = -1,
-  });
+    ShapedGlyphRun? shaped,
+  }) : _parentShaped = null,
+       _shaped = shaped;
 
   LineRun.fromRun(
     TextRun run,
@@ -181,6 +184,7 @@ class LineRun extends LineItem {
     this.width, {
     this.itemIndex = -1,
     this.startInItem = -1,
+    ShapedGlyphRun? shaped,
   }) : font = run.font,
        fontSizePx = run.fontSizePx,
        color = run.color,
@@ -190,9 +194,42 @@ class LineRun extends LineItem {
        background = run.background,
        shadows = run.shadows,
        source = run.source,
-       fillRule = run.fillRule;
+       fillRule = run.fillRule,
+       // Defer slice until paint/selection — hot layout only needs widths.
+       _parentShaped = shaped == null ? run.shaped : null,
+       _shaped = shaped;
 
+  /// Pipeline substring for this line slice (line-break / space detection).
   String text;
+
+  /// Parent run shaping; [shaped] slices from this on first access.
+  final ShapedGlyphRun? _parentShaped;
+  ShapedGlyphRun? _shaped;
+
+  /// Glyph geometry for this slice; paint and selection walk this.
+  /// Mutable so [_ellipsize] can trim without reallocating the LineRun.
+  /// Lazy: layout materialization does not allocate a slice.
+  ShapedGlyphRun get shaped {
+    final cached = _shaped;
+    if (cached != null) return cached;
+    final parent = _parentShaped;
+    if (parent != null && startInItem >= 0) {
+      return _shaped = parent.slice(startInItem, startInItem + text.length);
+    }
+    return _shaped = ShapedGlyphRun.fromPipelineText(
+      font: font,
+      fontSizePx: fontSizePx,
+      sourceText: text,
+      pipelineText: text,
+    );
+  }
+
+  set shaped(ShapedGlyphRun value) => _shaped = value;
+
+  /// Bidi level without forcing a glyph slice (parent run when deferred).
+  int get bidiLevel =>
+      _shaped?.bidiLevel ?? _parentShaped?.bidiLevel ?? shaped.bidiLevel;
+
   final GPUFont font;
   final double fontSizePx;
   final List<double> color;
@@ -668,6 +705,15 @@ LineMetrics _materializeLine(
             lb.widths[shySeg],
             itemIndex: pieces.first.itemIndex,
             startInItem: pieces.first.startInItem,
+            // Visible '-' stands in for SHY; paint the hyphen glyph, not
+            // the zero-width soft-hyphen cluster.
+            shaped: ShapedGlyphRun.fromPipelineText(
+              font: run.font,
+              fontSizePx: run.fontSizePx,
+              sourceText: '-',
+              pipelineText: '-',
+              appliesKerning: run.shaped.appliesKerning,
+            ),
           ),
         );
         _growMetrics(line, run, style);
@@ -686,6 +732,9 @@ LineMetrics _materializeLine(
 
   _commitLineMetrics(line, style.strut);
 
+  // UAX #9 L2: reorder line items to visual order when any run is RTL.
+  _reorderLineVisual(line);
+
   // Trailing spaces don't count toward the alignment box. The walker width
   // includes them (they hang), so strip trailing space items here — this
   // also handles whitespace runs spanning style boundaries.
@@ -700,6 +749,28 @@ LineMetrics _materializeLine(
   }
   line.width = w;
   return line;
+}
+
+/// Reorder [line.items] into visual order (UAX #9 L2) using each TextRun's
+/// bidi level. Emoji/placeholders inherit the surrounding level (0).
+void _reorderLineVisual(LineMetrics line) {
+  final items = List<LineItem>.of(line.items);
+  if (items.length <= 1) return;
+  var anyRtl = false;
+  final levels = <int>[];
+  for (final item in items) {
+    final level = switch (item) {
+      LineRun r => r.bidiLevel,
+      _ => 0,
+    };
+    if (level.isOdd) anyRtl = true;
+    levels.add(level);
+  }
+  if (!anyRtl) return;
+  final order = bidi.reorderVisual(levels);
+  line.items
+    ..clear()
+    ..addAll([for (final i in order) items[i]]);
 }
 
 /// Baseline-to-baseline line advance for a font/size (public: widgets use it
@@ -753,6 +824,13 @@ void _ellipsize(LineMetrics line, double maxWidth) {
       continue;
     }
     r.text = r.text.characters.skipLast(1).toString();
+    r.shaped = ShapedGlyphRun.fromPipelineText(
+      font: r.font,
+      fontSizePx: r.fontSizePx,
+      sourceText: r.text,
+      pipelineText: r.text,
+      appliesKerning: r.shaped.appliesKerning,
+    );
     r.width = _measure(r.font, r.text, r.fontSizePx, r.letterSpacingPx);
   }
   // Strip a trailing space left at the cut.
@@ -1058,18 +1136,24 @@ ParagraphInstances emitInstances(
       final color = run.color;
       final a = color.length > 3 ? color[3] : 1.0;
       final penStart = pen;
-      for (final rune in run.text.runes) {
-        if (isZeroWidthCodePoint(rune)) continue;
-        // cmap miss → .notdef (glyph 0), matching advanceOf's tofu rule.
-        final gid = run.font.glyphIdForRune(rune) ?? 0;
-        if (prevGid >= 0 && identical(prevFont, run.font)) {
-          pen += run.font.kerningOfGlyphIds(prevGid, gid) * scale;
+      final pipe = run.shaped.pipelineText;
+      final shaped = run.shaped;
+      for (final g in shaped.glyphs) {
+        if (shaped.appliesKerning &&
+            prevGid >= 0 &&
+            identical(prevFont, run.font)) {
+          pen += run.font.kerningOfGlyphIds(prevGid, g.glyphId) * scale;
         }
-        final gl = table?.lookupRune(run.font, rune);
+        GlyphTableEntry? gl = table?.lookupGlyphId(run.font, g.glyphId);
+        if (gl == null && table != null && g.shapedStart < pipe.length) {
+          gl = table.lookupRune(run.font, _utf16RuneAt(pipe, g.shapedStart));
+        }
         if (gl != null) {
+          final drawX = pen + g.xOffset * scale;
+          final drawY = baselineY - g.yOffset * scale;
           out.addAll([
-            pen,
-            baselineY,
+            drawX,
+            drawY,
             scale,
             rule,
             gl.bbox[0],
@@ -1085,18 +1169,22 @@ ParagraphInstances emitInstances(
             gl.y0,
             gl.invH,
           ]);
-          final gx0 = pen + gl.bbox[0] * scale;
-          final gx1 = pen + gl.bbox[2] * scale;
-          final gy0 = baselineY + gl.bbox[1] * scale;
-          final gy1 = baselineY + gl.bbox[3] * scale;
+          final gx0 = drawX + gl.bbox[0] * scale;
+          final gx1 = drawX + gl.bbox[2] * scale;
+          final gy0 = drawY + gl.bbox[1] * scale;
+          final gy1 = drawY + gl.bbox[3] * scale;
           if (gx0 < inkMinX) inkMinX = gx0;
           if (gx1 > inkMaxX) inkMaxX = gx1;
           if (gy0 < inkMinY) inkMinY = gy0;
           if (gy1 > inkMaxY) inkMaxY = gy1;
         }
-        pen += run.font.advanceOfGlyphId(gid) * scale + run.letterSpacingPx;
-        if (rune == 0x20) pen += run.wordSpacingPx;
-        prevGid = gid;
+        pen += g.xAdvance * scale + run.letterSpacingPx;
+        if (g.shapedEnd - g.shapedStart == 1 &&
+            g.shapedStart < pipe.length &&
+            pipe.codeUnitAt(g.shapedStart) == 0x20) {
+          pen += run.wordSpacingPx;
+        }
+        prevGid = g.glyphId;
         prevFont = run.font;
       }
       if (run.isSpace && stretched < stretchable) {
@@ -1262,4 +1350,16 @@ LayoutResult mergeLayouts(List<LayoutResult> parts) {
     instances: instances,
     bounds: LayoutBounds(minX: minX, minY: minY, maxX: maxX, maxY: maxY),
   );
+}
+
+/// Decode the UTF-16 code point starting at [offset] in [text].
+int _utf16RuneAt(String text, int offset) {
+  final cu = text.codeUnitAt(offset);
+  if (cu >= 0xD800 && cu <= 0xDBFF && offset + 1 < text.length) {
+    final low = text.codeUnitAt(offset + 1);
+    if (low >= 0xDC00 && low <= 0xDFFF) {
+      return 0x10000 + ((cu - 0xD800) << 10) + (low - 0xDC00);
+    }
+  }
+  return cu;
 }

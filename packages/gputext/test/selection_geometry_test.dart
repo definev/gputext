@@ -79,8 +79,15 @@ void main() {
       )!;
       final r = items.single as wf.TextRun;
       expect(r.originalText, 'first');
-      expect(r.text, isNot('first'));
-      expect(r.sourceOffsetAt(r.text.length), 5);
+      // Legacy GSUB mints PUA proxies in pipeline text; HarfBuzz keeps
+      // source == pipeline and encodes liga in shaped.glyphs.
+      if (r.shaped.appliesKerning) {
+        expect(r.text, isNot('first'));
+        expect(r.sourceOffsetAt(r.text.length), 5);
+      } else {
+        expect(r.shaped.glyphs.length, lessThan('first'.runes.length));
+        expect(r.shaped.glyphs.first.clusterEnd, greaterThan(1));
+      }
     });
   });
 
@@ -121,7 +128,11 @@ void main() {
         GPUText.instance,
       )!;
       final r = items.single as wf.TextRun;
-      expect(r.text.runes.length, 1, reason: 'expected a single lig cluster');
+      expect(
+        r.shaped.glyphs.length,
+        1,
+        reason: 'expected a single lig cluster',
+      );
       final g = geometryOf(items);
       expect(g.plainText, 'fi');
       final x0 = g.caretAt(0).x;

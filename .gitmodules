@@ -1,0 +1,3 @@
+[submodule "packages/gputext/third_party/harfbuzz"]
+	path = packages/gputext/third_party/harfbuzz
+	url = https://github.com/harfbuzz/harfbuzz.git

@@ -90,6 +90,28 @@ void main() {
       // are reachable, plus the base font for whatever snaps onto the default.
       expect(quantized.length, lessThanOrEqualTo(2 * steps + 1));
       expect(exact.length, greaterThan(quantized.length * 4));
+      // Live cache is LRU-capped even when callers retain older instances.
+      expect(
+        font.debugVariantCacheLength,
+        lessThanOrEqualTo(GPUFont.variantCacheCapacity),
+      );
+    });
+
+    test('variant cache LRU drops oldest beyond capacity', () {
+      font.clearVariantCache();
+      final keepAlive = <GPUFont>[];
+      final n = GPUFont.variantCacheCapacity + 20;
+      for (var i = 0; i < n; i++) {
+        // Spread across wght so each lands on a distinct F2Dot14 tick.
+        final w = 1.0 + 999.0 * i / (n - 1);
+        keepAlive.add(font.variantExact({'wght': w}));
+      }
+      expect(font.debugVariantCacheLength, GPUFont.variantCacheCapacity);
+      // Reminting an evicted key creates a fresh instance (not identity).
+      final first = keepAlive.first;
+      final reminted = font.variantExact(first.variationCoordinates);
+      expect(identical(reminted, first), isFalse);
+      expect(font.debugVariantCacheLength, GPUFont.variantCacheCapacity);
     });
 
     test('leaves the default, the extremes, and on-grid values exact', () {
@@ -449,7 +471,12 @@ void main() {
         engine,
       )!;
       final run = items.single as wf.TextRun;
-      expect(run.text.runes.toList(), [_proxyBase + 415, _proxyBase + 416]);
+      // Legacy: PUA proxies in pipeline text. HarfBuzz: glyph ids on shaped.
+      if (run.shaped.appliesKerning) {
+        expect(run.text.runes.toList(), [_proxyBase + 415, _proxyBase + 416]);
+      } else {
+        expect(run.shaped.glyphs.map((g) => g.glyphId).toList(), [415, 416]);
+      }
     });
 
     test('letterSpacing disables default ligatures but not explicit ones', () {
@@ -464,7 +491,12 @@ void main() {
       final ligated =
           flatten(const TextStyle(fontFamily: 'Flex', fontSize: 16)).single
               as wf.TextRun;
-      expect(ligated.text.runes.single, _proxyBase + 371);
+      expect(ligated.shaped.glyphs, hasLength(1));
+      if (ligated.shaped.appliesKerning) {
+        expect(ligated.text.runes.single, _proxyBase + 371);
+      } else {
+        expect(ligated.shaped.glyphs.single.glyphId, isNot(0));
+      }
 
       final tracked =
           flatten(
@@ -476,6 +508,7 @@ void main() {
               ).single
               as wf.TextRun;
       expect(tracked.text, 'fi');
+      expect(tracked.shaped.glyphs, hasLength(2));
 
       final explicit =
           flatten(
@@ -487,7 +520,10 @@ void main() {
                 ),
               ).single
               as wf.TextRun;
-      expect(explicit.text.runes.single, _proxyBase + 371);
+      expect(explicit.shaped.glyphs, hasLength(1));
+      if (explicit.shaped.appliesKerning) {
+        expect(explicit.text.runes.single, _proxyBase + 371);
+      }
     });
   });
 

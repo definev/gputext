@@ -187,6 +187,8 @@ PreparedParagraph prepareParagraph(List<InlineItem> items) {
     var width = 0.0;
     for (final p in intersections(startInWindow, startInWindow + text.length)) {
       final run = runOf(p.itemIndex);
+      final startInItem = p.start - _windowStartOf(windowPieces, p.itemIndex);
+      // Cache by character; shaped range is only used on miss.
       final per =
           segmentMetricsOf(run.font, ch).widthUnits * scaleOf(run) +
           run.letterSpacingPx +
@@ -197,7 +199,7 @@ PreparedParagraph prepareParagraph(List<InlineItem> items) {
           itemIndex: p.itemIndex,
           startInSegment: p.start - startInWindow,
           endInSegment: p.end - startInWindow,
-          startInItem: p.start - _windowStartOf(windowPieces, p.itemIndex),
+          startInItem: startInItem,
           width: w,
         ),
       );
@@ -223,8 +225,23 @@ PreparedParagraph prepareParagraph(List<InlineItem> items) {
         final run = runOf(p.itemIndex);
         final scale = scaleOf(run);
         final pieceText = windowText.substring(p.start, p.end);
-        final m = segmentMetricsOf(run.font, pieceText);
-        ensureGraphemeMetrics(run.font, pieceText, m);
+        final startInItem = p.start - _windowStartOf(windowPieces, p.itemIndex);
+        final endInItem = startInItem + pieceText.length;
+        final m = segmentMetricsOfRange(
+          run.font,
+          pieceText,
+          run.shaped,
+          startInItem,
+          endInItem,
+        );
+        ensureGraphemeMetrics(
+          run.font,
+          pieceText,
+          m,
+          shaped: run.shaped,
+          start: startInItem,
+          end: endInItem,
+        );
         final cum = m.graphemeCumUnits!;
         final ends = m.graphemeEndOffsets!;
         final runes = m.graphemeRenderedRunes!;
@@ -242,7 +259,7 @@ PreparedParagraph prepareParagraph(List<InlineItem> items) {
             itemIndex: p.itemIndex,
             startInSegment: p.start - startInWindow,
             endInSegment: p.end - startInWindow,
-            startInItem: p.start - _windowStartOf(windowPieces, p.itemIndex),
+            startInItem: startInItem,
             width: pieceWidth,
           ),
         );
@@ -268,7 +285,14 @@ PreparedParagraph prepareParagraph(List<InlineItem> items) {
       for (final p in rawPieces) {
         final run = runOf(p.itemIndex);
         final pieceText = windowText.substring(p.start, p.end);
-        final m = segmentMetricsOf(run.font, pieceText);
+        final startInItem = p.start - _windowStartOf(windowPieces, p.itemIndex);
+        final m = segmentMetricsOfRange(
+          run.font,
+          pieceText,
+          run.shaped,
+          startInItem,
+          startInItem + pieceText.length,
+        );
         final w =
             m.widthUnits * scaleOf(run) +
             run.letterSpacingPx * m.renderedRuneCount;
@@ -277,7 +301,7 @@ PreparedParagraph prepareParagraph(List<InlineItem> items) {
             itemIndex: p.itemIndex,
             startInSegment: p.start - startInWindow,
             endInSegment: p.end - startInWindow,
-            startInItem: p.start - _windowStartOf(windowPieces, p.itemIndex),
+            startInItem: startInItem,
             width: w,
           ),
         );

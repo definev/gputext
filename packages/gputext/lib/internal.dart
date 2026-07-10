@@ -10,3 +10,4 @@
 library;
 
 export 'src/paragraph.dart' show TextAlign, ParagraphStyle;
+export 'src/text/shaped_run.dart' show TextDirection;

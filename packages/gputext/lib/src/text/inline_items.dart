@@ -9,6 +9,16 @@
 import 'dart:typed_data';
 
 import '../font.dart';
+import 'shaped_run.dart';
+
+export 'shaped_run.dart'
+    show
+        ShapedGlyph,
+        ShapedGlyphRun,
+        TextDirection,
+        GlyphWalkStep,
+        walkGlyphs,
+        shapedWidthUnits;
 
 /// Mirror of ui.TextDecorationStyle (VM-pure).
 enum InlineDecorationStyle { solid, doubleLine, dotted, dashed, wavy }
@@ -73,8 +83,8 @@ sealed class InlineItem {
 }
 
 class TextRun extends InlineItem {
-  const TextRun({
-    required this.text,
+  TextRun({
+    required String text,
     required this.font,
     required this.fontSizePx,
     required this.color,
@@ -86,12 +96,27 @@ class TextRun extends InlineItem {
     this.background,
     this.shadows,
     this.evenLeading,
-    this.sourceText,
-    this.sourceMap,
+    String? sourceText,
+    Int32List? sourceMap,
     this.source,
-  });
+    ShapedGlyphRun? shaped,
+  }) : shaped =
+           shaped ??
+           ShapedGlyphRun.fromPipelineText(
+             font: font,
+             fontSizePx: fontSizePx,
+             sourceText: sourceText ?? text,
+             pipelineText: text,
+             sourceMap: sourceMap,
+           );
 
-  final String text;
+  /// Shaped glyph geometry; advances/paint/selection walk this, not [text].
+  final ShapedGlyphRun shaped;
+
+  /// Pipeline (post-shaping) text — used for line-break analysis windows.
+  /// Prefer [shaped.pipelineText]; kept as a convenience view.
+  String get text => shaped.pipelineText;
+
   final GPUFont font;
   final double fontSizePx;
   final List<double> color;
@@ -117,26 +142,22 @@ class TextRun extends InlineItem {
   /// the paragraph default.
   final bool? evenLeading;
 
-  /// The pre-shaping source characters this run renders, when they differ
-  /// from [text] (GSUB substitution minted PUA proxies); null → [text] IS
-  /// the source. Selection offsets and copied content use this.
-  final String? sourceText;
+  /// The pre-shaping source characters this run renders.
+  String? get sourceText {
+    final s = shaped.sourceText;
+    return identical(s, shaped.pipelineText) || s == shaped.pipelineText
+        ? null
+        : s;
+  }
 
-  /// Cluster map: [sourceMap]`[i]` = offset in [originalText] of the i-th
-  /// UTF-16 boundary of [text] (length text.length+1, monotonic). Null →
-  /// identity.
-  final Int32List? sourceMap;
+  /// Cluster map: shaped→source UTF-16 boundaries; null → identity.
+  Int32List? get sourceMap => shaped.sourceMap;
 
   /// The characters selection sees and copy produces.
-  String get originalText => sourceText ?? text;
+  String get originalText => shaped.sourceText;
 
   /// Boundary map from shaped [text] offsets to [originalText] offsets.
-  int sourceOffsetAt(int shapedOffset) {
-    final map = sourceMap;
-    if (map == null) return shapedOffset;
-    if (shapedOffset < 0) return 0;
-    return map[shapedOffset < map.length ? shapedOffset : map.length - 1];
-  }
+  int sourceOffsetAt(int shapedOffset) => shaped.sourceOffsetAt(shapedOffset);
 
   /// Opaque origin marker (the source TextSpan) so hit-testing can map a
   /// glyph position back to its span (recognizers). Never inspected here.

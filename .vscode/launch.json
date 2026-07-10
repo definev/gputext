@@ -4,7 +4,7 @@
             "name": "Main",
             "type": "dart",
             "request": "launch",
-            "program": "example/lib/main.dart",
+            "program": "lib/main.dart",
             "cwd": "example",
             "flutterMode": "profile"
         },
@@ -12,7 +12,7 @@
             "name": "Bench",
             "type": "dart",
             "request": "launch",
-            "program": "example/lib/main.dart",
+            "program": "lib/main.dart",
             "cwd": "example",
             "flutterMode": "profile",
             "args": [

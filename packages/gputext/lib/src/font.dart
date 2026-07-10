@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
+
 part 'font_features.dart';
 part 'font_variations.dart';
 
@@ -181,6 +183,9 @@ class GPUFont {
   final VerticalMetrics verticalMetrics;
   final DecorationMetrics decorationMetrics;
   final ByteData _bytes;
+
+  /// Raw font file bytes (for HarfBuzz face creation). Shared with variants.
+  ByteData get fontBytes => _bytes;
   final Map<String, _TableRecord> _tables;
   final int _numGlyphs;
   final int _indexToLocFormat;
@@ -239,8 +244,43 @@ class GPUFont {
   /// scaled per draw — so one grid must serve every size the font renders at.
   static int? variationQuantizationSteps = 32;
 
+  /// Max live variant instances per base font (LRU). Bounds atlas + HB face
+  /// pressure from [variantExact] / many static weights.
+  static const variantCacheCapacity = 64;
+
   /// Variant instances by normalized coordinate key (base font only).
-  final Map<String, GPUFont> _variantCache = {};
+  /// LinkedHashMap: re-insert on hit for LRU eviction at [variantCacheCapacity].
+  final Map<String, GPUFont> _variantCache = <String, GPUFont>{};
+
+  /// Test hook: number of cached variant instances on this base font.
+  @visibleForTesting
+  int get debugVariantCacheLength => _variantCache.length;
+
+  /// Drop all cached variants (and their HB/metrics via GC / unregister).
+  /// No-op on non-base fonts.
+  void clearVariantCache() {
+    if (_base != null) return;
+    _variantCache.clear();
+  }
+
+  /// Evict HB-facing resources for this font and every cached variant.
+  /// Used by [GPUTextEngine.unregisterFont]; callers pass [evict] from the
+  /// active [TextShaper]. Optional [onEach] runs for the base and each
+  /// variant before eviction (e.g. clear segment metrics).
+  void releaseShaperCaches(
+    void Function(GPUFont font) evict, {
+    void Function(GPUFont font)? onEach,
+  }) {
+    if (_base == null) {
+      for (final v in List<GPUFont>.from(_variantCache.values)) {
+        onEach?.call(v);
+        evict(v);
+      }
+      _variantCache.clear();
+    }
+    onEach?.call(this);
+    evict(this);
+  }
 
   /// HVAR-adjusted advances, memoized per glyph id (variants only). NaN is the
   /// "not yet computed" sentinel — 0 is a legitimate advance — which keeps the

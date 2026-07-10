@@ -4,15 +4,21 @@
 // whose dimensions come from the render object's child layout; the preorder
 // placeholder index matches WidgetSpan.extractFromInlineSpan child order.
 
-import 'dart:typed_data';
-import 'dart:ui' as ui show PlaceholderAlignment;
+import 'dart:ui' as ui show PlaceholderAlignment, TextDirection;
 
 import 'package:flutter/painting.dart';
 
 import '../engine/engine.dart';
-import '../font.dart'
-    show GPUFont, GPUFontFeatures, GPUFontVariations, isZeroWidthCodePoint;
+import '../font.dart' show GPUFont, GPUFontVariations, isZeroWidthCodePoint;
 import '../paragraph.dart' as wf;
+import '../text/bidi.dart' as bidi;
+import '../text/shaped_run.dart' as sr show ShapedGlyphRun, TextDirection;
+import '../text/shaper.dart';
+
+sr.TextDirection _mapDirection(ui.TextDirection d) => switch (d) {
+  ui.TextDirection.rtl => sr.TextDirection.rtl,
+  ui.TextDirection.ltr => sr.TextDirection.ltr,
+};
 
 wf.InlinePlaceholderAlignment _mapAlignment(ui.PlaceholderAlignment a) =>
     switch (a) {
@@ -80,6 +86,8 @@ List<wf.InlineItem>? flattenSpan(
   TextScaler textScaler,
   GPUTextEngine engine, {
   List<PlaceholderDimensions> placeholderDimensions = const [],
+  ui.TextDirection textDirection = ui.TextDirection.ltr,
+  Locale? locale,
 }) {
   final items = <wf.InlineItem>[];
   var missingFont = false;
@@ -132,81 +140,82 @@ List<wf.InlineItem>? flattenSpan(
           null => null,
         };
 
-        wf.TextRun makeRun(
-          String subText,
-          GPUFont font,
-          String? sourceText,
-          Int32List? sourceMap,
-        ) => wf.TextRun(
-          text: subText,
-          font: font,
-          fontSizePx: textScaler.scale(style?.fontSize ?? 14.0),
-          color: [color.r, color.g, color.b, color.a],
-          letterSpacingPx: style?.letterSpacing ?? 0,
-          wordSpacingPx: style?.wordSpacing ?? 0,
-          height: style?.height,
-          decoration: _mapDecoration(style),
-          background: background,
-          shadows: shadows,
-          evenLeading: evenLeading,
-          sourceText: sourceText,
-          sourceMap: sourceMap,
-          source: s,
-        );
+        final fontSizePx = textScaler.scale(style?.fontSize ?? 14.0);
+        final features = {
+          for (final f in style?.fontFeatures ?? const <FontFeature>[])
+            f.feature: f.value,
+        };
+        final defaultLigatures = (style?.letterSpacing ?? 0) == 0;
+        final shaper = engine.shaper;
+        final baseDir = _mapDirection(textDirection);
+        final language = locale?.toLanguageTag();
 
-        // GSUB features (ligatures, tabular figures, stylistic sets, ...)
-        // from TextStyle.fontFeatures; tracked-out text drops the default
-        // ligature features, the same rule the basic-ligature pass applied.
-        // The cluster map ties shaped offsets back to `text` for selection.
-        final (ligated, clusterMap) = primary.applyFeaturesMapped(
-          text,
-          features: {
-            for (final f in style?.fontFeatures ?? const <FontFeature>[])
-              f.feature: f.value,
-          },
-          defaultLigatures: (style?.letterSpacing ?? 0) == 0,
-        );
-
-        // Per-character font fallback: split the text into same-font
-        // subruns. Whitespace and zero-width characters stay with the
-        // surrounding font; uncovered characters keep the primary font
-        // (.notdef) — build-time expansion delegates those to the platform.
-        // Splits happen at shaped-rune boundaries, which are always cluster
-        // boundaries, so slicing the map per subrun is safe.
+        // Font fallback + emoji itemization FIRST (source text), then bidi
+        // itemize + shape each same-font slice.
         final sub = StringBuffer();
         var current = primary;
-        var shapedPos = 0; // UTF-16 offset in `ligated`
-        var subStart = 0; // shaped offset where `sub` began
         void flushSub() {
-          if (sub.isEmpty) {
-            subStart = shapedPos;
-            return;
+          if (sub.isEmpty) return;
+          final sourceSlice = sub.toString();
+          final runs = bidi.itemize(sourceSlice, baseDirection: baseDir);
+          for (final br in runs) {
+            final slice = br.slice(sourceSlice);
+            if (slice.isEmpty) continue;
+            final shaped = shaper.shape(
+              ShapeRequest(
+                font: current,
+                text: slice,
+                fontSizePx: fontSizePx,
+                features: features,
+                defaultLigatures: defaultLigatures,
+                direction: br.direction,
+                bidiLevel: br.level,
+                script: bidi.scriptTagForRun(slice),
+                language: language,
+              ),
+            );
+            // Ensure bidi metadata is on the run even if the shaper ignored it.
+            final withBidi =
+                shaped.bidiLevel == br.level && shaped.direction == br.direction
+                ? shaped
+                : sr.ShapedGlyphRun(
+                    font: shaped.font,
+                    fontSizePx: shaped.fontSizePx,
+                    sourceText: shaped.sourceText,
+                    pipelineText: shaped.pipelineText,
+                    glyphs: shaped.glyphs,
+                    sourceMap: shaped.sourceMap,
+                    bidiLevel: br.level,
+                    direction: br.direction,
+                    appliesKerning: shaped.appliesKerning,
+                  );
+            items.add(
+              wf.TextRun(
+                text: withBidi.pipelineText,
+                font: current,
+                fontSizePx: fontSizePx,
+                color: [color.r, color.g, color.b, color.a],
+                letterSpacingPx: style?.letterSpacing ?? 0,
+                wordSpacingPx: style?.wordSpacing ?? 0,
+                height: style?.height,
+                decoration: _mapDecoration(style),
+                background: background,
+                shadows: shadows,
+                evenLeading: evenLeading,
+                sourceText: withBidi.sourceText == withBidi.pipelineText
+                    ? null
+                    : withBidi.sourceText,
+                sourceMap: withBidi.sourceMap,
+                source: s,
+                shaped: withBidi,
+              ),
+            );
           }
-          final shapedText = sub.toString();
-          String? sourceText;
-          Int32List? sourceMap;
-          if (clusterMap != null) {
-            final a = clusterMap[subStart];
-            final b = clusterMap[shapedPos];
-            final sliced = Int32List(shapedText.length + 1);
-            var identity = true;
-            for (var i = 0; i <= shapedText.length; i++) {
-              sliced[i] = clusterMap[subStart + i] - a;
-              if (sliced[i] != i) identity = false;
-            }
-            if (!identity) {
-              sourceText = text.substring(a, b);
-              sourceMap = sliced;
-            }
-          }
-          items.add(makeRun(shapedText, current, sourceText, sourceMap));
           sub.clear();
-          subStart = shapedPos;
         }
 
         final emojiFont = engine.emojiFont;
-        for (final rune in ligated.runes) {
-          final units = rune >= 0x10000 ? 2 : 1;
+        for (final rune in text.runes) {
           // Native color emoji: COLR layers render through the shader.
           if (emojiFont != null && !isZeroWidthCodePoint(rune)) {
             final layers = emojiFont.colrForCodePoint(rune);
@@ -215,7 +224,7 @@ List<wf.InlineItem>? flattenSpan(
               items.add(
                 wf.EmojiItem(
                   font: emojiFont,
-                  fontSizePx: textScaler.scale(style?.fontSize ?? 14.0),
+                  fontSizePx: fontSizePx,
                   advanceUnits: emojiFont.advanceOf(String.fromCharCode(rune)),
                   layers: layers,
                   textColor: [color.r, color.g, color.b, color.a],
@@ -224,8 +233,6 @@ List<wf.InlineItem>? flattenSpan(
                   source: s,
                 ),
               );
-              shapedPos += units;
-              subStart = shapedPos;
               continue;
             }
           }
@@ -250,7 +257,6 @@ List<wf.InlineItem>? flattenSpan(
             current = target;
           }
           sub.writeCharCode(rune);
-          shapedPos += units;
         }
         flushSub();
       }

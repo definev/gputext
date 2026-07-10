@@ -37,9 +37,15 @@ export 'src/paragraph.dart'
 export 'src/renderer.dart' show GPUTextRenderer;
 export 'src/scene.dart' show GPUTextScene, background, maxSize;
 export 'src/text/analysis.dart' show SegmentBreakKind;
+export 'src/text/bidi.dart'
+    show BidiRun, itemize, reorderVisual, paragraphLevel;
 export 'src/text/line_breaker.dart'
     show LineBreaker, GreedyLineBreaker, KnuthPlassLineBreaker;
-export 'src/text/metrics_cache.dart' show debugClearSegmentMetricsFor;
+export 'src/text/metrics_cache.dart'
+    show debugClearSegmentMetricsFor, debugSegmentMetricsLengthFor;
+export 'src/text/shaped_run.dart' show ShapedGlyph, ShapedGlyphRun, walkGlyphs;
+export 'src/text/shaper.dart' show TextShaper, LegacyGsubShaper, ShapeRequest;
+export 'src/text/harfbuzz_shaper.dart' show HarfBuzzShaper;
 export 'src/widgets/rich_text.dart' show GPURichText, RenderGPUParagraph;
 export 'src/widgets/span_flattener.dart' show flattenSpan;
 export 'src/widgets/text.dart' show GPULabel;

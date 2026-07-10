@@ -38,9 +38,9 @@
 // getBoxesForSelection, getWordBoundary, getLineBoundary) are exposed on
 // the render object.
 //
-// Remaining limits: no bidi/RTL shaping (selection order is logical ==
-// visual); locale is accepted but not used for shaping; foreground Paint
-// contributes its flat color only (no shaders).
+// Bidi/RTL (Arabic + Hebrew) is shaped via HarfBuzz + UAX #9; locale is
+// passed as the OpenType language. Knuth–Plass stays LTR-only. Foreground
+// Paint contributes its flat color only (no shaders).
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -115,7 +115,7 @@ class GPURichText extends StatelessWidget {
   final wf.LineBreaker lineBreaker;
 
   /// Accepted for RichText signature compatibility; ignored in v1
-  /// (no locale-specific shaping yet).
+  /// OpenType language for HarfBuzz shaping (BCP-47 via [Locale.toLanguageTag]).
   final Locale? locale;
 
   /// Selection registrar. Unlike RichText, a null registrar falls back to
@@ -237,7 +237,7 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
   final int? maxLines;
 
   /// Accepted for RichText signature compatibility; ignored in v1
-  /// (no locale-specific shaping or selection yet).
+  /// OpenType language for HarfBuzz shaping (BCP-47 via [Locale.toLanguageTag]).
   final Locale? locale;
   final SelectionRegistrar? selectionRegistrar;
   final Color? selectionColor;
@@ -289,6 +289,7 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
         strutStyle: strutStyle,
         textWidthBasis: textWidthBasis,
         textHeightBehavior: textHeightBehavior,
+        locale: locale,
       )
       ..registrar = selectionRegistrar
       ..selectionColor = selectionColor;
@@ -321,6 +322,7 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
       ..strutStyle = strutStyle
       ..textWidthBasis = textWidthBasis
       ..textHeightBehavior = textHeightBehavior
+      ..locale = locale
       ..registrar = selectionRegistrar
       ..selectionColor = selectionColor;
   }
@@ -359,6 +361,7 @@ class RenderGPUParagraph extends RenderBox
     this._strutStyle,
     this._textWidthBasis = TextWidthBasis.parent,
     this._textHeightBehavior,
+    this._locale,
   });
 
   final GPUTextEngine _engine = GPUText.instance;
@@ -387,6 +390,8 @@ class RenderGPUParagraph extends RenderBox
   // Superseded surface+image generations, each tagged with the number of the
   // frame whose paint replaced them. Disposed only once the engine reports a
   // frame at least that new has finished rasterizing (see _renderSurface).
+  // Cap bounds growth if timings callbacks stall during rapid resize.
+  static const _retiredCapacity = 8;
   final List<(gpu.GpuImageSurface?, ui.Image, int)> _retired = [];
   bool _timingsHooked = false;
   (int, double)? _cacheKey; // (contentGen, renderScale)
@@ -528,6 +533,13 @@ class RenderGPUParagraph extends RenderBox
   set textHeightBehavior(TextHeightBehavior? value) {
     if (_textHeightBehavior == value) return;
     _textHeightBehavior = value;
+    _needsRelayout();
+  }
+
+  Locale? _locale;
+  set locale(Locale? value) {
+    if (_locale == value) return;
+    _locale = value;
     _needsRelayout();
   }
 
@@ -685,6 +697,14 @@ class RenderGPUParagraph extends RenderBox
     }
   }
 
+  void _retireSurface(gpu.GpuImageSurface? surface, ui.Image image, int frame) {
+    while (_retired.length >= _retiredCapacity) {
+      _retired.removeAt(0).$2.dispose();
+    }
+    _retired.add((surface, image, frame));
+    _hookTimings();
+  }
+
   void _hookTimings() {
     if (_timingsHooked) return;
     _timingsHooked = true;
@@ -825,7 +845,13 @@ class RenderGPUParagraph extends RenderBox
   /// TextSpan's deep ==/hashCode; fontGeneration invalidates on font churn.
   Object? _prepareCacheKey() {
     if (childCount > 0) return null;
-    return (_text, _textScaler, _engine.fontGeneration);
+    return (
+      _text,
+      _textScaler,
+      _engine.fontGeneration,
+      _textDirection,
+      _locale,
+    );
   }
 
   /// Flatten + prepare (measure) the span, through the engine's shared
@@ -844,6 +870,8 @@ class RenderGPUParagraph extends RenderBox
       _textScaler,
       _engine,
       placeholderDimensions: dims,
+      textDirection: _textDirection,
+      locale: _locale,
     );
     if (runs == null || runs.isEmpty) return (runs, null);
     final prepared = wf.prepareParagraph(runs);
@@ -1283,7 +1311,7 @@ class RenderGPUParagraph extends RenderBox
       for (final line in para.lines) {
         for (final item in line.items) {
           if (item is wf.LineRun) {
-            _engine.atlas.ensureGlyphs(item.font, item.text);
+            _engine.atlas.ensureShaped(item.shaped);
           } else if (item is wf.LineEmoji) {
             for (final layer in item.item.layers) {
               _engine.atlas.ensureGlyphId(item.item.font, layer.glyphId);
@@ -1705,12 +1733,11 @@ class RenderGPUParagraph extends RenderBox
     // this one has finished rasterizing.
     final prevImage = _image;
     if (prevImage != null) {
-      _retired.add((
+      _retireSurface(
         identical(_surface, surface) ? null : _surface,
         prevImage,
         ui.PlatformDispatcher.instance.frameData.frameNumber,
-      ));
-      _hookTimings();
+      );
     }
     _surface = surface;
     _image = surface.currentImage;

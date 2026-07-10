@@ -24,6 +24,8 @@
 
 import 'package:characters/characters.dart';
 
+import 'bidi.dart' show isArabicLetter, isHebrewLetter;
+
 enum SegmentBreakKind {
   text,
   space,
@@ -392,8 +394,19 @@ bool _canJoinNoSpaceWordBoundary(
   if (!leftSymbol && !rightSymbol && !leftEndsJoiner) return false;
   if (containsCjk(leftText) || containsCjk(rightText)) return false;
 
+  // Arabic / Hebrew letters stick across segment boundaries (no spaces).
+  if (_isRtlLetterRun(leftText) && _isRtlLetterRun(rightText)) return true;
+
   return (leftWordLike || leftSymbol || leftAffix) &&
       (rightWordLike || rightSymbol);
+}
+
+bool _isRtlLetterRun(String text) {
+  if (text.isEmpty) return false;
+  for (final cp in text.runes) {
+    if (!isArabicLetter(cp) && !isHebrewLetter(cp)) return false;
+  }
+  return true;
 }
 
 bool _segmentContainsDecimalDigit(String text) {
