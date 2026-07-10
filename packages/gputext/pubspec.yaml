@@ -1,11 +1,23 @@
 name: gputext
-description: GPUText vector text renderer ported to Flutter GPU.
-publish_to: 'none'
-version: 0.1.0+1
+description: >-
+  GPU-accelerated vector text for Flutter. Analytic coverage shaders via
+  Flutter GPU, with HarfBuzz shaping for complex scripts and bidirectional text.
+version: 0.1.0-dev.1
+homepage: https://github.com/definev/gputext
+repository: https://github.com/definev/gputext
+issue_tracker: https://github.com/definev/gputext/issues
 resolution: workspace
 
 environment:
   sdk: ^3.13.0-252.0.dev
+  flutter: '>=3.46.0-0'
+
+topics:
+  - flutter
+  - text
+  - gpu
+  - rendering
+  - fonts
 
 dependencies:
   characters: ^1.4.0
@@ -31,7 +43,6 @@ flutter:
   assets:
     - assets/Lato-Regular.ttf
     - assets/TwemojiMozilla.ttf
-    - build/shaderbundles/
   fonts:
     - family: Lato
       fonts:

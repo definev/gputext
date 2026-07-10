@@ -10,8 +10,19 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 import '../atlas.dart';
 import '../layout.dart';
 
-const _bundleAsset = 'build/shaderbundles/gputext.shaderbundle';
-const _bundleAssetPackaged = 'packages/gputext/$_bundleAsset';
+// Legacy file-asset key (pubspec / ShaderBundleAssetMode.legacyOnly).
+const _bundleAssetLegacy = 'build/shaderbundles/gputext.shaderbundle';
+// DataAsset key from flutter_gpu_shaders (dataAssetsIfAvailable / Required).
+// Android debug builds often ship only this path.
+const _bundleAssetData =
+    'flutter_gpu_shaders/shaderbundles/gputext.shaderbundle';
+
+const _bundleAssetKeys = <String>[
+  _bundleAssetLegacy,
+  'packages/gputext/$_bundleAssetLegacy',
+  _bundleAssetData,
+  'packages/gputext/$_bundleAssetData',
+];
 
 class FrameUniforms {
   const FrameUniforms({
@@ -53,9 +64,10 @@ class GPUTextPipeline {
 
   static Future<GPUTextPipeline> create() async {
     gpu.ShaderLibrary? library;
-    // Bare key when the app IS this package (demo); packages/-prefixed when
-    // gputext is consumed as a dependency.
-    for (final asset in const [_bundleAsset, _bundleAssetPackaged]) {
+    // Try legacy + DataAsset keys, bare and packages/gputext/-prefixed.
+    // Which one is present depends on Flutter data-assets support and whether
+    // gputext is the app root or a dependency.
+    for (final asset in _bundleAssetKeys) {
       try {
         library = await gpu.ShaderLibrary.fromAsset(asset);
       } catch (_) {
@@ -66,7 +78,7 @@ class GPUTextPipeline {
     if (library == null) {
       throw Exception(
         'Failed to load gputext shader bundle '
-        '($_bundleAsset / $_bundleAssetPackaged)',
+        '(tried: ${_bundleAssetKeys.join(', ')})',
       );
     }
 

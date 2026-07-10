@@ -15,13 +15,17 @@ dependencies:
     sdk: flutter
   flutter_gpu:
     sdk: flutter
-  gputext: ^0.1.0
+  gputext: ^0.1.0-dev.1
+  # Version pinned by the Flutter SDK; used for in-app leak checks (debug).
+  leak_tracker: any
   vector_math: ^2.1.4
 
 dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_test:
     sdk: flutter
+  # Version pinned by the Flutter SDK; enables leak checks in testWidgets.
+  leak_tracker_flutter_testing: any
 
 flutter:
   uses-material-design: true

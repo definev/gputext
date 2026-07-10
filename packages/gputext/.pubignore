@@ -1,0 +1,52 @@
+# Build / IDE
+build/
+.dart_tool/
+.idea/
+*.iml
+.metadata
+
+# Test-only large font (not a package asset)
+assets/Google_Sans_Flex/
+
+# Tests that require Google_Sans_Flex
+test/variable_font_test.dart
+test/atlas_eviction_test.dart
+test/unregister_font_test.dart
+
+# HarfBuzz: keep src/ + COPYING; drop the rest of the submodule tree
+third_party/harfbuzz/test/
+third_party/harfbuzz/docs/
+third_party/harfbuzz/perf/
+third_party/harfbuzz/util/
+third_party/harfbuzz/subprojects/
+third_party/harfbuzz/.ci/
+third_party/harfbuzz/.github/
+third_party/harfbuzz/mingw-bundledlls/
+third_party/harfbuzz/*.png
+third_party/harfbuzz/NEWS
+third_party/harfbuzz/AGENTS.md
+third_party/harfbuzz/CLAUDE.md
+third_party/harfbuzz/BUILD.md
+third_party/harfbuzz/CONFIG.md
+third_party/harfbuzz/CODE_OF_AI_CONDUCT.md
+third_party/harfbuzz/RELEASING.md
+third_party/harfbuzz/SECURITY.md
+third_party/harfbuzz/TESTING.md
+third_party/harfbuzz/THANKS
+third_party/harfbuzz/README.mingw.md
+third_party/harfbuzz/README.python.md
+third_party/harfbuzz/harfbuzz.doap
+third_party/harfbuzz/replace-enum-strings.cmake
+third_party/harfbuzz/meson.build
+third_party/harfbuzz/meson_options.txt
+third_party/harfbuzz/CMakeLists.txt
+# Extra HB tree noise not needed to compile the amalgamation
+third_party/harfbuzz/src/test*.cc
+third_party/harfbuzz/src/gen-*.py
+third_party/harfbuzz/src/check-*.py
+third_party/harfbuzz/src/rust/
+third_party/harfbuzz/src/wasm/
+third_party/harfbuzz/src/*.py
+third_party/harfbuzz/src/*.pc.in
+third_party/harfbuzz/src/*.cmake.in
+third_party/harfbuzz/AUTHORS

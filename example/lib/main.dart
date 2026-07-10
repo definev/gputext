@@ -15,6 +15,8 @@ import 'package:gputext/gputext.dart';
 import 'bench/bench_page.dart';
 import 'google_sans_flex_demo.dart';
 import 'justification_demo.dart';
+import 'leak_report_page.dart';
+import 'leak_tracking.dart';
 import 'pretext_demo.dart';
 import 'rtl_demo.dart';
 import 'variable_font_demo.dart';
@@ -32,6 +34,7 @@ gpu.PixelFormat gpuTextSurfaceFormat(gpu.GpuContext context) {
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  maybeStartLeakTracking();
   // Bench mode measures cold init itself; everything else warms eagerly.
   if (io.Platform.environment['GPUTEXT_DEMO'] != 'bench') {
     GPUText.initialize(); // warm fonts + pipeline for the widget demo
@@ -73,6 +76,7 @@ class GPUTextApp extends StatelessWidget {
         'gsf' => const GoogleSansFlexDemoPage(),
         'vars' => const VariableFontDemoPage(),
         'rtl' => const RtlDemoPage(),
+        'leaks' => const LeakReportPage(),
         _ => const GPUTextDemoPage(),
       },
     );
@@ -517,6 +521,33 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                                 'Variable fonts',
                                 const VariableFontDemoPage(),
                               ),
+                              if (leakTrackingActive)
+                                TextButton(
+                                  onPressed: () async {
+                                    final leaks = await collectAndReportLeaks();
+                                    if (!context.mounted) return;
+                                    await Navigator.of(context).push(
+                                      MaterialPageRoute<void>(
+                                        builder: (_) =>
+                                            LeakReportPage(initialLeaks: leaks),
+                                      ),
+                                    );
+                                  },
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: const Color(0xFFFFCC80),
+                                    minimumSize: Size.zero,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 8,
+                                    ),
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  child: const Text(
+                                    'Leak report',
+                                    style: TextStyle(fontSize: 13),
+                                  ),
+                                ),
                             ],
                           ),
                         ),
