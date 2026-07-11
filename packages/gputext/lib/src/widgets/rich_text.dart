@@ -59,6 +59,7 @@ import '../engine/pipeline.dart';
 import '../font.dart' show GPUFont;
 import '../layout.dart' as wf show LayoutBounds;
 import '../paragraph.dart' as wf;
+import '../timeline.dart';
 import 'emoji.dart';
 import 'span_flattener.dart';
 
@@ -401,6 +402,12 @@ class RenderGPUParagraph extends RenderBox
   /// to attribute re-render churn; reset between scenarios.
   static int debugSurfaceRenders = 0;
 
+  /// Process-wide count of offscreen surface (texture) allocations — the
+  /// subset of [debugSurfaceRenders] that could not reuse the previous
+  /// surface. With bucketed allocation, a steady resize/width animation
+  /// should hold this near zero while renders keep counting.
+  static int debugSurfaceAllocs = 0;
+
   /// Bytes of the emitted per-glyph instance buffer (64 per glyph).
   int get debugInstanceBytes => _emitted?.instances.lengthInBytes ?? 0;
 
@@ -676,7 +683,31 @@ class RenderGPUParagraph extends RenderBox
     _engine.removeListener(_onEngineChanged);
     _engine.unregisterAtlasClient(this);
     _scaleHint?.removeListener(_onScaleHint);
+    // A detached render object (keep-alive list page, offstage tab, popped
+    // route) must not pin a rendered image and surface texture pool — that
+    // is width×height×4 device bytes per offscreen paragraph. Reattaching
+    // repaints, which rebuilds them on demand.
+    _releaseGpuArtifacts();
     super.detach();
+  }
+
+  /// Drop the GPU-backed paint artifacts. CPU layout state (paragraph,
+  /// emitted instance floats) survives; the next paint re-uploads and
+  /// re-renders from it.
+  void _releaseGpuArtifacts() {
+    if (_timingsHooked) {
+      _timingsHooked = false;
+      SchedulerBinding.instance.removeTimingsCallback(_onFrameTimings);
+    }
+    for (final (_, img, _) in _retired) {
+      img.dispose();
+    }
+    _retired.clear();
+    _image?.dispose();
+    _image = null;
+    _surface = null;
+    _instanceBuffer = null;
+    _cacheKey = null;
   }
 
   /// Timings callback: frames reported here have finished rasterizing, so a
@@ -714,22 +745,13 @@ class RenderGPUParagraph extends RenderBox
   @override
   void dispose() {
     _disposeFragments();
-    // detach() normally does this; belt-and-braces so a disposed render object
-    // can never pin fonts in the atlas forever.
+    // detach() normally does all of this; belt-and-braces so a disposed
+    // render object can never pin fonts, engine listeners, or GPU artifacts.
+    _engine.removeListener(_onEngineChanged);
     _engine.unregisterAtlasClient(this);
-    if (_timingsHooked) {
-      _timingsHooked = false;
-      SchedulerBinding.instance.removeTimingsCallback(_onFrameTimings);
-    }
+    _scaleHint?.removeListener(_onScaleHint);
+    _releaseGpuArtifacts();
     _clipHandle.layer = null;
-    for (final (_, img, _) in _retired) {
-      img.dispose();
-    }
-    _retired.clear();
-    _image?.dispose();
-    _image = null;
-    _surface = null;
-    _instanceBuffer = null;
     super.dispose();
   }
 
@@ -845,6 +867,20 @@ class RenderGPUParagraph extends RenderBox
   /// TextSpan's deep ==/hashCode; fontGeneration invalidates on font churn.
   Object? _prepareCacheKey() {
     if (childCount > 0) return null;
+    // Spans with recognizers stay out of the process-lifetime shared cache:
+    // an entry would pin the recognizer and everything its callbacks capture
+    // (State, BuildContext) after the widget is gone — and since TextSpan ==
+    // compares recognizers by identity, a widget minting a fresh recognizer
+    // per build would insert a new dead entry on every rebuild.
+    var hasRecognizer = false;
+    _text.visitChildren((span) {
+      if (span is TextSpan && span.recognizer != null) {
+        hasRecognizer = true;
+        return false;
+      }
+      return true;
+    });
+    if (hasRecognizer) return null;
     return (
       _text,
       _textScaler,
@@ -875,7 +911,15 @@ class RenderGPUParagraph extends RenderBox
     );
     if (runs == null || runs.isEmpty) return (runs, null);
     final prepared = wf.prepareParagraph(runs);
-    if (key != null) _engine.layoutCachePut(key, (runs, prepared));
+    if (key != null) {
+      // Cost in UTF-16 units so the engine can bound cache bytes, not just
+      // entry count (shaped-run size tracks text length).
+      var cost = 0;
+      for (final r in runs) {
+        cost += r is wf.TextRun ? r.originalText.length : 1;
+      }
+      _engine.layoutCachePut(key, (runs, prepared), cost: cost);
+    }
     return (runs, prepared);
   }
 
@@ -946,62 +990,64 @@ class RenderGPUParagraph extends RenderBox
 
   @override
   void performLayout() {
-    _layoutDims = childCount == 0
-        ? const []
-        : layoutInlineChildren(
-            constraints.maxWidth,
-            ChildLayoutHelper.layoutChild,
-            ChildLayoutHelper.getBaseline,
-          );
-    final r = _computeLayout(constraints, _layoutDims);
-    _para = r.para;
-    _items = r.runs;
-    _boxWidth = r.boxWidth;
-    _lastWrapWidth = r.wrapWidth;
-    _lastMaxWidth = constraints.maxWidth;
-    _paraDirty = false;
-    _contentGen++;
-    size = r.size;
-    // Recognizers, hover callbacks, and non-default mouse cursors all need
-    // span hit boxes.
-    bool interactive(Object? source) =>
-        source is TextSpan &&
-        (source.recognizer != null ||
-            source.onEnter != null ||
-            source.onExit != null ||
-            source.mouseCursor != MouseCursor.defer);
-    _hasInteractiveSpans =
-        r.runs?.any(
-          (i) =>
-              (i is wf.TextRun && interactive(i.source)) ||
-              (i is wf.EmojiItem && interactive(i.source)),
-        ) ??
-        false;
-    _hitBoxes = const [];
-    final para = r.para;
-    if ((childCount > 0 || _hasInteractiveSpans) && para != null) {
-      final walk = wf.emitInstances(para, r.boxWidth, _resolvedAlign, null);
-      _hitBoxes = walk.hitBoxes;
-      if (childCount > 0) {
-        positionInlineChildren([
-          for (final b in walk.placeholders)
-            ui.TextBox.fromLTRBD(
-              b.left,
-              b.top,
-              b.left + b.width,
-              b.top + b.height,
-              _textDirection,
-            ),
-        ]);
+    GPUTextTimeline.timeSync(GPUTextTimeline.performLayout, () {
+      _layoutDims = childCount == 0
+          ? const []
+          : layoutInlineChildren(
+              constraints.maxWidth,
+              ChildLayoutHelper.layoutChild,
+              ChildLayoutHelper.getBaseline,
+            );
+      final r = _computeLayout(constraints, _layoutDims);
+      _para = r.para;
+      _items = r.runs;
+      _boxWidth = r.boxWidth;
+      _lastWrapWidth = r.wrapWidth;
+      _lastMaxWidth = constraints.maxWidth;
+      _paraDirty = false;
+      _contentGen++;
+      size = r.size;
+      // Recognizers, hover callbacks, and non-default mouse cursors all need
+      // span hit boxes.
+      bool interactive(Object? source) =>
+          source is TextSpan &&
+          (source.recognizer != null ||
+              source.onEnter != null ||
+              source.onExit != null ||
+              source.mouseCursor != MouseCursor.defer);
+      _hasInteractiveSpans =
+          r.runs?.any(
+            (i) =>
+                (i is wf.TextRun && interactive(i.source)) ||
+                (i is wf.EmojiItem && interactive(i.source)),
+          ) ??
+          false;
+      _hitBoxes = const [];
+      final para = r.para;
+      if ((childCount > 0 || _hasInteractiveSpans) && para != null) {
+        final walk = wf.emitInstances(para, r.boxWidth, _resolvedAlign, null);
+        _hitBoxes = walk.hitBoxes;
+        if (childCount > 0) {
+          positionInlineChildren([
+            for (final b in walk.placeholders)
+              ui.TextBox.fromLTRBD(
+                b.left,
+                b.top,
+                b.left + b.width,
+                b.top + b.height,
+                _textDirection,
+              ),
+          ]);
+        }
       }
-    }
-    // Selection geometry (handle points, rects) shifts with layout.
-    final fragments = _fragments;
-    if (fragments != null) {
-      for (final f in fragments) {
-        f.didChangeParagraphLayout();
+      // Selection geometry (handle points, rects) shifts with layout.
+      final fragments = _fragments;
+      if (fragments != null) {
+        for (final f in fragments) {
+          f.didChangeParagraphLayout();
+        }
       }
-    }
+    });
   }
 
   @override
@@ -1252,6 +1298,10 @@ class RenderGPUParagraph extends RenderBox
       ordinal++;
       return true;
     });
+    // Nodes past the highest ordinal this assemble produced belong to spans
+    // that no longer exist; keeping them would retain SemanticsNodes for the
+    // render object's lifetime after rich content shrinks.
+    cache.removeWhere((k, _) => k >= ordinal);
 
     // Untagged (or unexpectedly ordered) child nodes must never be dropped.
     while (childIndex < childNodes.length) {
@@ -1290,50 +1340,52 @@ class RenderGPUParagraph extends RenderBox
   }
 
   void _prepareContent() {
-    if (_paraDirty) {
-      // Paint-only span change (e.g. colors): re-break at the same widths;
-      // metrics are unchanged by construction of RenderComparison.paint.
-      final (runs, prepared) = _flattenAndPrepare(_layoutDims);
-      if (prepared != null) {
-        _para = _break(prepared, _lastWrapWidth, _lastMaxWidth);
-        _items = runs;
+    GPUTextTimeline.timeSync(GPUTextTimeline.prepareContent, () {
+      if (_paraDirty) {
+        // Paint-only span change (e.g. colors): re-break at the same widths;
+        // metrics are unchanged by construction of RenderComparison.paint.
+        final (runs, prepared) = _flattenAndPrepare(_layoutDims);
+        if (prepared != null) {
+          _para = _break(prepared, _lastWrapWidth, _lastMaxWidth);
+          _items = runs;
+        }
+        _paraDirty = false;
       }
-      _paraDirty = false;
-    }
-    final para = _para;
-    if (para == null) return;
-    // A compaction relocated every rowBase, so instances emitted against the
-    // old layout are stale even when our own content hasn't changed.
-    final structureGen = _engine.atlas.structureGeneration;
-    if (_emitted == null ||
-        _emittedGen != _contentGen ||
-        _emittedStructureGen != structureGen) {
-      for (final line in para.lines) {
-        for (final item in line.items) {
-          if (item is wf.LineRun) {
-            _engine.atlas.ensureShaped(item.shaped);
-          } else if (item is wf.LineEmoji) {
-            for (final layer in item.item.layers) {
-              _engine.atlas.ensureGlyphId(item.item.font, layer.glyphId);
+      final para = _para;
+      if (para == null) return;
+      // A compaction relocated every rowBase, so instances emitted against the
+      // old layout are stale even when our own content hasn't changed.
+      final structureGen = _engine.atlas.structureGeneration;
+      if (_emitted == null ||
+          _emittedGen != _contentGen ||
+          _emittedStructureGen != structureGen) {
+        for (final line in para.lines) {
+          for (final item in line.items) {
+            if (item is wf.LineRun) {
+              _engine.atlas.ensureShaped(item.shaped);
+            } else if (item is wf.LineEmoji) {
+              for (final layer in item.item.layers) {
+                _engine.atlas.ensureGlyphId(item.item.font, layer.glyphId);
+              }
             }
           }
         }
+        _emitted = wf.emitInstances(
+          para,
+          _boxWidth,
+          _resolvedAlign,
+          _engine.atlas,
+        );
+        _hitBoxes = _emitted!.hitBoxes;
+        _instanceBuffer = null;
+        _emittedGen = _contentGen;
+        // Re-read: ensureGlyphs above cannot compact, but it can only grow, and
+        // emitInstances read the table as it stands now.
+        _emittedStructureGen = _engine.atlas.structureGeneration;
+        _cacheKey = null;
       }
-      _emitted = wf.emitInstances(
-        para,
-        _boxWidth,
-        _resolvedAlign,
-        _engine.atlas,
-      );
-      _hitBoxes = _emitted!.hitBoxes;
-      _instanceBuffer = null;
-      _emittedGen = _contentGen;
-      // Re-read: ensureGlyphs above cannot compact, but it can only grow, and
-      // emitInstances read the table as it stands now.
-      _emittedStructureGen = _engine.atlas.structureGeneration;
-      _cacheKey = null;
-    }
-    _engine.scheduleAtlasSweepIfNeeded();
+      _engine.scheduleAtlasSweepIfNeeded();
+    });
   }
 
   double _quantizeScale(double s) {
@@ -1575,11 +1627,13 @@ class RenderGPUParagraph extends RenderBox
       }
       final image = _image;
       if (rendered && image != null) {
+        // The used region only — the bucketed allocation may be larger, and
+        // its slack is cleared-transparent, not content.
         final src = Rect.fromLTWH(
           0,
           0,
-          image.width.toDouble(),
-          image.height.toDouble(),
+          _imageDevRect.width,
+          _imageDevRect.height,
         );
         final dst = Rect.fromLTWH(
           offset.dx + _imageDevRect.left / _imageScale,
@@ -1654,6 +1708,15 @@ class RenderGPUParagraph extends RenderBox
     wf.ParagraphInstances emitted,
     wf.LayoutBounds ink,
     double scale,
+  ) => GPUTextTimeline.timeSync(
+    GPUTextTimeline.render,
+    () => _renderSurfaceImpl(emitted, ink, scale),
+  );
+
+  bool _renderSurfaceImpl(
+    wf.ParagraphInstances emitted,
+    wf.LayoutBounds ink,
+    double scale,
   ) {
     final textures = _engine.prepareTextures();
     if (textures == null) return false;
@@ -1672,11 +1735,24 @@ class RenderGPUParagraph extends RenderBox
 
     _instanceBuffer ??= _engine.pipeline.uploadInstances(emitted.instances);
     var surface = _surface;
-    final sizeChanged =
-        surface == null || surface.width != w || surface.height != h;
+    // Surface allocations are bucketed: glyphs render into the top-left w×h
+    // of a surface whose dims round up to _surfaceDimBucket, and the blit
+    // samples only that sub-rect. The few-device-px ink drift of a live
+    // resize or width animation then reuses the surface instead of paying a
+    // texture allocation (plus retire churn) every frame. A surface is kept
+    // while the used rect still fits and the surface wastes < 4× the
+    // bucketed need, so an oscillating width settles on one max-sized
+    // surface instead of reallocating at every bucket crossing.
+    final allocW = _bucketDim(w);
+    final allocH = _bucketDim(h);
+    final fits =
+        surface != null &&
+        surface.width >= w &&
+        surface.height >= h &&
+        surface.width * surface.height <= allocW * allocH * 4;
     gpu.GpuSurfaceFrame? frame;
     try {
-      if (sizeChanged) {
+      if (!fits) {
         // Never resize() a live surface: while a presented image is still
         // referenced by the compositor (in-flight raster, retained layers),
         // resizing can leave later frames on a stale-size backing texture —
@@ -1684,10 +1760,11 @@ class RenderGPUParagraph extends RenderBox
         // scale after live window resizes. A fresh surface gets fresh
         // textures; the old one is retired below with its presented image.
         surface = gpu.gpuContext.createImageSurface(
-          w,
-          h,
+          allocW,
+          allocH,
           format: _surfaceFormat(),
         );
+        debugSurfaceAllocs++;
       }
       frame = surface.acquireNextFrame();
       final cmd = gpu.gpuContext.createCommandBuffer();
@@ -1703,8 +1780,11 @@ class RenderGPUParagraph extends RenderBox
       _engine.pipeline.renderInstances(
         pass: pass,
         frame: FrameUniforms(
-          width: w.toDouble(),
-          height: h.toDouble(),
+          // The full allocation, not the used w×h: the vertex shader maps
+          // device px → NDC against these, which pins the used rect to the
+          // texture's top-left where the blit's src rect samples it.
+          width: surface.width.toDouble(),
+          height: surface.height.toDouble(),
           style: [_coverageGamma, _coverageSharp],
           cam: [scale, scale, -devLeft.toDouble(), -devTop.toDouble()],
           guardPx: _minificationGuardPx,
@@ -1749,6 +1829,16 @@ class RenderGPUParagraph extends RenderBox
       h.toDouble(),
     );
     return true;
+  }
+
+  /// Round a needed surface dimension up to the allocation bucket. 64 device
+  /// px keeps worst-case waste at one bucket strip per axis (tiny paragraphs
+  /// pay a 64×64 floor, a few KB) while making resize-driven ink drift land
+  /// in the same bucket frame over frame.
+  static int _bucketDim(int px) {
+    const bucket = 64;
+    final rounded = ((px + bucket - 1) ~/ bucket) * bucket;
+    return math.min(rounded, _maxSurfaceDim);
   }
 
   static gpu.PixelFormat _surfaceFormat() {

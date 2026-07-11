@@ -351,6 +351,7 @@ class _BenchPageState extends State<BenchPage>
     _progress('${sc.id} [$engineName]');
     GPUText.instance.debugResetCacheCounters();
     RenderGPUParagraph.debugSurfaceRenders = 0;
+    RenderGPUParagraph.debugSurfaceAllocs = 0;
     final atlasBefore = _atlasCounters();
 
     _running = sc;
@@ -404,6 +405,7 @@ class _BenchPageState extends State<BenchPage>
           'atlasCurveFloatsDelta': atlasAfter.curves - atlasBefore.curves,
           'atlasGlyphsDelta': atlasAfter.glyphs - atlasBefore.glyphs,
           'surfaceRenders': RenderGPUParagraph.debugSurfaceRenders,
+          'surfaceAllocs': RenderGPUParagraph.debugSurfaceAllocs,
         },
         extra: {
           if (wallMs > 0)
@@ -469,6 +471,7 @@ class _BenchPageState extends State<BenchPage>
         _progress('frame.atlas_$phase [$engineName]');
         GPUText.instance.debugResetCacheCounters();
         RenderGPUParagraph.debugSurfaceRenders = 0;
+        RenderGPUParagraph.debugSurfaceAllocs = 0;
         final before = _atlasCounters();
         final start = _recorder.currentFrame();
         await _mount((_) => zhParagraph(engine));
@@ -501,6 +504,7 @@ class _BenchPageState extends State<BenchPage>
               'atlasCurveFloatsDelta': after.curves - before.curves,
               'atlasGlyphsDelta': after.glyphs - before.glyphs,
               'surfaceRenders': RenderGPUParagraph.debugSurfaceRenders,
+              'surfaceAllocs': RenderGPUParagraph.debugSurfaceAllocs,
             },
           ),
         );
@@ -643,6 +647,21 @@ class _BenchPageState extends State<BenchPage>
         TextSpan(text: sentences[4], style: benchStyle()),
         TextAlign.start,
         4,
+      ),
+      (
+        'vis.rich_interleave',
+        complexInterleaveSpan(
+          seed: para,
+          tick: 0,
+          paragraph: 0,
+          emojiFragment: '👩‍💻 👨‍👩‍👧‍👦',
+          cjkFragment: _cjkFont != null
+              ? ctx.corpus.zhZhufu.substring(0, 24)
+              : '価格¥12,800',
+          cjkFamily: _cjkFont != null ? benchCjkFamily : null,
+        ),
+        TextAlign.start,
+        1,
       ),
     ];
     if (!mounted) return;

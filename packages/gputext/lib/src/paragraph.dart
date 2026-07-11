@@ -33,6 +33,7 @@ import 'text/inline_items.dart';
 import 'text/line_break.dart';
 import 'text/line_breaker.dart';
 import 'text/prepare.dart';
+import 'timeline.dart';
 
 export 'text/inline_items.dart';
 export 'text/line_breaker.dart';
@@ -465,6 +466,15 @@ ParagraphLines layoutPreparedLines(
   PreparedParagraph prepared,
   double wrapWidth,
   ParagraphStyle style,
+) => GPUTextTimeline.timeSync(
+  GPUTextTimeline.layout,
+  () => _layoutPreparedLines(prepared, wrapWidth, style),
+);
+
+ParagraphLines _layoutPreparedLines(
+  PreparedParagraph prepared,
+  double wrapWidth,
+  ParagraphStyle style,
 ) {
   final lines = <LineMetrics>[];
   final maxLines = style.maxLines;
@@ -754,23 +764,29 @@ LineMetrics _materializeLine(
 /// Reorder [line.items] into visual order (UAX #9 L2) using each TextRun's
 /// bidi level. Emoji/placeholders inherit the surrounding level (0).
 void _reorderLineVisual(LineMetrics line) {
-  final items = List<LineItem>.of(line.items);
+  final items = line.items;
   if (items.length <= 1) return;
+  // Pure-LTR lines (the common case) allocate nothing.
   var anyRtl = false;
-  final levels = <int>[];
   for (final item in items) {
-    final level = switch (item) {
-      LineRun r => r.bidiLevel,
-      _ => 0,
-    };
-    if (level.isOdd) anyRtl = true;
-    levels.add(level);
+    if (item is LineRun && item.bidiLevel.isOdd) {
+      anyRtl = true;
+      break;
+    }
   }
   if (!anyRtl) return;
+  final levels = [
+    for (final item in items)
+      switch (item) {
+        LineRun r => r.bidiLevel,
+        _ => 0,
+      },
+  ];
   final order = bidi.reorderVisual(levels);
+  final logical = List<LineItem>.of(items);
   line.items
     ..clear()
-    ..addAll([for (final i in order) items[i]]);
+    ..addAll([for (final i in order) logical[i]]);
 }
 
 /// Baseline-to-baseline line advance for a font/size (public: widgets use it
@@ -1011,8 +1027,37 @@ ParagraphInstances emitInstances(
   GlyphTable? table, {
   double x = 0,
   double top = 0,
+}) => GPUTextTimeline.timeSync(
+  GPUTextTimeline.emit,
+  () => _emitInstances(para, boxWidth, align, table, x: x, top: top),
+);
+
+ParagraphInstances _emitInstances(
+  ParagraphLines para,
+  double boxWidth,
+  TextAlign align,
+  GlyphTable? table, {
+  double x = 0,
+  double top = 0,
 }) {
-  final out = <double>[];
+  // Instances land in a pre-sized typed buffer: a growable List<double>
+  // boxes every element (same reason the atlas stores are typed), and this
+  // walk re-runs on every content change and after every atlas compaction.
+  // The glyph count bounds the size; table misses just leave the tail unused.
+  var maxGlyphs = 0;
+  if (table != null) {
+    for (final line in para.lines) {
+      for (final item in line.items) {
+        if (item is LineRun) {
+          maxGlyphs += item.shaped.glyphs.length;
+        } else if (item is LineEmoji) {
+          maxGlyphs += item.item.layers.length;
+        }
+      }
+    }
+  }
+  final out = Float32List(maxGlyphs * floatsPerInstance);
+  var outLen = 0;
   final placeholders = <PlaceholderBox>[];
   final decorations = <DecorationLine>[];
   final hitBoxes = <HitSpanBox>[];
@@ -1046,24 +1091,24 @@ ParagraphInstances emitInstances(
           if (gl == null) continue;
           final c = layer.color ?? e.textColor;
           final a = c.length > 3 ? c[3] : 1.0;
-          out.addAll([
-            pen,
-            baselineY,
-            scale,
-            0.0,
-            gl.bbox[0],
-            gl.bbox[1],
-            gl.bbox[2],
-            gl.bbox[3],
-            c[0],
-            c[1],
-            c[2],
-            a,
-            gl.rowBase.toDouble(),
-            gl.bandCount.toDouble(),
-            gl.y0,
-            gl.invH,
-          ]);
+          final o = outLen;
+          out[o] = pen;
+          out[o + 1] = baselineY;
+          out[o + 2] = scale;
+          out[o + 3] = 0.0;
+          out[o + 4] = gl.bbox[0];
+          out[o + 5] = gl.bbox[1];
+          out[o + 6] = gl.bbox[2];
+          out[o + 7] = gl.bbox[3];
+          out[o + 8] = c[0];
+          out[o + 9] = c[1];
+          out[o + 10] = c[2];
+          out[o + 11] = a;
+          out[o + 12] = gl.rowBase.toDouble();
+          out[o + 13] = gl.bandCount.toDouble();
+          out[o + 14] = gl.y0;
+          out[o + 15] = gl.invH;
+          outLen = o + floatsPerInstance;
           final gx0 = pen + gl.bbox[0] * scale;
           final gx1 = pen + gl.bbox[2] * scale;
           final gy0 = baselineY + gl.bbox[1] * scale;
@@ -1151,24 +1196,24 @@ ParagraphInstances emitInstances(
         if (gl != null) {
           final drawX = pen + g.xOffset * scale;
           final drawY = baselineY - g.yOffset * scale;
-          out.addAll([
-            drawX,
-            drawY,
-            scale,
-            rule,
-            gl.bbox[0],
-            gl.bbox[1],
-            gl.bbox[2],
-            gl.bbox[3],
-            color[0],
-            color[1],
-            color[2],
-            a,
-            gl.rowBase.toDouble(),
-            gl.bandCount.toDouble(),
-            gl.y0,
-            gl.invH,
-          ]);
+          final o = outLen;
+          out[o] = drawX;
+          out[o + 1] = drawY;
+          out[o + 2] = scale;
+          out[o + 3] = rule;
+          out[o + 4] = gl.bbox[0];
+          out[o + 5] = gl.bbox[1];
+          out[o + 6] = gl.bbox[2];
+          out[o + 7] = gl.bbox[3];
+          out[o + 8] = color[0];
+          out[o + 9] = color[1];
+          out[o + 10] = color[2];
+          out[o + 11] = a;
+          out[o + 12] = gl.rowBase.toDouble();
+          out[o + 13] = gl.bandCount.toDouble();
+          out[o + 14] = gl.y0;
+          out[o + 15] = gl.invH;
+          outLen = o + floatsPerInstance;
           final gx0 = drawX + gl.bbox[0] * scale;
           final gx1 = drawX + gl.bbox[2] * scale;
           final gy0 = drawY + gl.bbox[1] * scale;
@@ -1276,8 +1321,13 @@ ParagraphInstances emitInstances(
     y += line.height;
   }
 
+  // Exact-size copy on table misses: callers hand instances.buffer to the
+  // GPU whole, so a view over unused capacity would upload (and retain) it.
+  final instances = outLen == out.length
+      ? out
+      : (Float32List(outLen)..setRange(0, outLen, out));
   return ParagraphInstances(
-    instances: Float32List.fromList(out),
+    instances: instances,
     inkBounds: inkMinX.isFinite
         ? LayoutBounds(
             minX: inkMinX,

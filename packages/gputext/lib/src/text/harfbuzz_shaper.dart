@@ -3,6 +3,7 @@
 // by the engine when bindings fail to load.
 
 import 'dart:ffi';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
@@ -11,42 +12,25 @@ import '../native/harfbuzz_bindings.dart';
 import 'shaped_run.dart';
 import 'shaper.dart';
 
-/// Native HB objects + owned font bytes. Finalizer token must not retain the
-/// Dart cache entry (or the GPUFont), only these pointers + bindings.
-class _HbNativeHandles {
-  _HbNativeHandles({
-    required this.hb,
-    required this.blob,
-    required this.face,
-    required this.font,
-    required this.ownedBytes,
-  });
+/// One `hb_face` per distinct font-byte buffer, shared by a base font and all
+/// its variant instances (they alias the same [ByteData]). The face owns the
+/// sole native copy of the file bytes: the blob frees them via its destroy
+/// callback, and after creation the face holds the only blob reference.
+class _HbSharedFace implements Finalizable {
+  _HbSharedFace(this.face);
 
-  final HarfBuzzBindings hb;
-  final Pointer<HbBlob> blob;
   final Pointer<HbFace> face;
-  final Pointer<HbFont> font;
-  final Pointer<Uint8> ownedBytes;
-
-  var _destroyed = false;
-
-  void destroy() {
-    if (_destroyed) return;
-    _destroyed = true;
-    hb.hbFontDestroy(font);
-    hb.hbFaceDestroy(face);
-    hb.hbBlobDestroy(blob);
-    calloc.free(ownedBytes);
-  }
 }
 
-/// Face/font cache entry keyed by [GPUFont] identity.
-class _HbFaceCache {
-  _HbFaceCache(this.handles);
+/// Per-[GPUFont] `hb_font` (scale/variations state), keyed by font identity.
+class _HbFontEntry implements Finalizable {
+  _HbFontEntry(this.font, this.sharedFace);
 
-  final _HbNativeHandles handles;
+  final Pointer<HbFont> font;
 
-  Pointer<HbFont> get font => handles.font;
+  /// Keeps the shared-face box (and its Expando entry) warm while any font
+  /// made from it is alive; the native refcount protects the face regardless.
+  final _HbSharedFace sharedFace;
 }
 
 /// HarfBuzz-backed shaper. Construct only when [HarfBuzzBindings.tryLoad]
@@ -55,30 +39,51 @@ class HarfBuzzShaper implements TextShaper {
   HarfBuzzShaper(this._hb);
 
   final HarfBuzzBindings _hb;
-  final _faces = Expando<_HbFaceCache>('gputextHbFace');
+  final _fonts = Expando<_HbFontEntry>('gputextHbFont');
+  final _sharedFaces = Expando<_HbSharedFace>('gputextHbFace');
 
   /// Weak tracking so [evictAllFonts] can find live entries (Expando is not
   /// iterable). Does not keep fonts alive.
   final _weakFonts = <WeakReference<GPUFont>>[];
 
-  static final _finalizer = Finalizer<_HbNativeHandles>((h) => h.destroy());
+  // NativeFinalizers (unlike Dart Finalizers) also run at isolate shutdown /
+  // hot restart, so native handles cannot outlive the process's Dart state.
+  // Held in a static map so attachments stay guaranteed even if the shaper
+  // instance itself is replaced and collected; at most two entries since
+  // bindings are a process-wide singleton.
+  static final _nativeFinalizers = <int, NativeFinalizer>{};
+  static NativeFinalizer _finalizerFor(Pointer<NativeFinalizerFunction> fn) =>
+      _nativeFinalizers[fn.address] ??= NativeFinalizer(fn);
+
+  NativeFinalizer get _fontFinalizer => _finalizerFor(_hb.hbFontDestroyPtr);
+  NativeFinalizer get _faceFinalizer => _finalizerFor(_hb.hbFaceDestroyPtr);
 
   @override
   void evictFont(GPUFont font) {
-    final entry = _faces[font];
+    final entry = _fonts[font];
     if (entry == null) return;
-    _faces[font] = null;
-    _finalizer.detach(entry);
-    entry.handles.destroy();
+    _fonts[font] = null;
+    _fontFinalizer.detach(entry);
+    _hb.hbFontDestroy(entry.font);
+    // The shared face is left to the native refcount + its own finalizer:
+    // other variants of the same file may still be using it.
+    _weakFonts.removeWhere((w) {
+      final t = w.target;
+      return t == null || identical(t, font);
+    });
   }
 
   @override
   void evictAllFonts() {
+    final live = <GPUFont>[];
     for (final weak in _weakFonts) {
       final font = weak.target;
-      if (font != null) evictFont(font);
+      if (font != null) live.add(font);
     }
     _weakFonts.clear();
+    for (final font in live) {
+      evictFont(font);
+    }
   }
 
   @override
@@ -96,21 +101,22 @@ class HarfBuzzShaper implements TextShaper {
       );
     }
 
-    final cache = _faceFor(request.font);
+    final entry = _fontFor(request.font);
     final upem = request.font.unitsPerEm;
     // Scale font to font units so advances match GPUFont.advanceOfGlyphId.
-    _hb.hbFontSetScale(cache.font, upem, upem);
+    _hb.hbFontSetScale(entry.font, upem, upem);
 
     final buf = _hb.hbBufferCreate();
     Pointer<HbFeature> featPtr = nullptr;
     try {
       final units = request.text.codeUnits;
       final ptr = calloc<Uint16>(units.length);
-      for (var i = 0; i < units.length; i++) {
-        ptr[i] = units[i];
+      try {
+        ptr.asTypedList(units.length).setAll(0, units);
+        _hb.hbBufferAddUtf16(buf, ptr, units.length, 0, units.length);
+      } finally {
+        calloc.free(ptr);
       }
-      _hb.hbBufferAddUtf16(buf, ptr, units.length, 0, units.length);
-      calloc.free(ptr);
 
       _hb.hbBufferSetDirection(
         buf,
@@ -138,7 +144,7 @@ class HarfBuzzShaper implements TextShaper {
       final features = _buildFeatures(request);
       featPtr = features.$1;
       final featCount = features.$2;
-      _hb.hbShape(cache.font, buf, featPtr, featCount);
+      _hb.hbShape(entry.font, buf, featPtr, featCount);
 
       final len = _hb.hbBufferGetLength(buf);
       final infos = _hb.hbBufferGetGlyphInfos(buf, nullptr);
@@ -254,57 +260,79 @@ class HarfBuzzShaper implements TextShaper {
     if (specs.isEmpty) return (nullptr, 0);
     final ptr = calloc<HbFeature>(specs.length);
     var n = 0;
-    for (final s in specs) {
-      final utf = s.toNativeUtf8();
-      final ok = _hb.hbFeatureFromString(utf, s.length, ptr + n);
-      calloc.free(utf);
-      if (ok != 0) {
-        n++;
+    try {
+      for (final s in specs) {
+        final utf = s.toNativeUtf8();
+        final ok = _hb.hbFeatureFromString(utf, s.length, ptr + n);
+        calloc.free(utf);
+        if (ok != 0) {
+          n++;
+        }
       }
+    } catch (_) {
+      calloc.free(ptr);
+      rethrow;
     }
     return (ptr, n);
   }
 
-  _HbFaceCache _faceFor(GPUFont font) {
-    final existing = _faces[font];
+  _HbFontEntry _fontFor(GPUFont font) {
+    final existing = _fonts[font];
     if (existing != null) return existing;
 
-    final bytes = font.fontBytes;
+    final shared = _sharedFaceFor(font.fontBytes);
+    final hbFont = _hb.hbFontCreate(shared.face);
+    try {
+      _hb.hbOtFontSetFuncs(hbFont);
+      _applyVariations(hbFont, font);
+    } catch (_) {
+      _hb.hbFontDestroy(hbFont);
+      rethrow;
+    }
+    final entry = _HbFontEntry(hbFont, shared);
+    // Attach to [entry]: Expando drops it when [font] is GC'd, then the
+    // finalizer runs. detach: entry so [evictFont] can destroy immediately.
+    _fontFinalizer.attach(entry, hbFont.cast(), detach: entry);
+    _fonts[font] = entry;
+    _weakFonts.removeWhere((w) => w.target == null);
+    _weakFonts.add(WeakReference(font));
+    return entry;
+  }
+
+  /// Face for [bytes], created once per distinct byte buffer and shared by
+  /// every [GPUFont] that aliases it (base + variants), so variants cost one
+  /// small `hb_font` each instead of a full copy of the font file.
+  _HbSharedFace _sharedFaceFor(ByteData bytes) {
+    final existing = _sharedFaces[bytes];
+    if (existing != null) return existing;
+
     final len = bytes.lengthInBytes;
     final owned = calloc<Uint8>(len);
-    final view = bytes.buffer.asUint8List(bytes.offsetInBytes, len);
-    for (var i = 0; i < len; i++) {
-      owned[i] = view[i];
-    }
+    owned
+        .asTypedList(len)
+        .setAll(0, bytes.buffer.asUint8List(bytes.offsetInBytes, len));
+    // The blob owns the copy: HB invokes the destroy callback (native free)
+    // on user_data when the last blob reference goes away.
     final blob = _hb.hbBlobCreate(
       owned,
       len,
       HarfBuzzBindings.memoryModeReadonly,
-      nullptr,
-      nullptr,
+      owned.cast(),
+      calloc.nativeFree.cast(),
     );
     final face = _hb.hbFaceCreate(blob, 0);
-    final hbFont = _hb.hbFontCreate(face);
-    _hb.hbOtFontSetFuncs(hbFont);
-    _applyVariations(hbFont, font);
-    final handles = _HbNativeHandles(
-      hb: _hb,
-      blob: blob,
-      face: face,
-      font: hbFont,
-      ownedBytes: owned,
+    _hb.hbBlobDestroy(blob); // the face holds its own blob reference
+    final shared = _HbSharedFace(face);
+    // externalSize: the GC should feel the native font-file copy the face
+    // keeps alive (freed via the blob destroy callback when the face dies).
+    _faceFinalizer.attach(
+      shared,
+      face.cast(),
+      detach: shared,
+      externalSize: len,
     );
-    final entry = _HbFaceCache(handles);
-    // Attach to [entry]: Expando drops it when [font] is GC'd, then Finalizer
-    // runs. detach: entry so [evictFont] can destroy immediately.
-    _finalizer.attach(entry, handles, detach: entry);
-    _faces[font] = entry;
-    _weakFonts.add(WeakReference(font));
-    // Opportunistically prune dead weak refs so the list stays bounded.
-    if (_weakFonts.length > 64) {
-      _weakFonts.removeWhere((w) => w.target == null);
-    }
-    return entry;
+    _sharedFaces[bytes] = shared;
+    return shared;
   }
 
   /// Push [GPUFont.variationCoordinates] onto the HB font so HVAR/GPOS
@@ -314,13 +342,16 @@ class HarfBuzzShaper implements TextShaper {
     if (coords.isEmpty) return;
     final n = coords.length;
     final ptr = calloc<HbVariation>(n);
-    var i = 0;
-    for (final e in coords.entries) {
-      ptr[i].tag = hbTagFromString(e.key);
-      ptr[i].value = e.value;
-      i++;
+    try {
+      var i = 0;
+      for (final e in coords.entries) {
+        ptr[i].tag = hbTagFromString(e.key);
+        ptr[i].value = e.value;
+        i++;
+      }
+      _hb.hbFontSetVariations(hbFont, ptr, n);
+    } finally {
+      calloc.free(ptr);
     }
-    _hb.hbFontSetVariations(hbFont, ptr, n);
-    calloc.free(ptr);
   }
 }

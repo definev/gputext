@@ -473,7 +473,203 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
           ),
       ]),
     ),
+    FrameScenario(
+      id: 'frame.rich_interleave',
+      label: 'complex interleaved widgets + styles, reflow',
+      desc:
+          'Product-shaped RichText stress: leading/trailing/adjacent '
+          'WidgetSpans, every PlaceholderAlignment, tall line-box growth, '
+          'baseline chips with nested Text, styled runs (bold/link/'
+          'underline/highlight), emoji ZWJ + CJK hybrid fragments, and a '
+          '1×1 edge widget — all while wrap width oscillates so placeholders '
+          'reflow across lines. Cache-disabled; not comparable with pure '
+          'rows. Pair with vis.rich_interleave for the quality side.',
+      path: 'rich-interleave',
+      build: (ctx, e, tick) {
+        final width = 300 + 80 * math.sin(tick * 2 * math.pi / 120);
+        return _column([
+          for (var i = 0; i < 6; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: benchText(
+                e,
+                complexInterleaveSpan(
+                  seed: sentences[i % sentences.length],
+                  tick: tick,
+                  paragraph: i,
+                  emojiFragment: '👩‍💻 👨‍👩‍👧‍👦',
+                  cjkFragment: ctx.hasCjk
+                      ? ctx.corpus.zhZhufu.substring(0, 24)
+                      : '価格¥12,800',
+                  cjkFamily: ctx.hasCjk ? benchCjkFamily : null,
+                ),
+              ),
+            ),
+        ], width: width);
+      },
+    ),
   ];
+}
+
+/// Complex InlineSpan for `frame.rich_interleave` / `vis.rich_interleave`:
+/// many widget kinds interleaved with styled text and hybrid fragments.
+/// Children are plain Flutter widgets (no nested GPURichText) so both
+/// engines measure identical trees.
+TextSpan complexInterleaveSpan({
+  required String seed,
+  required int tick,
+  required int paragraph,
+  required String emojiFragment,
+  required String cjkFragment,
+  String? cjkFamily,
+}) {
+  final words = seed.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+  String chunk(int start, int n) {
+    if (words.isEmpty) return 'lorem';
+    final parts = <String>[];
+    for (var i = 0; i < n; i++) {
+      parts.add(words[(start + i) % words.length]);
+    }
+    return parts.join(' ');
+  }
+
+  Widget box({
+    required double w,
+    required double h,
+    required Color color,
+    String? label,
+  }) => SizedBox(
+    width: w,
+    height: h,
+    child: ColoredBox(
+      color: color,
+      child: label == null
+          ? null
+          : Center(
+              child: Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 9,
+                  color: Color(0xFFFFFFFF),
+                  height: 1,
+                ),
+              ),
+            ),
+    ),
+  );
+
+  Widget chip(String label, Color bg) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(
+      color: bg,
+      borderRadius: BorderRadius.circular(8),
+    ),
+    child: Text(
+      label,
+      style: const TextStyle(fontSize: 11, color: Color(0xFF111111), height: 1),
+    ),
+  );
+
+  final tag = '#$tick·$paragraph';
+  return TextSpan(
+    style: benchStyle(),
+    children: [
+      // Leading widget (before any text).
+      WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: box(w: 14, h: 14, color: const Color(0xFF5C6BC0), label: 'i'),
+      ),
+      TextSpan(text: ' ${chunk(0, 3)} '),
+      TextSpan(
+        text: chunk(3, 2),
+        style: const TextStyle(
+          fontWeight: FontWeight.w700,
+          color: Color(0xFF1A237E),
+        ),
+      ),
+      const TextSpan(text: ' '),
+      // Baseline chip with nested Text (common mention/tag pattern).
+      WidgetSpan(
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+        child: chip('@user$paragraph', const Color(0xFFE3F2FD)),
+      ),
+      TextSpan(text: ' $tag '),
+      // Tall middle widget — grows the line box.
+      WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: box(w: 10, h: 36, color: const Color(0xFFEF9A9A)),
+      ),
+      TextSpan(text: ' ${chunk(5, 4)} '),
+      // Top / bottom / above / below alignments in one run.
+      WidgetSpan(
+        alignment: PlaceholderAlignment.top,
+        child: box(w: 12, h: 12, color: const Color(0xFF80CBC4)),
+      ),
+      WidgetSpan(
+        alignment: PlaceholderAlignment.bottom,
+        child: box(w: 12, h: 18, color: const Color(0xFFCE93D8)),
+      ),
+      WidgetSpan(
+        alignment: PlaceholderAlignment.aboveBaseline,
+        baseline: TextBaseline.alphabetic,
+        child: box(w: 10, h: 10, color: const Color(0xFFFFCC80)),
+      ),
+      WidgetSpan(
+        alignment: PlaceholderAlignment.belowBaseline,
+        baseline: TextBaseline.alphabetic,
+        child: box(w: 10, h: 10, color: const Color(0xFFA5D6A7)),
+      ),
+      // Adjacent WidgetSpans with no text between (edge case).
+      WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: box(w: 8, h: 8, color: const Color(0xFF90A4AE)),
+      ),
+      WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: box(w: 8, h: 8, color: const Color(0xFF78909C)),
+      ),
+      const TextSpan(text: ' '),
+      TextSpan(
+        text: chunk(9, 3),
+        style: const TextStyle(
+          color: Color(0xFF1565C0),
+          decoration: TextDecoration.underline,
+        ),
+      ),
+      const TextSpan(text: ' '),
+      TextSpan(
+        text: chunk(12, 2),
+        style: const TextStyle(backgroundColor: Color(0xFFFFF59D)),
+      ),
+      TextSpan(text: ' $emojiFragment '),
+      TextSpan(
+        text: cjkFragment,
+        style: benchStyle(
+          family: cjkFamily ?? 'Lato',
+          size: 13,
+          color: const Color(0xFF333333),
+        ),
+      ),
+      const TextSpan(text: ' '),
+      // 1×1 placeholder — degenerate size edge.
+      const WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: SizedBox(
+          width: 1,
+          height: 1,
+          child: ColoredBox(color: Color(0xFF000000)),
+        ),
+      ),
+      TextSpan(text: ' ${chunk(14, 5)} '),
+      // Trailing widget after the last text run.
+      WidgetSpan(
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+        child: chip('end', const Color(0xFFFFE0B2)),
+      ),
+    ],
+  );
 }
 
 Widget _grid(EngineKind e, {required bool unique}) => SizedBox(

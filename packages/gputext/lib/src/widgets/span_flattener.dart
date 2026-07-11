@@ -14,6 +14,7 @@ import '../paragraph.dart' as wf;
 import '../text/bidi.dart' as bidi;
 import '../text/shaped_run.dart' as sr show ShapedGlyphRun, TextDirection;
 import '../text/shaper.dart';
+import '../timeline.dart';
 
 sr.TextDirection _mapDirection(ui.TextDirection d) => switch (d) {
   ui.TextDirection.rtl => sr.TextDirection.rtl,
@@ -82,6 +83,25 @@ wf.InlineDecoration? _mapDecoration(TextStyle? style) {
 /// `placeholderDimensions[i]` supplies the size/baseline of the i-th
 /// placeholder (preorder). Missing entries fall back to zero size.
 List<wf.InlineItem>? flattenSpan(
+  InlineSpan span,
+  TextScaler textScaler,
+  GPUTextEngine engine, {
+  List<PlaceholderDimensions> placeholderDimensions = const [],
+  ui.TextDirection textDirection = ui.TextDirection.ltr,
+  Locale? locale,
+}) => GPUTextTimeline.timeSync(
+  GPUTextTimeline.flatten,
+  () => _flattenSpan(
+    span,
+    textScaler,
+    engine,
+    placeholderDimensions: placeholderDimensions,
+    textDirection: textDirection,
+    locale: locale,
+  ),
+);
+
+List<wf.InlineItem>? _flattenSpan(
   InlineSpan span,
   TextScaler textScaler,
   GPUTextEngine engine, {

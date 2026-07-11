@@ -62,7 +62,17 @@ abstract final class GPUText {
 }
 
 class GPUTextEngine extends ChangeNotifier {
-  GPUTextEngine._();
+  GPUTextEngine._() {
+    // Variant instances LRU-evicted from a base font's cache must release
+    // their HB face/metrics immediately — waiting for GC leaves native
+    // handles pinned while the atlas still references the variant.
+    GPUFont.onVariantEvicted = _onVariantEvicted;
+  }
+
+  void _onVariantEvicted(GPUFont variant) {
+    _shaper.evictFont(variant);
+    debugClearSegmentMetricsFor(variant);
+  }
 
   static final GPUTextEngine _instance = GPUTextEngine._();
 
@@ -131,11 +141,28 @@ class GPUTextEngine extends ChangeNotifier {
   // only rerun the cheap line walker. Entries are read-only after insertion;
   // keys embed [fontGeneration] so font registration invalidates naturally.
   static const _layoutCacheCapacity = 256;
+
+  /// UTF-16 code units the layout cache may retain across entries. The entry
+  /// cap alone bounds count, not bytes — 256 huge documents would otherwise
+  /// pin hundreds of MB of shaped runs.
+  static const _layoutCacheCharBudget = 512 * 1024;
   final _layoutCache = <Object, (List<wf.InlineItem>, wf.PreparedParagraph)>{};
+  final _layoutCacheCosts = <Object, int>{};
+  var _layoutCacheChars = 0;
   var _fontGeneration = 0;
 
   /// Bumped whenever font resolution could change (register/fallbacks).
   int get fontGeneration => _fontGeneration;
+
+  /// Every cache key embeds [fontGeneration], so a bump makes all current
+  /// entries unreachable-by-lookup; drop them now rather than letting dead
+  /// entries (which pin fonts and span trees) wait out 256 LRU insertions.
+  void _bumpFontGeneration() {
+    _fontGeneration++;
+    _layoutCache.clear();
+    _layoutCacheCosts.clear();
+    _layoutCacheChars = 0;
+  }
 
   // Cache observability (tests and the benchmark harness read these).
   int debugLayoutCacheHits = 0;
@@ -153,12 +180,27 @@ class GPUTextEngine extends ChangeNotifier {
   final _coverageCache = <String, Map<int, bool>>{};
   var _coverageGeneration = -1;
 
+  /// Distinct style contexts retained (LRU). Apps that synthesize unbounded
+  /// family/weight combinations (style animation, per-user settings) must not
+  /// grow this map for the process lifetime; verdicts are cheap to recompute.
+  static const _coverageCacheMaxContexts = 128;
+
   /// Shared coverage-verdict map for one resolution context (family list +
   /// weight/style signature); valid until [fontGeneration] changes.
+  /// LinkedHashMap insertion order is the LRU order: hits re-insert, overflow
+  /// drops [Map.keys.first] so a hot context is not wiped by a new one.
   Map<int, bool> coverageCacheFor(String contextKey) {
     if (_coverageGeneration != _fontGeneration) {
       _coverageCache.clear();
       _coverageGeneration = _fontGeneration;
+    }
+    final existing = _coverageCache.remove(contextKey);
+    if (existing != null) {
+      _coverageCache[contextKey] = existing; // LRU touch
+      return existing;
+    }
+    while (_coverageCache.length >= _coverageCacheMaxContexts) {
+      _coverageCache.remove(_coverageCache.keys.first);
     }
     return _coverageCache.putIfAbsent(contextKey, () => <int, bool>{});
   }
@@ -176,11 +218,23 @@ class GPUTextEngine extends ChangeNotifier {
 
   void layoutCachePut(
     Object key,
-    (List<wf.InlineItem>, wf.PreparedParagraph) value,
-  ) {
+    (List<wf.InlineItem>, wf.PreparedParagraph) value, {
+    int cost = 0,
+  }) {
+    final replaced = _layoutCacheCosts.remove(key);
+    if (replaced != null) {
+      _layoutCache.remove(key);
+      _layoutCacheChars -= replaced;
+    }
     _layoutCache[key] = value;
-    if (_layoutCache.length > _layoutCacheCapacity) {
-      _layoutCache.remove(_layoutCache.keys.first);
+    _layoutCacheCosts[key] = cost;
+    _layoutCacheChars += cost;
+    while (_layoutCache.length > _layoutCacheCapacity ||
+        (_layoutCacheChars > _layoutCacheCharBudget &&
+            _layoutCache.length > 1)) {
+      final evict = _layoutCache.keys.first;
+      _layoutCache.remove(evict);
+      _layoutCacheChars -= _layoutCacheCosts.remove(evict) ?? 0;
     }
   }
 
@@ -222,7 +276,7 @@ class GPUTextEngine extends ChangeNotifier {
       'Emoji font must carry COLR v0 color glyphs',
     );
     _emojiFont = font;
-    _fontGeneration++;
+    _bumpFontGeneration();
     notifyListeners();
   }
 
@@ -250,7 +304,7 @@ class GPUTextEngine extends ChangeNotifier {
     _fallbackFamilies
       ..clear()
       ..addAll(families);
-    _fontGeneration++;
+    _bumpFontGeneration();
     notifyListeners();
   }
 
@@ -317,11 +371,23 @@ class GPUTextEngine extends ChangeNotifier {
     final variants = _fonts.putIfAbsent(family, () => []);
     final w = weight.value;
     final italic = style == ui.FontStyle.italic;
+    // A re-register replaces the old variant: release its shaper caches and
+    // reclaim its atlas entries, exactly as unregisterFont would.
+    final replaced = variants
+        .where((v) => v.weight == w && v.italic == italic && v.font != font)
+        .toList(growable: false);
     variants
       ..removeWhere((v) => v.weight == w && v.italic == italic)
       ..add(_FontVariant(w, italic, font));
+    for (final v in replaced) {
+      v.font.releaseShaperCaches(
+        _shaper.evictFont,
+        onEach: debugClearSegmentMetricsFor,
+      );
+    }
+    if (replaced.isNotEmpty) _scheduleForcedAtlasSweep();
     _defaultFamily ??= family;
-    _fontGeneration++;
+    _bumpFontGeneration();
     notifyListeners();
   }
 
@@ -367,7 +433,11 @@ class GPUTextEngine extends ChangeNotifier {
     }
     _coverageCache.clear();
     _coverageGeneration = -1;
-    _fontGeneration++;
+    _bumpFontGeneration();
+    // Atlas entries key on the font object and would otherwise pin it (and,
+    // through the shaper's Expando, its native HB state) until a budget
+    // sweep happens to run; reclaim at the next frame regardless of budget.
+    _scheduleForcedAtlasSweep();
     notifyListeners();
   }
 
@@ -487,6 +557,28 @@ class GPUTextEngine extends ChangeNotifier {
       _sweepScheduled = false;
       compactAtlas();
     });
+  }
+
+  /// Like [scheduleAtlasSweepIfNeeded] but unconditional: used when fonts are
+  /// unregistered or replaced, where the entries to reclaim may sit under the
+  /// curve-float budget forever (blank entries contribute zero floats). Asks
+  /// for a frame so the sweep runs even from an otherwise idle app.
+  void _scheduleForcedAtlasSweep() {
+    if (_sweepScheduled) return;
+    // With no live clients nothing is mid-paint against current rowBases, so
+    // reclaim synchronously. This is also the binding-free path (pure Dart
+    // tests, headless use): clients are render objects, which imply a
+    // binding, so SchedulerBinding is safe to touch below.
+    if (_atlasClients.isEmpty) {
+      compactAtlas();
+      return;
+    }
+    _sweepScheduled = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _sweepScheduled = false;
+      compactAtlas();
+    });
+    SchedulerBinding.instance.ensureVisualUpdate();
   }
 
   /// Drop every glyph whose font no client still uses, and compact what's left.

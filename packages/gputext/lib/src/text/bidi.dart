@@ -444,10 +444,50 @@ List<int> resolveLevels(String text, int paragraphEmbedding) {
   return levels;
 }
 
+/// True when [text] contains a code point that can raise a level above a
+/// level-0 paragraph: strong RTL (R/AL), AN (Arabic-Indic digits classify AN
+/// with no Arabic letter needed), or an explicit control. With none present,
+/// X1–I2 provably resolve every unit to level 0: W7 folds EN back to L (sos
+/// is L, and no R/AL can reset lastStrong), N1/N2 see only L/EN context, and
+/// I1 has no R/AN/EN left to raise. Everything below U+0590 is in none of
+/// these classes, so plain Latin/ASCII bails without classifying at all.
+bool _needsLevelResolution(String text) {
+  for (final cp in text.runes) {
+    if (cp < 0x0590) continue;
+    switch (bidiClassOf(cp)) {
+      case BidiClass.r:
+      case BidiClass.al:
+      case BidiClass.an:
+      case BidiClass.lre:
+      case BidiClass.lro:
+      case BidiClass.rle:
+      case BidiClass.rlo:
+      case BidiClass.lri:
+      case BidiClass.rli:
+      case BidiClass.fsi:
+      case BidiClass.pdi:
+        return true;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+
 /// Itemize [text] into same-level [BidiRun]s in logical order.
 List<BidiRun> itemize(String text, {TextDirection? baseDirection}) {
   if (text.isEmpty) return const [];
   final para = paragraphLevel(text, baseDirection);
+  if (para == 0 && !_needsLevelResolution(text)) {
+    return [
+      BidiRun(
+        start: 0,
+        end: text.length,
+        level: 0,
+        direction: TextDirection.ltr,
+      ),
+    ];
+  }
   final levels = resolveLevels(text, para);
   final runs = <BidiRun>[];
   var start = 0;

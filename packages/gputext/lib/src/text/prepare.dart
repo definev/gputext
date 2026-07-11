@@ -22,6 +22,7 @@
 
 import 'dart:typed_data';
 
+import '../timeline.dart';
 import 'analysis.dart';
 import 'inline_items.dart';
 import 'line_break.dart';
@@ -96,7 +97,13 @@ class _WindowPiece {
   final int end;
 }
 
-PreparedParagraph prepareParagraph(List<InlineItem> items) {
+PreparedParagraph prepareParagraph(List<InlineItem> items) =>
+    GPUTextTimeline.timeSync(
+      GPUTextTimeline.prepare,
+      () => _prepareParagraph(items),
+    );
+
+PreparedParagraph _prepareParagraph(List<InlineItem> items) {
   final widths = <double>[];
   final kinds = <SegmentBreakKind>[];
   final graphemeAdvances = <Float64List?>[];

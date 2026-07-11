@@ -46,6 +46,12 @@ export 'src/text/metrics_cache.dart'
 export 'src/text/shaped_run.dart' show ShapedGlyph, ShapedGlyphRun, walkGlyphs;
 export 'src/text/shaper.dart' show TextShaper, LegacyGsubShaper, ShapeRequest;
 export 'src/text/harfbuzz_shaper.dart' show HarfBuzzShaper;
+export 'src/timeline.dart'
+    show
+        AggregatedTimedBlock,
+        AggregatedTimings,
+        GPUTextTimeline,
+        TimedBlock;
 export 'src/widgets/rich_text.dart' show GPURichText, RenderGPUParagraph;
 export 'src/widgets/span_flattener.dart' show flattenSpan;
 export 'src/widgets/text.dart' show GPULabel;

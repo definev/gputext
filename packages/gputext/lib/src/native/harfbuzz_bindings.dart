@@ -305,6 +305,8 @@ class HarfBuzzBindings {
     required this.hbBufferGetGlyphInfos,
     required this.hbBufferGetGlyphPositions,
     required this.hbFeatureFromString,
+    required this.hbFontDestroyPtr,
+    required this.hbFaceDestroyPtr,
   });
 
   /// Memory mode: HB_MEMORY_MODE_READONLY = 1.
@@ -352,10 +354,21 @@ class HarfBuzzBindings {
   final int Function(Pointer<Utf8>, int, Pointer<HbFeature>)
   hbFeatureFromString;
 
+  /// Raw `hb_font_destroy` / `hb_face_destroy` for [NativeFinalizer], which
+  /// (unlike a Dart [Finalizer]) also runs at isolate shutdown / hot restart.
+  final Pointer<NativeFinalizerFunction> hbFontDestroyPtr;
+  final Pointer<NativeFinalizerFunction> hbFaceDestroyPtr;
+
   static HarfBuzzBindings? _cached;
 
   /// True when the last successful [tryLoad] used `@Native` / native assets.
   static bool loadedViaNative = false;
+
+  /// True once the bundled dylib opened but a symbol lookup failed — a
+  /// stale/partial build that cannot heal within this process. Remembered so
+  /// repeated [tryLoad] calls (the engine retries on every shaper access)
+  /// stop re-dlopening the library, whose handle is never closed.
+  static bool _symbolLookupFailed = false;
 
   static HarfBuzzBindings? tryLoad() {
     if (_cached != null) return _cached;
@@ -368,6 +381,7 @@ class HarfBuzzBindings {
         return _cached = HarfBuzzBindings._fromNative();
       }
     } catch (_) {}
+    if (_symbolLookupFailed) return null;
     // 2) Narrow fallback: only the package-local hooks output directory.
     final lib = _openBundledDylib();
     if (lib == null) return null;
@@ -375,6 +389,7 @@ class HarfBuzzBindings {
       loadedViaNative = false;
       return _cached = HarfBuzzBindings._fromLibrary(lib);
     } catch (_) {
+      _symbolLookupFailed = true;
       return null;
     }
   }
@@ -403,6 +418,12 @@ class HarfBuzzBindings {
     hbBufferGetGlyphInfos: _hb_buffer_get_glyph_infos,
     hbBufferGetGlyphPositions: _hb_buffer_get_glyph_positions,
     hbFeatureFromString: _hb_feature_from_string,
+    hbFontDestroyPtr: Native.addressOf<
+      NativeFunction<Void Function(Pointer<HbFont>)>
+    >(_hb_font_destroy).cast(),
+    hbFaceDestroyPtr: Native.addressOf<
+      NativeFunction<Void Function(Pointer<HbFace>)>
+    >(_hb_face_destroy).cast(),
   );
 
   static HarfBuzzBindings _fromLibrary(
@@ -551,6 +572,16 @@ class HarfBuzzBindings {
           Int32 Function(Pointer<Utf8>, Int32, Pointer<HbFeature>),
           int Function(Pointer<Utf8>, int, Pointer<HbFeature>)
         >('hb_feature_from_string'),
+    hbFontDestroyPtr: lib
+        .lookup<NativeFunction<Void Function(Pointer<HbFont>)>>(
+          'hb_font_destroy',
+        )
+        .cast(),
+    hbFaceDestroyPtr: lib
+        .lookup<NativeFunction<Void Function(Pointer<HbFace>)>>(
+          'hb_face_destroy',
+        )
+        .cast(),
   );
 
   /// Last-resort open of the hooks-built dylib next to the package cwd.

@@ -814,7 +814,8 @@ extension GPUFontVariations on GPUFont {
     final instance = base._instantiate(snapped, ticks);
     cache[key] = instance;
     while (cache.length > GPUFont.variantCacheCapacity) {
-      cache.remove(cache.keys.first);
+      final evicted = cache.remove(cache.keys.first);
+      if (evicted != null) GPUFont.onVariantEvicted?.call(evicted);
     }
     return instance;
   }

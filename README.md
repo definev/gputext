@@ -61,13 +61,14 @@ median-of-runs, width cycling, DCE sinks; corpus files are copies of
 - **frame.*** — end-to-end `FrameTiming` (build/raster percentiles, jank
   counts) across cold init, atlas warm-up, idle floor, per-frame repaint /
   text change / reflow, long-document scroll, transform + InteractiveViewer
-  zoom, widget grids, justification, variable-font animation, and the
-  hybrid emoji/CJK and WidgetSpan-heavy paths.
+  zoom, widget grids, justification, variable-font animation, the hybrid
+  emoji/CJK and WidgetSpan-heavy paths, and `frame.rich_interleave`
+  (mixed WidgetSpan kinds/alignments + styled/hybrid runs under reflow).
 - **mem.*** — RSS plus gputext-internal accounting (atlas bytes, cached
   glyph images, instance buffers, prepare-cache size).
 - **vis.*** — RepaintBoundary captures of paired renderings diffed in Dart
   (luma MAE/RMSE, size parity, ink coverage), including a 4× zoom crispness
-  case.
+  case and `vis.rich_interleave` for the complex WidgetSpan tree.
 
 Reading the numbers: every entry carries a `path` tag — `pure` rows isolate
 gputext; `hybrid`/`cache-disabled` rows exercise the native-delegation and

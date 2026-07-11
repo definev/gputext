@@ -151,13 +151,71 @@ const _noSpaceWordBreakAfterChars = <String>{
   '⁉',
 };
 
+// Single-code-point views of the string sets above: the hot predicates test
+// integer membership instead of allocating a String per code point. The
+// string sets stay for grapheme-level comparisons (splitCjkUnits).
+final _kinsokuStartCp = {for (final s in kinsokuStart) s.runes.first};
+final _kinsokuEndCp = {for (final s in kinsokuEnd) s.runes.first};
+final _forwardStickyGlueCp = {
+  for (final s in _forwardStickyGlue) s.runes.first,
+};
+final _leftStickyPunctuationCp = {
+  for (final s in leftStickyPunctuation) s.runes.first,
+};
+final _numericJoinerCp = {for (final s in _numericJoinerChars) s.runes.first};
+final _noSpaceWordBreakAfterCp = {
+  for (final s in _noSpaceWordBreakAfterChars) s.runes.first,
+};
+
 final _combiningMarkRe = RegExp(r'\p{M}', unicode: true);
 final _decimalDigitRe = RegExp(r'\p{Nd}', unicode: true);
 final _wordCharRe = RegExp(r'[\p{L}\p{M}\p{N}_]', unicode: true);
 final _wordInternalSymbolRe = RegExp(r'[\p{P}\p{S}\p{Co}]', unicode: true);
 
-bool _isCombiningMark(String ch) => _combiningMarkRe.hasMatch(ch);
-bool _isDecimalDigit(String ch) => _decimalDigitRe.hasMatch(ch);
+// Per-code-point Unicode class bits. The regexes above stay the source of
+// truth for non-ASCII (\p{...} semantics, no hand-rolled tables); the cache
+// makes each distinct code point pay for them once instead of one String
+// allocation + regex match per predicate call per character.
+const _clsCombining = 1;
+const _clsDigit = 2;
+const _clsWord = 4;
+const _clsSymbol = 8;
+final _charClassCache = <int, int>{};
+
+int _computeCharClass(int cp) {
+  final ch = String.fromCharCode(cp);
+  var bits = 0;
+  if (_combiningMarkRe.hasMatch(ch)) bits |= _clsCombining;
+  if (_decimalDigitRe.hasMatch(ch)) bits |= _clsDigit;
+  if (_wordCharRe.hasMatch(ch)) bits |= _clsWord;
+  if (_wordInternalSymbolRe.hasMatch(ch)) bits |= _clsSymbol;
+  return bits;
+}
+
+int _charClass(int cp) {
+  if (cp < 0x80) {
+    // ASCII computed directly — no map lookup.
+    if (cp >= 0x30 && cp <= 0x39) return _clsDigit | _clsWord;
+    if ((cp >= 0x41 && cp <= 0x5A) || (cp >= 0x61 && cp <= 0x7A)) {
+      return _clsWord;
+    }
+    if (cp == 0x5F) return _clsWord | _clsSymbol; // '_' is \p{Pc}
+    if ((cp >= 0x21 && cp <= 0x2F) ||
+        (cp >= 0x3A && cp <= 0x40) ||
+        (cp >= 0x5B && cp <= 0x60) ||
+        (cp >= 0x7B && cp <= 0x7E)) {
+      return _clsSymbol;
+    }
+    return 0;
+  }
+  return _charClassCache[cp] ??= _computeCharClass(cp);
+}
+
+/// Combining marks start at U+0300; everything below skips the class lookup.
+bool _isCombiningMarkCp(int cp) =>
+    cp >= 0x300 && (_charClass(cp) & _clsCombining) != 0;
+
+bool _isDecimalDigitCp(int cp) => (_charClass(cp) & _clsDigit) != 0;
 
 // UAX #14 PR/PO numeric prefix/affix classes, stored as inclusive
 // start/end code-point pairs (ported verbatim).
@@ -190,8 +248,8 @@ bool _inRanges(int cp, List<int> ranges) {
   return false;
 }
 
-bool _isLineBreakNumericAffix(String ch) =>
-    _inRanges(ch.runes.first, _lineBreakNumericAffixRanges);
+bool _isLineBreakNumericAffixCp(int cp) =>
+    _inRanges(cp, _lineBreakNumericAffixRanges);
 
 bool isCjkCodePoint(int cp) =>
     (cp >= 0x4E00 && cp <= 0x9FFF) ||
@@ -242,28 +300,17 @@ SegmentBreakKind _classifyChar(int cp) {
   }
 }
 
-bool _isWordCodePoint(int cp) {
-  // ASCII fast path.
-  if (cp < 0x80) {
-    return (cp >= 0x30 && cp <= 0x39) ||
-        (cp >= 0x41 && cp <= 0x5A) ||
-        (cp >= 0x61 && cp <= 0x7A) ||
-        cp == 0x5F;
-  }
-  return _wordCharRe.hasMatch(String.fromCharCode(cp));
-}
-
 // --- Segment-level predicates (ported) ---
 
 bool _isLeftStickyPunctuationSegment(String segment) {
   var sawPunctuation = false;
   for (final cp in segment.runes) {
-    final ch = String.fromCharCode(cp);
-    if (leftStickyPunctuation.contains(ch) || _isLineBreakNumericAffix(ch)) {
+    if (_leftStickyPunctuationCp.contains(cp) ||
+        _isLineBreakNumericAffixCp(cp)) {
       sawPunctuation = true;
       continue;
     }
-    if (sawPunctuation && _isCombiningMark(ch)) continue;
+    if (sawPunctuation && _isCombiningMarkCp(cp)) continue;
     return false;
   }
   return sawPunctuation;
@@ -272,8 +319,8 @@ bool _isLeftStickyPunctuationSegment(String segment) {
 bool _isCjkLineStartProhibitedSegment(String segment) {
   if (segment.isEmpty) return false;
   for (final cp in segment.runes) {
-    final ch = String.fromCharCode(cp);
-    if (!kinsokuStart.contains(ch) && !leftStickyPunctuation.contains(ch)) {
+    if (!_kinsokuStartCp.contains(cp) &&
+        !_leftStickyPunctuationCp.contains(cp)) {
       return false;
     }
   }
@@ -283,98 +330,98 @@ bool _isCjkLineStartProhibitedSegment(String segment) {
 bool _isForwardStickyClusterSegment(String segment) {
   if (segment.isEmpty) return false;
   for (final cp in segment.runes) {
-    final ch = String.fromCharCode(cp);
-    if (!kinsokuEnd.contains(ch) &&
-        !_forwardStickyGlue.contains(ch) &&
-        !_isCombiningMark(ch) &&
-        !_isLineBreakNumericAffix(ch)) {
+    if (!_kinsokuEndCp.contains(cp) &&
+        !_forwardStickyGlueCp.contains(cp) &&
+        !_isCombiningMarkCp(cp) &&
+        !_isLineBreakNumericAffixCp(cp)) {
       return false;
     }
   }
   return true;
 }
 
-String? _firstSignificantChar(String text) {
+/// First code point that isn't a combining mark, or -1.
+int _firstSignificantCp(String text) {
   for (final cp in text.runes) {
-    final ch = String.fromCharCode(cp);
-    if (!_isCombiningMark(ch)) return ch;
+    if (!_isCombiningMarkCp(cp)) return cp;
   }
-  return null;
+  return -1;
 }
 
-String? _lastSignificantChar(String text) {
-  String? result;
+/// Last code point that isn't a combining mark, or -1.
+int _lastSignificantCp(String text) {
+  var result = -1;
   for (final cp in text.runes) {
-    final ch = String.fromCharCode(cp);
-    if (!_isCombiningMark(ch)) result = ch;
+    if (!_isCombiningMarkCp(cp)) result = cp;
   }
   return result;
 }
 
 bool _startsWithDecimalDigit(String text) {
-  final first = _firstSignificantChar(text);
-  return first != null && _isDecimalDigit(first);
+  final first = _firstSignificantCp(text);
+  return first >= 0 && _isDecimalDigitCp(first);
 }
 
 /// Splits a trailing run of forward-sticky characters (openers/quote glue,
 /// with combining marks) off `text`. Returns null when there is nothing to
 /// split or the whole segment is sticky.
 ({String head, String tail})? _splitTrailingForwardStickyCluster(String text) {
-  final chars = text.runes.map(String.fromCharCode).toList();
-  var splitIndex = chars.length;
+  final cps = text.runes.toList();
+  var splitIndex = cps.length;
   while (splitIndex > 0) {
-    final ch = chars[splitIndex - 1];
-    if (_isCombiningMark(ch) ||
-        kinsokuEnd.contains(ch) ||
-        _forwardStickyGlue.contains(ch)) {
+    final cp = cps[splitIndex - 1];
+    if (_isCombiningMarkCp(cp) ||
+        _kinsokuEndCp.contains(cp) ||
+        _forwardStickyGlueCp.contains(cp)) {
       splitIndex--;
       continue;
     }
     break;
   }
-  if (splitIndex <= 0 || splitIndex == chars.length) return null;
-  return (
-    head: chars.sublist(0, splitIndex).join(),
-    tail: chars.sublist(splitIndex).join(),
-  );
+  if (splitIndex <= 0 || splitIndex == cps.length) return null;
+  // Split offset back in UTF-16 units (starts bookkeeping is UTF-16).
+  var units = 0;
+  for (var i = 0; i < splitIndex; i++) {
+    units += cps[i] > 0xFFFF ? 2 : 1;
+  }
+  return (head: text.substring(0, units), tail: text.substring(units));
 }
 
-bool _isEmojiPresentation(String ch) =>
-    _inRanges(ch.runes.first, _emojiPresentationRanges);
+bool _isEmojiPresentationCp(int cp) =>
+    _inRanges(cp, _emojiPresentationRanges);
 
-bool _isNoSpaceWordInternalSymbol(String ch) {
-  final cp = ch.runes.first;
+bool _isNoSpaceWordInternalSymbolCp(int cp) {
   if (cp < 0x80) {
     return (cp >= 0x21 && cp <= 0x2F && cp != 0x2D) ||
         (cp >= 0x3A && cp <= 0x40 && cp != 0x3F) ||
         (cp >= 0x5B && cp <= 0x60) ||
         (cp >= 0x7B && cp <= 0x7E);
   }
-  return !_noSpaceWordBreakAfterChars.contains(ch) &&
-      !_isEmojiPresentation(ch) &&
-      _wordInternalSymbolRe.hasMatch(ch);
+  return !_noSpaceWordBreakAfterCp.contains(cp) &&
+      !_isEmojiPresentationCp(cp) &&
+      (_charClass(cp) & _clsSymbol) != 0;
 }
 
 bool _isNoSpaceWordInternalSymbolSegment(String text) {
   var sawSymbol = false;
   for (final cp in text.runes) {
-    final ch = String.fromCharCode(cp);
-    if (_isCombiningMark(ch)) continue;
-    if (!_isNoSpaceWordInternalSymbol(ch)) return false;
+    if (_isCombiningMarkCp(cp)) continue;
+    if (!_isNoSpaceWordInternalSymbolCp(cp)) return false;
     sawSymbol = true;
   }
   return sawSymbol;
 }
 
 bool _endsWithNoSpaceWordJoiner(String text) {
-  final last = _lastSignificantChar(text);
-  if (last == null) return false;
-  return _isNoSpaceWordInternalSymbol(last) || _isLineBreakNumericAffix(last);
+  final last = _lastSignificantCp(text);
+  if (last < 0) return false;
+  return _isNoSpaceWordInternalSymbolCp(last) ||
+      _isLineBreakNumericAffixCp(last);
 }
 
 bool _endsWithLineBreakNumericAffix(String text) {
-  final last = _lastSignificantChar(text);
-  return last != null && _isLineBreakNumericAffix(last);
+  final last = _lastSignificantCp(text);
+  return last >= 0 && _isLineBreakNumericAffixCp(last);
 }
 
 bool _canJoinNoSpaceWordBoundary(
@@ -411,7 +458,7 @@ bool _isRtlLetterRun(String text) {
 
 bool _segmentContainsDecimalDigit(String text) {
   for (final cp in text.runes) {
-    if (_isDecimalDigit(String.fromCharCode(cp))) return true;
+    if (_isDecimalDigitCp(cp)) return true;
   }
   return false;
 }
@@ -419,8 +466,7 @@ bool _segmentContainsDecimalDigit(String text) {
 bool _isNumericRunSegment(String text) {
   if (text.isEmpty) return false;
   for (final cp in text.runes) {
-    final ch = String.fromCharCode(cp);
-    if (_isDecimalDigit(ch) || _numericJoinerChars.contains(ch)) continue;
+    if (_isDecimalDigitCp(cp) || _numericJoinerCp.contains(cp)) continue;
     return false;
   }
   return true;
@@ -444,18 +490,44 @@ class _SegmentBuilder {
   TextSegments build() => TextSegments(texts, isWordLike, kinds, starts);
 }
 
+/// Classification result: the raw segment stream plus window-level flags
+/// that gate the merge passes (see [analyzeText]).
+class _Classified {
+  _Classified(
+    this.segments, {
+    required this.hasNonWordText,
+    required this.hasGlue,
+    required this.hasDigit,
+    required this.hasCjk,
+  });
+
+  final TextSegments segments;
+
+  /// Any text-kind code point that is not a word character. Every sticky /
+  /// URL / no-space-chain merge needs one to act: segment boundaries between
+  /// adjacent text segments only arise at word/non-word flips.
+  final bool hasNonWordText;
+  final bool hasGlue;
+  final bool hasDigit;
+  final bool hasCjk;
+}
+
 /// First pass: raw classification. Runs of the same non-text kind group into
 /// one segment; word-like characters group into word segments. A non-word
 /// text character only continues a segment while the SAME code point repeats
 /// ("//", "!!!"), never across different symbols — kinsoku and URL detection
 /// need distinct symbols kept apart. Hyphens/em-dashes never group.
-TextSegments _classify(String text) {
+_Classified _classify(String text) {
   final b = _SegmentBuilder();
   var runStart = -1;
   var runWordLike = false;
   var runLastCp = -1;
   SegmentBreakKind? runKind;
   final buf = StringBuffer();
+  var hasNonWordText = false;
+  var hasGlue = false;
+  var hasDigit = false;
+  var hasCjk = false;
 
   void flush() {
     if (runKind == null) return;
@@ -467,7 +539,16 @@ TextSegments _classify(String text) {
   var offset = 0;
   for (final cp in text.runes) {
     final kind = _classifyChar(cp);
-    final wordLike = kind == SegmentBreakKind.text && _isWordCodePoint(cp);
+    var wordLike = false;
+    if (kind == SegmentBreakKind.text) {
+      final cls = _charClass(cp);
+      wordLike = cls & _clsWord != 0;
+      if (!wordLike) hasNonWordText = true;
+      if (cls & _clsDigit != 0) hasDigit = true;
+      if (cp >= 0x3000 && isCjkCodePoint(cp)) hasCjk = true;
+    } else if (kind == SegmentBreakKind.glue) {
+      hasGlue = true;
+    }
     // BMP-only, like pretext's repeatable-run rule: repeated astral symbols
     // (emoji) stay separate segments so lines can break between them.
     final symbolContinues =
@@ -496,7 +577,13 @@ TextSegments _classify(String text) {
     offset += cp > 0xFFFF ? 2 : 1;
   }
   flush();
-  return b.build();
+  return _Classified(
+    b.build(),
+    hasNonWordText: hasNonWordText,
+    hasGlue: hasGlue,
+    hasDigit: hasDigit,
+    hasCjk: hasCjk,
+  );
 }
 
 /// Second pass: weld left-sticky punctuation ("better."), kinsoku-start
@@ -504,16 +591,19 @@ TextSegments _classify(String text) {
 /// segment.
 TextSegments _mergeLeftSticky(TextSegments s) {
   final b = _SegmentBuilder();
+  // containsCjk of b.texts.last, tracked incrementally: rescanning the
+  // growing merged tail per pair is quadratic on punctuation-dense windows.
+  var lastCjk = false;
   for (var i = 0; i < s.length; i++) {
     final text = s.texts[i];
     final kind = s.kinds[i];
     final wordLike = s.isWordLike[i];
+    final textCjk = kind == SegmentBreakKind.text && containsCjk(text);
 
     if (kind == SegmentBreakKind.text &&
         b.kinds.isNotEmpty &&
         b.kinds.last == SegmentBreakKind.text) {
-      final prev = b.texts.last;
-      final prevCjk = containsCjk(prev);
+      final prevCjk = lastCjk;
       final appendToPrev =
           // Kinsoku: line-start-prohibited cluster after CJK text.
           (_isCjkLineStartProhibitedSegment(text) && prevCjk) ||
@@ -524,12 +614,14 @@ TextSegments _mergeLeftSticky(TextSegments s) {
               (_isLeftStickyPunctuationSegment(text) ||
                   (text == '-' && b.isWordLike.last)));
       if (appendToPrev) {
-        b.texts.last = prev + text;
+        b.texts.last = b.texts.last + text;
         b.isWordLike.last = b.isWordLike.last || wordLike;
+        lastCjk = lastCjk || textCjk;
         continue;
       }
     }
     b.push(text, wordLike, kind, s.starts[i]);
+    lastCjk = textCjk;
   }
   return b.build();
 }
@@ -537,33 +629,40 @@ TextSegments _mergeLeftSticky(TextSegments s) {
 /// Third pass (backward): prefix forward-sticky clusters (openers, opening
 /// quotes) and a numeric-range '-' onto the following text segment.
 TextSegments _mergeForwardSticky(TextSegments s) {
-  final texts = List.of(s.texts);
-  final isWordLike = List.of(s.isWordLike);
-  final kinds = List.of(s.kinds);
-  final starts = List.of(s.starts);
+  // This pass only rewrites texts/starts (kinds and wordLike ride along
+  // unchanged), and only when a merge actually happens — the copies are made
+  // lazily on the first merge, so windows with no openers allocate nothing.
+  List<String>? texts;
+  List<int>? starts;
 
   var nextLiveIndex = -1;
   for (var i = s.length - 1; i >= 0; i--) {
-    if (texts[i].isEmpty) continue;
-    if (kinds[i] == SegmentBreakKind.text &&
-        !isWordLike[i] &&
+    // Backward walk: index i is never mutated before it is visited, so the
+    // current segment always reads from the source.
+    final text = s.texts[i];
+    if (text.isEmpty) continue;
+    if (s.kinds[i] == SegmentBreakKind.text &&
+        !s.isWordLike[i] &&
         nextLiveIndex >= 0 &&
-        kinds[nextLiveIndex] == SegmentBreakKind.text &&
-        (_isForwardStickyClusterSegment(texts[i]) ||
-            (texts[i] == '-' &&
-                _startsWithDecimalDigit(texts[nextLiveIndex])))) {
-      texts[nextLiveIndex] = texts[i] + texts[nextLiveIndex];
+        s.kinds[nextLiveIndex] == SegmentBreakKind.text &&
+        (_isForwardStickyClusterSegment(text) ||
+            (text == '-' &&
+                _startsWithDecimalDigit((texts ?? s.texts)[nextLiveIndex])))) {
+      texts ??= List.of(s.texts);
+      starts ??= List.of(s.starts);
+      texts[nextLiveIndex] = text + texts[nextLiveIndex];
       starts[nextLiveIndex] = starts[i];
       texts[i] = '';
       continue;
     }
     nextLiveIndex = i;
   }
+  if (texts == null) return s;
 
   final b = _SegmentBuilder();
   for (var i = 0; i < texts.length; i++) {
     if (texts[i].isEmpty) continue;
-    b.push(texts[i], isWordLike[i], kinds[i], starts[i]);
+    b.push(texts[i], s.isWordLike[i], s.kinds[i], starts![i]);
   }
   return b.build();
 }
@@ -806,16 +905,27 @@ void _carryTrailingForwardStickyAcrossCjk(TextSegments s) {
 }
 
 /// Analyze one window of paragraph text into the merged segment stream.
+///
+/// Merge passes are gated on flags gathered during classification: each pass
+/// is an identity rebuild (four fresh arrays) when the window has no
+/// character it could act on, so plain word+space text skips all of them.
+/// The gates are exact: every sticky/URL/no-space merge needs an adjacent
+/// text/text segment pair, which classification only produces at word/
+/// non-word flips ([_Classified.hasNonWordText]); glue, numeric, and CJK
+/// carry passes need their respective characters outright.
 TextSegments analyzeText(String text) {
   if (text.isEmpty) return TextSegments(const [], const [], const [], const []);
-  var s = _classify(text);
-  s = _mergeLeftSticky(s);
-  s = _mergeForwardSticky(s);
-  s = _mergeGlueConnected(s);
-  s = _mergeUrlRuns(s);
-  s = _mergeNumericRuns(s);
-  s = _mergeNoSpaceWordChains(s);
-  _carryTrailingForwardStickyAcrossCjk(s);
+  final c = _classify(text);
+  var s = c.segments;
+  if (c.hasNonWordText) {
+    s = _mergeLeftSticky(s);
+    s = _mergeForwardSticky(s);
+  }
+  if (c.hasGlue) s = _mergeGlueConnected(s);
+  if (c.hasNonWordText) s = _mergeUrlRuns(s);
+  if (c.hasDigit) s = _mergeNumericRuns(s);
+  if (c.hasNonWordText) s = _mergeNoSpaceWordChains(s);
+  if (c.hasCjk && c.hasNonWordText) _carryTrailingForwardStickyAcrossCjk(s);
   return s;
 }
 

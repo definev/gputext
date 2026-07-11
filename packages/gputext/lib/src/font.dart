@@ -248,6 +248,13 @@ class GPUFont {
   /// pressure from [variantExact] / many static weights.
   static const variantCacheCapacity = 64;
 
+  /// Called with each variant instance dropped from a base font's cache (LRU
+  /// overflow or [clearVariantCache]) so engine-side caches — HB font handle,
+  /// segment metrics — release immediately instead of waiting for GC, which
+  /// atlas references can defer indefinitely. Set by [GPUTextEngine];
+  /// eviction is idempotent, so re-shaping an evicted variant just rebuilds.
+  static void Function(GPUFont evicted)? onVariantEvicted;
+
   /// Variant instances by normalized coordinate key (base font only).
   /// LinkedHashMap: re-insert on hit for LRU eviction at [variantCacheCapacity].
   final Map<String, GPUFont> _variantCache = <String, GPUFont>{};
@@ -256,11 +263,15 @@ class GPUFont {
   @visibleForTesting
   int get debugVariantCacheLength => _variantCache.length;
 
-  /// Drop all cached variants (and their HB/metrics via GC / unregister).
-  /// No-op on non-base fonts.
+  /// Drop all cached variants, releasing their shaper caches through
+  /// [onVariantEvicted]. No-op on non-base fonts.
   void clearVariantCache() {
     if (_base != null) return;
+    final evicted = List<GPUFont>.from(_variantCache.values);
     _variantCache.clear();
+    for (final v in evicted) {
+      onVariantEvicted?.call(v);
+    }
   }
 
   /// Evict HB-facing resources for this font and every cached variant.
