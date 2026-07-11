@@ -1,3 +1,4 @@
+import 'package:code_assets/code_assets.dart';
 import 'package:flutter_gpu_shaders/build.dart';
 import 'package:hooks/hooks.dart';
 import 'package:logging/logging.dart';
@@ -13,9 +14,19 @@ void main(List<String> args) async {
       assetMode: ShaderBundleAssetMode.dataAssetsIfAvailable,
     );
 
+    if (!input.config.buildCodeAssets) return;
+
     // HarfBuzz amalgamation from the third_party/harfbuzz git submodule
-    // (OT-only, no FreeType/CoreText).
+    // (OT-only, no FreeType/CoreText/DirectWrite).
     // assetName must match the library URI used by @Native(assetId: ...).
+    //
+    // C++ runtime linking is per-OS so the shared library loads without a
+    // separately packaged C++ runtime next to the Flutter app:
+    // - Android: c++_static (Flutter does not ship libc++_shared.so)
+    // - Linux: -static-libstdc++ embeds libstdc++ (avoids host .so skew)
+    // - iOS/macOS: system libc++ is always present
+    // - Windows: cppLinkStdLib is ignored; MSVC /MD matches Flutter
+    final os = input.config.code.targetOS;
     final hb = CBuilder.library(
       name: 'gputext_harfbuzz',
       assetName: 'src/native/harfbuzz_dylib.dart',
@@ -23,11 +34,12 @@ void main(List<String> args) async {
       includes: ['third_party/harfbuzz/src'],
       language: Language.cpp,
       std: 'c++17',
-      flags: const ['-fno-exceptions', '-fno-rtti'],
+      flags: _hbFlags(os),
       defines: const {
         'HB_NO_MT': '1',
         'HB_NO_PRAGMA_GCC_DIAGNOSTIC': '1',
       },
+      cppLinkStdLib: _hbCppLinkStdLib(os),
     );
     await hb.run(
       input: input,
@@ -39,3 +51,33 @@ void main(List<String> args) async {
     );
   });
 }
+
+/// Compiler/linker flags for the HarfBuzz amalgamation.
+List<String> _hbFlags(OS os) => switch (os) {
+  OS.windows => const [
+    // MSVC / clang-cl: no exceptions or RTTI (matches HB_NO_* build).
+    '/EHs-',
+    '/GR-',
+  ],
+  OS.linux => const [
+    '-fno-exceptions',
+    '-fno-rtti',
+    // Embed libstdc++/libgcc so the .so does not depend on the host's
+    // shared C++ runtime (AppImage / older distros).
+    '-static-libstdc++',
+    '-static-libgcc',
+  ],
+  // Android, iOS, macOS, Fuchsia — clang.
+  _ => const ['-fno-exceptions', '-fno-rtti'],
+};
+
+/// C++ standard library selection for [CBuilder.cppLinkStdLib].
+///
+/// Returns null on Windows (ignored by native_toolchain_c) and unknown OSes.
+String? _hbCppLinkStdLib(OS os) => switch (os) {
+  OS.android => 'c++_static',
+  OS.iOS || OS.macOS || OS.fuchsia => 'c++',
+  OS.linux => 'stdc++',
+  OS.windows => null,
+  _ => null,
+};

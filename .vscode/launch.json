@@ -9,6 +9,14 @@
             "flutterMode": "profile"
         },
         {
+            "name": "Main (debug)",
+            "type": "dart",
+            "request": "launch",
+            "program": "lib/main.dart",
+            "cwd": "example",
+            "flutterMode": "debug"
+        },
+        {
             "name": "Bench",
             "type": "dart",
             "request": "launch",

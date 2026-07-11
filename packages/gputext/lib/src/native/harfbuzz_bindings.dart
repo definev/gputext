@@ -370,8 +370,14 @@ class HarfBuzzBindings {
   /// stop re-dlopening the library, whose handle is never closed.
   static bool _symbolLookupFailed = false;
 
+  /// True after a full load attempt failed (missing dylib / @Native). Avoids
+  /// re-probing the filesystem and re-invoking `@Native` on every shaper
+  /// access when HarfBuzz is unavailable for this process.
+  static bool _loadFailed = false;
+
   static HarfBuzzBindings? tryLoad() {
     if (_cached != null) return _cached;
+    if (_loadFailed || _symbolLookupFailed) return null;
     // 1) @Native code-asset path (requires non-empty native_assets.yaml).
     try {
       final buf = _hb_buffer_create();
@@ -381,10 +387,12 @@ class HarfBuzzBindings {
         return _cached = HarfBuzzBindings._fromNative();
       }
     } catch (_) {}
-    if (_symbolLookupFailed) return null;
-    // 2) Narrow fallback: only the package-local hooks output directory.
+    // 2) Narrow fallback: process-local / packaged soname, then hooks output.
     final lib = _openBundledDylib();
-    if (lib == null) return null;
+    if (lib == null) {
+      _loadFailed = true;
+      return null;
+    }
     try {
       loadedViaNative = false;
       return _cached = HarfBuzzBindings._fromLibrary(lib);
@@ -584,22 +592,33 @@ class HarfBuzzBindings {
         .cast(),
   );
 
-  /// Last-resort open of the hooks-built dylib next to the package cwd.
-  /// Prefer fixing native-assets wiring over relying on this.
+  /// Last-resort open of the hooks-built dylib.
+  /// Prefer fixing native-assets / `@Native` wiring over relying on this.
   static DynamicLibrary? _openBundledDylib() {
     final names = <String>[
+      // Flutter desktop/mobile packaging (native_assets.json "absolute").
+      if (Platform.isMacOS || Platform.isIOS)
+        'gputext_harfbuzz.framework/gputext_harfbuzz',
       if (Platform.isMacOS || Platform.isIOS) 'libgputext_harfbuzz.dylib',
       if (Platform.isLinux || Platform.isAndroid) 'libgputext_harfbuzz.so',
       if (Platform.isWindows) 'gputext_harfbuzz.dll',
     ];
+    // Packaged into the app (jniLibs / Frameworks / next to the executable).
+    for (final name in names) {
+      try {
+        return DynamicLibrary.open(name);
+      } catch (_) {}
+    }
+    // Desktop tests / JIT: hooks output under the package or workspace cwd.
     final os = Platform.operatingSystem;
     final dirs = <String>[
       'build/native_assets/$os',
-      // When tests run from the workspace root.
       'packages/gputext/build/native_assets/$os',
     ];
     for (final dir in dirs) {
       for (final name in names) {
+        // Skip framework-relative names in filesystem probes.
+        if (name.contains('.framework/')) continue;
         final path = '$dir${Platform.pathSeparator}$name';
         if (File(path).existsSync()) {
           try {

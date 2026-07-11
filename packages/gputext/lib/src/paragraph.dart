@@ -233,13 +233,15 @@ class LineRun extends LineItem {
 
   final GPUFont font;
   final double fontSizePx;
-  final List<double> color;
+
+  /// Aliases [TextRun.color] until a paint-only detach copies ownership.
+  List<double> color;
   final double letterSpacingPx;
   final double wordSpacingPx;
-  final InlineDecoration? decoration;
-  final List<double>? background;
-  final List<InlineShadow>? shadows;
-  final Object? source;
+  InlineDecoration? decoration;
+  List<double>? background;
+  List<InlineShadow>? shadows;
+  Object? source;
   final FillRule fillRule;
 
   /// Source InlineItem index + UTF-16 offset of this slice within that

@@ -3,8 +3,11 @@
 // Per-draw state (instance buffer, atlas textures, frame uniforms) is passed
 // into renderInstances so many widgets can share one pipeline.
 
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter_gpu/gpu.dart' as gpu;
 
 import '../atlas.dart';
@@ -64,21 +67,35 @@ class GPUTextPipeline {
 
   static Future<GPUTextPipeline> create() async {
     gpu.ShaderLibrary? library;
+    // One entry per failed attempt; distinct causes only (all four asset keys
+    // fail with the same message when Impeller itself is off).
+    final failures = <String>[];
+    void recordFailure(String attempt, Object error) {
+      final cause = '$error';
+      if (!failures.any((f) => f.endsWith(cause))) {
+        failures.add('$attempt: $cause');
+      }
+    }
+
     // Try legacy + DataAsset keys, bare and packages/gputext/-prefixed.
     // Which one is present depends on Flutter data-assets support and whether
     // gputext is the app root or a dependency.
     for (final asset in _bundleAssetKeys) {
       try {
         library = await gpu.ShaderLibrary.fromAsset(asset);
-      } catch (_) {
+      } catch (e) {
+        recordFailure(asset, e);
         library = null;
       }
       if (library != null) break;
     }
+    library ??= await _loadBundleFromPackageDir(recordFailure);
     if (library == null) {
       throw Exception(
-        'Failed to load gputext shader bundle '
-        '(tried: ${_bundleAssetKeys.join(', ')})',
+        'Failed to load gputext shader bundle.\n'
+        '  ${failures.join('\n  ')}\n'
+        'If this is a test, run it with '
+        '`flutter test --enable-impeller --enable-flutter-gpu`.',
       );
     }
 
@@ -88,6 +105,89 @@ class GPUTextPipeline {
       throw Exception('Missing GPUText shaders in bundle');
     }
 
+    return _fromShaders(vert, frag);
+  }
+
+  /// Debug/test fallback: `flutter test` never registers hook data assets
+  /// with the tester's asset manager, so none of the [_bundleAssetKeys]
+  /// resolve there. The build hook always writes the compiled bundle to
+  /// `build/shaderbundles/` under the package root (whatever the asset mode),
+  /// and hooks run as part of `flutter test`, so that file exists and is
+  /// fresh — load it directly with [gpu.ShaderLibrary.fromBytes].
+  static Future<gpu.ShaderLibrary?> _loadBundleFromPackageDir(
+    void Function(String attempt, Object error) recordFailure,
+  ) async {
+    if (kReleaseMode) return null;
+    final candidates = <String>{};
+    try {
+      // Resolve gputext's package root the way the tester itself does:
+      // through package_config.json. (Isolate.resolvePackageUri is
+      // unsupported in flutter_tester.) Covers consumers running their own
+      // tests, where cwd is their package, not gputext's.
+      final root = _gputextRootFromPackageConfig();
+      if (root != null) {
+        candidates.add('$root/$_bundleAssetLegacy');
+      }
+    } catch (e) {
+      recordFailure('package:gputext resolution', e);
+    }
+    candidates.add(_bundleAssetLegacy); // cwd when gputext runs its own tests
+    for (final path in candidates) {
+      final file = File(path);
+      if (!file.existsSync()) {
+        recordFailure('file $path', 'not found');
+        continue;
+      }
+      try {
+        final bytes = file.readAsBytesSync();
+        final library = await gpu.ShaderLibrary.fromBytes(
+          bytes.buffer.asByteData(bytes.offsetInBytes, bytes.lengthInBytes),
+        );
+        if (library != null) return library;
+        recordFailure('file $path', 'unparseable shader bundle');
+      } catch (e) {
+        recordFailure('file $path', e);
+      }
+    }
+    return null;
+  }
+
+  /// gputext's package root, from the nearest package_config.json at or
+  /// above cwd (pub workspaces keep it at the workspace root, not next to
+  /// the package under test). Null when no config or no gputext entry.
+  static String? _gputextRootFromPackageConfig() {
+    var dir = Directory.current;
+    while (true) {
+      final config = File('${dir.path}/.dart_tool/package_config.json');
+      if (config.existsSync()) {
+        final doc =
+            jsonDecode(config.readAsStringSync()) as Map<String, Object?>;
+        final packages = doc['packages'] as List<Object?>? ?? const [];
+        for (final entry in packages) {
+          final pkg = entry as Map<String, Object?>;
+          if (pkg['name'] != 'gputext') continue;
+          // rootUri is resolved against the config file's own location and
+          // may be relative ("../packages/gputext") or absolute (file:///).
+          var rootUri = Uri.parse(pkg['rootUri']! as String);
+          if (!rootUri.path.endsWith('/')) {
+            rootUri = rootUri.replace(path: '${rootUri.path}/');
+          }
+          final resolved = config.absolute.uri.resolveUri(rootUri);
+          if (!resolved.isScheme('file')) return null;
+          final path = File.fromUri(resolved).path;
+          return path.endsWith(Platform.pathSeparator)
+              ? path.substring(0, path.length - 1)
+              : path;
+        }
+        return null;
+      }
+      final parent = dir.parent;
+      if (parent.path == dir.path) return null;
+      dir = parent;
+    }
+  }
+
+  static GPUTextPipeline _fromShaders(gpu.Shader vert, gpu.Shader frag) {
     final vertexLayout = gpu.VertexLayout(
       buffers: [
         const gpu.VertexBuffer(

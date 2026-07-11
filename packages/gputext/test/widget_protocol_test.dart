@@ -288,6 +288,97 @@ void main() {
     expect(rects.length, 2);
   });
 
+  testWidgets('paint-only color changes do not miss the layout cache', (
+    tester,
+  ) async {
+    final engine = GPUText.instance;
+    engine.debugResetCacheCounters();
+
+    Widget build(Color color) => MaterialApp(
+      home: Center(
+        child: SizedBox(
+          width: 300,
+          child: GPURichText(
+            text: TextSpan(
+              style: style.copyWith(color: color),
+              text: 'color animation should not reshape',
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(build(const Color(0xFF000000)));
+    final missesAfterLayout = engine.debugLayoutCacheMisses;
+    final hitsAfterLayout = engine.debugLayoutCacheHits;
+
+    // Animate color across several frames — RenderComparison.paint only.
+    for (var i = 1; i <= 8; i++) {
+      await tester.pumpWidget(build(Color.fromARGB(255, i * 20, 40, 80)));
+    }
+
+    // No new flatten+prepare inserts: misses stay flat; hits may rise if
+    // something else looks up the original key, but must not grow misses.
+    expect(engine.debugLayoutCacheMisses, missesAfterLayout);
+    expect(engine.debugLayoutCacheHits, greaterThan(hitsAfterLayout));
+  });
+
+  testWidgets('same text in two colors shares layout but paints each color', (
+    tester,
+  ) async {
+    final engine = GPUText.instance;
+    engine.debugResetCacheCounters();
+
+    const text = 'shared shaping, private colour';
+    const red = Color(0xFFFF0000);
+    const blue = Color(0xFF0000FF);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Column(
+          children: [
+            SizedBox(
+              width: 250,
+              child: GPURichText(
+                text: TextSpan(
+                  style: style.copyWith(color: red),
+                  text: text,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 250,
+              child: GPURichText(
+                text: TextSpan(
+                  style: style.copyWith(color: blue),
+                  text: text,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    // The two paragraphs differ only in colour, so the second reuses the
+    // first's shaped layout from the paint-independent cache.
+    expect(engine.debugLayoutCacheHits, greaterThan(0));
+
+    // ...yet each paints its own colour. Instance layout: 16 floats/glyph,
+    // RGBA at offsets 8..11 (see pipeline.dart vertex layout).
+    final ros = tester
+        .renderObjectList<RenderGPUParagraph>(find.byType(GPURichText))
+        .toList(growable: false);
+    (double, double, double) firstColor(RenderGPUParagraph ro) {
+      final inst = ro.debugInstances;
+      expect(inst, isNotNull, reason: 'instances emitted during paint');
+      expect(inst!.length, greaterThanOrEqualTo(12));
+      return (inst[8], inst[9], inst[10]);
+    }
+
+    expect(firstColor(ros[0]), (1.0, 0.0, 0.0)); // red
+    expect(firstColor(ros[1]), (0.0, 0.0, 1.0)); // blue
+  });
+
   testWidgets('empty text still reports one line of height', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

@@ -370,6 +370,13 @@ class RenderGPUParagraph extends RenderBox
   // ---- layout artifacts ----
   wf.ParagraphLines? _para;
   List<wf.InlineItem>? _items;
+  wf.PreparedParagraph? _prepared;
+  List<wf.InlineItem>? _localRuns;
+
+  /// True when [_items]/[_prepared] alias the engine's shared layout cache
+  /// and must be cloned before paint-field mutation.
+  bool _itemsFromSharedCache = false;
+  Object? _localPrepareKey;
   wf.ParagraphGeometry? _geometryCache;
   int _geometryGen = -1;
   List<PlaceholderDimensions> _layoutDims = const [];
@@ -378,7 +385,7 @@ class RenderGPUParagraph extends RenderBox
   double _lastMaxWidth = double.infinity;
   List<wf.HitSpanBox> _hitBoxes = const [];
   bool _hasInteractiveSpans = false;
-  bool _paraDirty = false; // paint-only span change pending re-break
+  bool _paraDirty = false; // paint-only span change pending recolor
   int _contentGen = 0; // bumped on any content change (layout or paint-only)
 
   // ---- paint artifacts ----
@@ -662,6 +669,11 @@ class RenderGPUParagraph extends RenderBox
 
   void _needsRelayout() {
     _para = null;
+    _items = null;
+    _prepared = null;
+    _localRuns = null;
+    _localPrepareKey = null;
+    _itemsFromSharedCache = false;
     _paraDirty = false;
     markNeedsLayout();
     markNeedsSemanticsUpdate();
@@ -863,8 +875,11 @@ class RenderGPUParagraph extends RenderBox
   /// Cache key for flatten+prepare results (paragraphs without inline
   /// children only — placeholder dimensions vary per widget). Prepared
   /// paragraphs are width-independent, so the key carries no constraints:
-  /// resize relayouts and all intrinsic passes reuse one entry. Relies on
-  /// TextSpan's deep ==/hashCode; fontGeneration invalidates on font churn.
+  /// resize relayouts and all intrinsic passes reuse one entry. Keyed on a
+  /// paint-INDEPENDENT [SpanLayoutKey] so color-only variants (animations,
+  /// the same label in two colors) reuse one shaped layout; a hit adopts it
+  /// by cloning + recoloring (see [_flattenAndPrepare]). fontGeneration
+  /// invalidates on font churn.
   Object? _prepareCacheKey() {
     if (childCount > 0) return null;
     // Spans with recognizers stay out of the process-lifetime shared cache:
@@ -882,7 +897,7 @@ class RenderGPUParagraph extends RenderBox
     });
     if (hasRecognizer) return null;
     return (
-      _text,
+      SpanLayoutKey(_text),
       _textScaler,
       _engine.fontGeneration,
       _textDirection,
@@ -890,16 +905,153 @@ class RenderGPUParagraph extends RenderBox
     );
   }
 
+  Object _dimsSignature(List<PlaceholderDimensions> dims) {
+    if (dims.isEmpty) return 0;
+    return Object.hashAll([
+      for (final d in dims)
+        Object.hash(d.size.width, d.size.height, d.baselineOffset),
+    ]);
+  }
+
+  /// Per-render-object memo key. Includes placeholder dims when present so
+  /// WidgetSpan size changes invalidate; shares the TextSpan identity with
+  /// the engine cache when that applies.
+  Object _localKey(List<PlaceholderDimensions> dims) {
+    final shared = _prepareCacheKey();
+    if (shared != null) return shared;
+    return (
+      _text,
+      _textScaler,
+      _engine.fontGeneration,
+      _textDirection,
+      _locale,
+      _dimsSignature(dims),
+    );
+  }
+
+  void _rememberPrepared(
+    Object localKey,
+    List<wf.InlineItem>? runs,
+    wf.PreparedParagraph? prepared, {
+    required bool fromSharedCache,
+  }) {
+    _localPrepareKey = localKey;
+    _localRuns = runs;
+    _prepared = prepared;
+    _itemsFromSharedCache = fromSharedCache && prepared != null;
+  }
+
+  /// A [wf.PreparedParagraph] over [cloned] reusing [src]'s width-independent
+  /// analysis (line-break, segments, intrinsics reference items by index, so
+  /// an index-aligned clone keeps them valid). Shaped glyph data is shared via
+  /// the clone; only paint fields diverge.
+  static wf.PreparedParagraph _clonedPreparedFrom(
+    List<wf.InlineItem> cloned,
+    wf.PreparedParagraph src,
+  ) => wf.PreparedParagraph(
+    items: cloned,
+    lineBreak: src.lineBreak,
+    segmentTexts: src.segmentTexts,
+    segmentPieces: src.segmentPieces,
+    graphemeEndOffsets: src.graphemeEndOffsets,
+    minIntrinsicWidth: src.minIntrinsicWidth,
+    maxIntrinsicWidth: src.maxIntrinsicWidth,
+    fallbackStyleItem: src.fallbackStyleItem,
+  );
+
+  /// Clone items out of the shared layout cache before mutating paint
+  /// fields, then re-break so LineRuns alias the new color lists.
+  void _detachItemsIfShared() {
+    if (!_itemsFromSharedCache) return;
+    final items = _items;
+    final prepared = _prepared;
+    if (items == null || prepared == null) {
+      _itemsFromSharedCache = false;
+      return;
+    }
+    final cloned = cloneInlineItemsForPaint(items);
+    _items = cloned;
+    _localRuns = cloned;
+    _prepared = _clonedPreparedFrom(cloned, prepared);
+    _para = _break(_prepared!, _lastWrapWidth, _lastMaxWidth);
+    _itemsFromSharedCache = false;
+  }
+
+  /// Take a private, correctly-painted copy of a shared-cache layout: clone
+  /// the read-only items (sharing shaped glyph data) and re-apply THIS span's
+  /// paint + source pointers. Returns null when the span no longer matches the
+  /// cached structure, so the caller reshapes from scratch. The clone is
+  /// owned (not `fromSharedCache`), so a later recolor mutates it in place.
+  (List<wf.InlineItem>, wf.PreparedParagraph)? _adoptSharedLayout(
+    List<wf.InlineItem> sharedRuns,
+    wf.PreparedParagraph sharedPrepared,
+    Object localKey,
+  ) {
+    final cloned = cloneInlineItemsForPaint(sharedRuns);
+    if (!patchInlineItemsPaint(cloned, _text)) return null;
+    final prepared = _clonedPreparedFrom(cloned, sharedPrepared);
+    _rememberPrepared(localKey, cloned, prepared, fromSharedCache: false);
+    return (cloned, prepared);
+  }
+
+  void _syncLinePaintFromItems() {
+    final items = _items;
+    final para = _para;
+    if (items == null || para == null) return;
+    for (final line in para.lines) {
+      for (final item in line.items) {
+        if (item is wf.LineRun && item.itemIndex >= 0) {
+          final run = items[item.itemIndex] as wf.TextRun;
+          item.color = run.color;
+          item.background = run.background;
+          item.decoration = run.decoration;
+          item.shadows = run.shadows;
+          item.source = run.source;
+        }
+        // LineEmoji holds the EmojiItem by reference — already patched.
+      }
+    }
+  }
+
+  /// Paint/metadata-only update: recolor existing runs in place. Falls back
+  /// to a full flatten+prepare when the span tree no longer matches.
+  bool _recolorPrepared() {
+    final items = _items;
+    if (items == null || _prepared == null || _para == null) return false;
+    // Reuse (and LRU-rewarm) the shared layout entry: the key is
+    // paint-independent, so a long color animation keeps hitting one entry
+    // instead of letting it age out and forcing a reshape on the next miss.
+    final key = _prepareCacheKey();
+    if (key != null) _engine.layoutCacheGet(key);
+    _detachItemsIfShared();
+    if (!patchInlineItemsPaint(_items!, _text)) return false;
+    _syncLinePaintFromItems();
+    _localRuns = _items;
+    _localPrepareKey = _localKey(_layoutDims);
+    return true;
+  }
+
   /// Flatten + prepare (measure) the span, through the engine's shared
-  /// cache. Returns a null paragraph while fonts are loading or for empty
-  /// text (`runs` distinguishes the two, matching flattenSpan).
+  /// cache and a per-render-object memo. Returns a null paragraph while
+  /// fonts are loading or for empty text (`runs` distinguishes the two,
+  /// matching flattenSpan).
   (List<wf.InlineItem>?, wf.PreparedParagraph?) _flattenAndPrepare(
     List<PlaceholderDimensions> dims,
   ) {
+    final localKey = _localKey(dims);
+    if (_localPrepareKey == localKey && _prepared != null) {
+      return (_localRuns ?? _prepared!.items, _prepared);
+    }
     final key = _prepareCacheKey();
     if (key != null) {
       final cached = _engine.layoutCacheGet(key);
-      if (cached != null) return (cached.$1, cached.$2);
+      if (cached != null) {
+        // The entry is paint-independent (any color that shares this layout
+        // may have inserted it), so adopt a recolored private copy. Only if
+        // the structure unexpectedly disagrees do we fall through to reshape.
+        final adopted = _adoptSharedLayout(cached.$1, cached.$2, localKey);
+        if (adopted != null) return adopted;
+      }
     }
     final runs = flattenSpan(
       _text,
@@ -909,8 +1061,12 @@ class RenderGPUParagraph extends RenderBox
       textDirection: _textDirection,
       locale: _locale,
     );
-    if (runs == null || runs.isEmpty) return (runs, null);
+    if (runs == null || runs.isEmpty) {
+      _rememberPrepared(localKey, runs, null, fromSharedCache: false);
+      return (runs, null);
+    }
     final prepared = wf.prepareParagraph(runs);
+    var fromShared = false;
     if (key != null) {
       // Cost in UTF-16 units so the engine can bound cache bytes, not just
       // entry count (shaped-run size tracks text length).
@@ -919,7 +1075,9 @@ class RenderGPUParagraph extends RenderBox
         cost += r is wf.TextRun ? r.originalText.length : 1;
       }
       _engine.layoutCachePut(key, (runs, prepared), cost: cost);
+      fromShared = true;
     }
+    _rememberPrepared(localKey, runs, prepared, fromSharedCache: fromShared);
     return (runs, prepared);
   }
 
@@ -1004,6 +1162,12 @@ class RenderGPUParagraph extends RenderBox
       _boxWidth = r.boxWidth;
       _lastWrapWidth = r.wrapWidth;
       _lastMaxWidth = constraints.maxWidth;
+      // A color change (RenderComparison.paint) that coincided with a relayout
+      // set _paraDirty with no paint in between; the paint-independent memo may
+      // have handed back the pre-change colors, so apply the pending recolor
+      // now. A fresh flatten/adopt already carries the right paint, so this is
+      // a cheap no-op patch in that case.
+      if (_paraDirty && r.para != null) _recolorPrepared();
       _paraDirty = false;
       _contentGen++;
       size = r.size;
@@ -1342,12 +1506,15 @@ class RenderGPUParagraph extends RenderBox
   void _prepareContent() {
     GPUTextTimeline.timeSync(GPUTextTimeline.prepareContent, () {
       if (_paraDirty) {
-        // Paint-only span change (e.g. colors): re-break at the same widths;
-        // metrics are unchanged by construction of RenderComparison.paint.
-        final (runs, prepared) = _flattenAndPrepare(_layoutDims);
-        if (prepared != null) {
-          _para = _break(prepared, _lastWrapWidth, _lastMaxWidth);
-          _items = runs;
+        // Paint-only span change (e.g. colors): reuse shaped/prepared layout
+        // and patch paint fields in place. Metrics are unchanged by
+        // construction of RenderComparison.paint.
+        if (!_recolorPrepared()) {
+          final (runs, prepared) = _flattenAndPrepare(_layoutDims);
+          if (prepared != null) {
+            _para = _break(prepared, _lastWrapWidth, _lastMaxWidth);
+            _items = runs;
+          }
         }
         _paraDirty = false;
       }

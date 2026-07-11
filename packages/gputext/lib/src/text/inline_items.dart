@@ -119,7 +119,10 @@ class TextRun extends InlineItem {
 
   final GPUFont font;
   final double fontSizePx;
-  final List<double> color;
+
+  /// RGBA 0..1. Mutable so paint-only span updates can recolor without
+  /// reshaping; shared [LineRun]s alias this list until detached.
+  List<double> color;
   final double letterSpacingPx;
   final double wordSpacingPx;
 
@@ -128,14 +131,14 @@ class TextRun extends InlineItem {
   /// ascent and descent proportionally to the font's natural metrics.
   final double? height;
 
-  final InlineDecoration? decoration;
+  InlineDecoration? decoration;
   final FillRule fillRule;
 
   /// Highlight color behind the run (TextStyle.backgroundColor), RGBA 0..1.
-  final List<double>? background;
+  List<double>? background;
 
   /// Shadows painted under the run's glyphs (TextStyle.shadows).
-  final List<InlineShadow>? shadows;
+  List<InlineShadow>? shadows;
 
   /// TextStyle.leadingDistribution: true → the height multiplier's extra
   /// leading splits evenly above/below instead of proportionally; null →
@@ -161,13 +164,13 @@ class TextRun extends InlineItem {
 
   /// Opaque origin marker (the source TextSpan) so hit-testing can map a
   /// glyph position back to its span (recognizers). Never inspected here.
-  final Object? source;
+  Object? source;
 }
 
 /// A native color-emoji cluster: one advance, N stacked COLR layer glyphs
 /// each with its palette color (null → the surrounding text color).
 class EmojiItem extends InlineItem {
-  const EmojiItem({
+  EmojiItem({
     required this.font,
     required this.fontSizePx,
     required this.advanceUnits,
@@ -188,12 +191,15 @@ class EmojiItem extends InlineItem {
   final double fontSizePx;
   final double advanceUnits; // font units
   final List<ColrLayer> layers;
-  final List<double> textColor;
+
+  /// Surrounding text color for COLR layers that use the text palette slot.
+  /// Mutable for paint-only span updates (see [TextRun.color]).
+  List<double> textColor;
 
   /// Highlight color behind the cluster, RGBA 0..1.
-  final List<double>? background;
+  List<double>? background;
 
-  final Object? source;
+  Object? source;
 
   double get width => advanceUnits / font.unitsPerEm * fontSizePx;
 }

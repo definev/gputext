@@ -24,8 +24,11 @@ melos:
       description: Run static analysis in all packages.
 
     test:
-      run: melos exec --fail-fast -- flutter test
-      description: Run tests in all packages.
+      run: melos exec --fail-fast -- flutter test --enable-impeller --enable-flutter-gpu
+      description: >-
+        Run tests in all packages with flutter_gpu enabled, so GPU init and
+        the real paint path run under flutter_tester. Drop the flags to test
+        the degrade-to-blank path.
 
     format:
       run: melos exec -- dart format .

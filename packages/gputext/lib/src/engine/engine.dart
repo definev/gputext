@@ -118,8 +118,9 @@ class GPUTextEngine extends ChangeNotifier {
       _shaperResolved = true;
     } else {
       _shaper = const LegacyGsubShaper();
-      // Keep unresolved so a later successful load (e.g. after hooks build)
-      // can upgrade; log once.
+      // tryLoad negative-caches failure; resolve once so layout does not
+      // re-enter the load path on every shaper access.
+      _shaperResolved = true;
       if (!_loggedHbFallback) {
         _loggedHbFallback = true;
         debugPrint(

@@ -52,6 +52,21 @@ using the bundled Lato default. See the
 - **WidgetSpan children** — measured in layout and painted on top of the text
   image, same as `RichText`.
 
+## Testing
+
+`flutter test` boots the tester without Impeller, so gputext widgets lay out
+but paint blank. To exercise the real GPU path in widget tests, enable both
+flags:
+
+```sh
+flutter test --enable-impeller --enable-flutter-gpu
+```
+
+In debug builds the shader bundle is loaded straight from gputext's package
+directory when asset lookup fails (the tester's asset manager never sees hook
+data assets), so this works in gputext's own tests and in packages that depend
+on it — no extra setup.
+
 ## Limits
 
 - Impeller / `flutter_gpu` only.
