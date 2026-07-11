@@ -392,6 +392,23 @@ class RenderGPUParagraph extends RenderBox
   wf.ParagraphInstances? _emitted;
   int _emittedGen = -1;
   int _emittedStructureGen = -1; // atlas.structureGeneration at emit time
+  // Inputs the last actual emit ran against — the layout fast path (resize)
+  // compares against these to prove a re-emit would be byte-identical without
+  // running it. _emittedPara is the wrapped lines; _emittedPrepared is the
+  // width-independent prepared paragraph (its identity == same glyph set).
+  wf.ParagraphLines? _emittedPara;
+  wf.PreparedParagraph? _emittedPrepared;
+  double _emittedBoxWidth = 0;
+  // Glyph set + atlas layout the ensureShaped walk last ran against; lets a
+  // resize (same prepared, unchanged structureGen) skip re-banding.
+  wf.PreparedParagraph? _ensuredPrepared;
+  int _ensuredStructureGen = -1;
+  // A paint-only span change (color/decoration) mutates run paint in place
+  // without changing the prepared paragraph or the layout, so the layout fast
+  // path can't detect it. Set when such a change lands, cleared on the next
+  // actual emit; the fast path refuses to skip while it is set. Survives a
+  // performLayout that consumed _paraDirty (recolor coinciding with a resize).
+  bool _paintDirtiedSinceEmit = false;
   gpu.DeviceBuffer? _instanceBuffer;
   gpu.GpuImageSurface? _surface;
   ui.Image? _image;
@@ -402,7 +419,13 @@ class RenderGPUParagraph extends RenderBox
   static const _retiredCapacity = 8;
   final List<(gpu.GpuImageSurface?, ui.Image, int)> _retired = [];
   bool _timingsHooked = false;
-  (int, double)? _cacheKey; // (contentGen, renderScale)
+
+  /// Identifies the surface currently in [_image]: the emitted instances (by
+  /// object identity — a re-emit that comes out byte-identical keeps the same
+  /// [_emitted] object, see [_prepareContent]), the render scale, and the
+  /// coverage uniforms baked into the surface. An unchanged key means the
+  /// cached image is still valid and paint re-blits it instead of re-rendering.
+  (wf.ParagraphInstances, double, double, double, double)? _cacheKey;
 
   /// Process-wide count of offscreen GPU renders (_renderSurface successes),
   /// including resize-heal and zoom-step re-renders. Benchmarks read deltas
@@ -414,6 +437,20 @@ class RenderGPUParagraph extends RenderBox
   /// surface. With bucketed allocation, a steady resize/width animation
   /// should hold this near zero while renders keep counting.
   static int debugSurfaceAllocs = 0;
+
+  /// Process-wide count of re-emits whose instances came out byte-identical to
+  /// the live buffer, so the offscreen render was skipped entirely and the
+  /// cached image re-blit. High during a steady left-aligned width resize:
+  /// line breaks that don't move produce identical glyph positions, so the
+  /// only per-frame cost is the cheap relayout + emit + the re-blit — no
+  /// instance re-upload, render pass, submit, or image/retire churn.
+  /// Benchmarks read deltas to attribute the resize fast path.
+  static int debugSurfaceRenderSkips = 0;
+
+  /// Test/benchmark knob: force every re-emit down the full re-upload +
+  /// re-render path (as before the byte-identical fast path existed), so an
+  /// A/B run can attribute the resize-width win. Never set in production.
+  static bool debugDisableRenderSkip = false;
 
   /// Bytes of the emitted per-glyph instance buffer (64 per glyph).
   int get debugInstanceBytes => _emitted?.instances.lengthInBytes ?? 0;
@@ -444,12 +481,14 @@ class RenderGPUParagraph extends RenderBox
       case RenderComparison.metadata:
         _text = value;
         _paraDirty = true; // hit boxes reference source spans — refresh
+        _paintDirtiedSinceEmit = true; // recolor may outlive _paraDirty
         _contentGen++;
         markNeedsSemanticsUpdate();
         markNeedsPaint();
       case RenderComparison.paint:
         _text = value;
         _paraDirty = true;
+        _paintDirtiedSinceEmit = true; // recolor may outlive _paraDirty
         _contentGen++;
         markNeedsSemanticsUpdate();
         markNeedsPaint();
@@ -1526,30 +1565,80 @@ class RenderGPUParagraph extends RenderBox
       if (_emitted == null ||
           _emittedGen != _contentGen ||
           _emittedStructureGen != structureGen) {
-        for (final line in para.lines) {
-          for (final item in line.items) {
-            if (item is wf.LineRun) {
-              _engine.atlas.ensureShaped(item.shaped);
-            } else if (item is wf.LineEmoji) {
-              for (final layer in item.item.layers) {
-                _engine.atlas.ensureGlyphId(item.item.font, layer.glyphId);
+        final prepared = _prepared;
+        // Layout fast path — the resize-width win. When the glyph set (prepared
+        // identity), the atlas layout (structureGen), and the line partition
+        // are all unchanged, and no recolor touched paint, the emit is
+        // guaranteed byte-identical: skip ensureShaped, emitInstances, and the
+        // offscreen render together and reuse the cached artifacts. Positions
+        // are box-width-independent for left/start-LTR; other alignments and
+        // justify also need the box width unchanged.
+        if (!_paintDirtiedSinceEmit &&
+            !debugDisableRenderSkip &&
+            _emitted != null &&
+            _emittedPara != null &&
+            _emittedStructureGen == structureGen &&
+            identical(prepared, _emittedPrepared) &&
+            (_resolvedAlign == wf.TextAlign.left ||
+                _boxWidth == _emittedBoxWidth) &&
+            _sameLayout(para, _emittedPara!)) {
+          _emittedGen = _contentGen;
+          _emittedPara = para;
+          debugSurfaceRenderSkips++;
+        } else {
+          // Ensure glyphs are banded. Skip the walk when the glyph set
+          // (prepared identity) and atlas layout (structureGen) are unchanged
+          // since we last banded — our fonts are pinned and growth keeps
+          // rowBase, so the glyphs are provably still resident and re-checking
+          // every one is pure map-lookup overhead.
+          if (!identical(prepared, _ensuredPrepared) ||
+              _ensuredStructureGen != structureGen) {
+            for (final line in para.lines) {
+              for (final item in line.items) {
+                if (item is wf.LineRun) {
+                  _engine.atlas.ensureShaped(item.shaped);
+                } else if (item is wf.LineEmoji) {
+                  for (final layer in item.item.layers) {
+                    _engine.atlas.ensureGlyphId(item.item.font, layer.glyphId);
+                  }
+                }
               }
             }
+            _ensuredPrepared = prepared;
+            _ensuredStructureGen = _engine.atlas.structureGeneration;
           }
+          final fresh = wf.emitInstances(
+            para,
+            _boxWidth,
+            _resolvedAlign,
+            _engine.atlas,
+          );
+          // Re-read: ensureGlyphs above cannot compact, only grow, and
+          // emitInstances read the table as it stands now.
+          final freshStructureGen = _engine.atlas.structureGeneration;
+          final prev = _emitted;
+          if (!debugDisableRenderSkip &&
+              prev != null &&
+              _emittedStructureGen == freshStructureGen &&
+              _sameInstances(prev.instances, fresh.instances)) {
+            // Byte-identical to the live buffer even though the cheap layout
+            // check bailed (e.g. first frame after a structure change): keep
+            // the uploaded buffer, image, and render cache key.
+            _emittedGen = _contentGen;
+            debugSurfaceRenderSkips++;
+          } else {
+            _emitted = fresh;
+            _hitBoxes = fresh.hitBoxes;
+            _instanceBuffer = null;
+            _emittedGen = _contentGen;
+            _emittedStructureGen = freshStructureGen;
+            _cacheKey = null;
+          }
+          _emittedPara = para;
+          _emittedPrepared = prepared;
+          _emittedBoxWidth = _boxWidth;
+          _paintDirtiedSinceEmit = false;
         }
-        _emitted = wf.emitInstances(
-          para,
-          _boxWidth,
-          _resolvedAlign,
-          _engine.atlas,
-        );
-        _hitBoxes = _emitted!.hitBoxes;
-        _instanceBuffer = null;
-        _emittedGen = _contentGen;
-        // Re-read: ensureGlyphs above cannot compact, but it can only grow, and
-        // emitInstances read the table as it stands now.
-        _emittedStructureGen = _engine.atlas.structureGeneration;
-        _cacheKey = null;
       }
       _engine.scheduleAtlasSweepIfNeeded();
     });
@@ -1786,7 +1875,13 @@ class RenderGPUParagraph extends RenderBox
         math.max(upper, 1e-3),
       );
 
-      final key = (_contentGen, scale);
+      final key = (
+        emitted,
+        scale,
+        _coverageGamma,
+        _coverageSharp,
+        _minificationGuardPx,
+      );
       var rendered = key == _cacheKey;
       if (!rendered) {
         rendered = _renderSurface(emitted, ink, scale);
@@ -1995,6 +2090,68 @@ class RenderGPUParagraph extends RenderBox
       w.toDouble(),
       h.toDouble(),
     );
+    return true;
+  }
+
+  /// Bit-exact equality of two instance buffers. Compared as raw 32-bit words
+  /// (not floats) so a re-emit only counts as identical when every glyph lands
+  /// at exactly the same place/color/band — the surface the previous emit
+  /// rendered is then still pixel-correct for the new one.
+  static bool _sameInstances(Float32List a, Float32List b) {
+    if (a.length != b.length) return false;
+    final aw = a.buffer.asInt32List(a.offsetInBytes, a.length);
+    final bw = b.buffer.asInt32List(b.offsetInBytes, b.length);
+    for (var i = 0; i < aw.length; i++) {
+      if (aw[i] != bw[i]) return false;
+    }
+    return true;
+  }
+
+  /// True when [a] and [b] partition the same runs into the same lines — a
+  /// necessary-and-sufficient condition for emitInstances to produce identical
+  /// glyph positions, GIVEN the caller has already established the runs
+  /// themselves are unchanged (same prepared paragraph, no recolor) and that
+  /// alignment/box-width can't shift positions. Only reads a few fields per
+  /// line item, so it is far cheaper than the emit + per-glyph atlas walk it
+  /// replaces. Line metrics (height/ascent → the y baseline) are derived from
+  /// the items and style, so equal items imply equal metrics; they are compared
+  /// anyway as a cheap guard.
+  static bool _sameLayout(wf.ParagraphLines a, wf.ParagraphLines b) {
+    final la = a.lines;
+    final lb = b.lines;
+    if (la.length != lb.length) return false;
+    for (var i = 0; i < la.length; i++) {
+      final lineA = la[i];
+      final lineB = lb[i];
+      final ia = lineA.items;
+      final ib = lineB.items;
+      if (ia.length != ib.length) return false;
+      if (lineA.height != lineB.height || lineA.ascent != lineB.ascent) {
+        return false;
+      }
+      for (var j = 0; j < ia.length; j++) {
+        final xa = ia[j];
+        final xb = ib[j];
+        if (xa is wf.LineRun) {
+          if (xb is! wf.LineRun ||
+              xa.itemIndex != xb.itemIndex ||
+              xa.startInItem != xb.startInItem ||
+              !identical(xa.font, xb.font) ||
+              xa.fontSizePx != xb.fontSizePx ||
+              xa.text != xb.text) {
+            return false;
+          }
+        } else if (xa is wf.LineEmoji) {
+          if (xb is! wf.LineEmoji || xa.itemIndex != xb.itemIndex) return false;
+        } else if (xa is wf.LinePlaceholder) {
+          if (xb is! wf.LinePlaceholder || xa.itemIndex != xb.itemIndex) {
+            return false;
+          }
+        } else {
+          return false;
+        }
+      }
+    }
     return true;
   }
 

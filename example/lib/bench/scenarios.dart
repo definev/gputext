@@ -144,6 +144,15 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
       benchText(e, TextSpan(text: sentences[i % 30], style: benchStyle())),
   ]);
 
+  // Built once per engine and reused across ticks, so only the enclosing
+  // SizedBox width changes each frame — Flutter reconciles the identical child
+  // widgets without rebuilding them. This is the REAL window-resize case
+  // (constraints animate, the text widget is stable), unlike reflow_width which
+  // rebuilds every text widget per frame and so charges gputext its whole
+  // widget-tree + span-expansion build cost every frame.
+  final reflowStableChildren = <EngineKind, List<Widget>>{};
+  final reflowSingleLineChildren = <EngineKind, List<Widget>>{};
+
   return [
     FrameScenario(
       id: 'frame.static_idle',
@@ -214,6 +223,76 @@ List<FrameScenario> frameScenarios(BenchContext ctx) {
               TextSpan(text: sentences[i % 30], style: benchStyle()),
             ),
         ], width: width);
+      },
+    ),
+    FrameScenario(
+      id: 'frame.reflow_width_stable',
+      label: 'animated wrap width, 20 paragraphs (stable widgets)',
+      desc:
+          'The real window-resize case: the 20 text widgets are built once and '
+          'reused, so only the enclosing width animates and Flutter relayouts '
+          'without rebuilding them. Unlike reflow_width, this does not charge '
+          'either engine a per-frame widget rebuild — it isolates layout + '
+          'paint, where gputext skips the offscreen render on frames whose line '
+          'breaks did not move (surfaceRenderSkips).',
+      path: 'pure',
+      build: (ctx, e, tick) {
+        final width = 330 + 90 * math.sin(tick * 2 * math.pi / 120);
+        final children = reflowStableChildren.putIfAbsent(
+          e,
+          () => [
+            for (var i = 0; i < 20; i++)
+              benchText(
+                e,
+                TextSpan(text: sentences[i % 30], style: benchStyle()),
+              ),
+          ],
+        );
+        return SizedBox(
+          width: width,
+          child: SingleChildScrollView(
+            physics: const NeverScrollableScrollPhysics(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: children,
+            ),
+          ),
+        );
+      },
+    ),
+    FrameScenario(
+      id: 'frame.reflow_width_single_line',
+      label: 'animated width, 20 single-line labels (stable widgets)',
+      desc:
+          'A resize-width case where line breaks never move: 20 short labels '
+          'that each fit on one line at every width. gputext skips the '
+          'offscreen render on every frame (surfaceRenderSkips ≈ frames × '
+          'labels) and just re-blits its cached image, while RichText relayouts '
+          'and re-records drawParagraph each frame. Isolates gputext\'s '
+          'stable-glyph fast path against RichText in the resize case.',
+      path: 'pure',
+      build: (ctx, e, tick) {
+        final width = 330 + 90 * math.sin(tick * 2 * math.pi / 120);
+        final children = reflowSingleLineChildren.putIfAbsent(
+          e,
+          () => [
+            for (var i = 0; i < 20; i++)
+              benchText(
+                e,
+                TextSpan(text: 'Label ${i + 1} · item', style: benchStyle()),
+              ),
+          ],
+        );
+        return SizedBox(
+          width: width,
+          child: SingleChildScrollView(
+            physics: const NeverScrollableScrollPhysics(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: children,
+            ),
+          ),
+        );
       },
     ),
     FrameScenario(

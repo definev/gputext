@@ -352,6 +352,7 @@ class _BenchPageState extends State<BenchPage>
     GPUText.instance.debugResetCacheCounters();
     RenderGPUParagraph.debugSurfaceRenders = 0;
     RenderGPUParagraph.debugSurfaceAllocs = 0;
+    RenderGPUParagraph.debugSurfaceRenderSkips = 0;
     final atlasBefore = _atlasCounters();
 
     _running = sc;
@@ -406,6 +407,7 @@ class _BenchPageState extends State<BenchPage>
           'atlasGlyphsDelta': atlasAfter.glyphs - atlasBefore.glyphs,
           'surfaceRenders': RenderGPUParagraph.debugSurfaceRenders,
           'surfaceAllocs': RenderGPUParagraph.debugSurfaceAllocs,
+          'surfaceRenderSkips': RenderGPUParagraph.debugSurfaceRenderSkips,
         },
         extra: {
           if (wallMs > 0)
@@ -472,6 +474,7 @@ class _BenchPageState extends State<BenchPage>
         GPUText.instance.debugResetCacheCounters();
         RenderGPUParagraph.debugSurfaceRenders = 0;
         RenderGPUParagraph.debugSurfaceAllocs = 0;
+        RenderGPUParagraph.debugSurfaceRenderSkips = 0;
         final before = _atlasCounters();
         final start = _recorder.currentFrame();
         await _mount((_) => zhParagraph(engine));
@@ -505,6 +508,7 @@ class _BenchPageState extends State<BenchPage>
               'atlasGlyphsDelta': after.glyphs - before.glyphs,
               'surfaceRenders': RenderGPUParagraph.debugSurfaceRenders,
               'surfaceAllocs': RenderGPUParagraph.debugSurfaceAllocs,
+              'surfaceRenderSkips': RenderGPUParagraph.debugSurfaceRenderSkips,
             },
           ),
         );
