@@ -331,39 +331,49 @@ class GlyphAtlas {
   final AtlasStats stats;
 }
 
-GlyphAtlas buildGlyphAtlas(GPUFont font, String text) {
-  final chars = text.runes
-      .toSet()
-      .map(String.fromCharCode)
-      .where((ch) => ch != ' ')
-      .toList();
-  final curves = Float32Buf();
-  final rows = Uint32Buf();
-  final table = <String, GlyphTableEntry>{};
-  var monotoneTotal = 0;
-
-  for (final ch in chars) {
-    final g = font.glyphQuads(ch);
-    if (g == null) continue;
-    final pieces = <double>[];
-    for (var i = 0; i < g.quads.length; i += 6) {
-      pushMonotonePieces(g.quads.sublist(i, i + 6), pieces);
-    }
-    monotoneTotal += pieces.length ~/ 6;
-    final header = bandPieces(pieces, g.bbox[1], g.bbox[3], curves, rows);
-    table[ch] = GlyphTableEntry(
+/// Band one outline into [curves]/[rows]. Returns the table entry and the
+/// pre-band monotone piece count (for [AtlasStats.duplication]).
+(GlyphTableEntry entry, int monotonePieces) bandOutline(
+  GlyphOutline g,
+  Float32Buf curves,
+  Uint32Buf rows,
+) {
+  final pieces = <double>[];
+  for (var i = 0; i < g.quads.length; i += 6) {
+    pushMonotonePiecesAt(g.quads, i, pieces);
+  }
+  final header = bandPieces(pieces, g.bbox[1], g.bbox[3], curves, rows);
+  return (
+    GlyphTableEntry(
       rowBase: header.rowBase,
       bandCount: header.bandCount,
       y0: header.y0,
       invH: header.invH,
       advance: g.advance,
       bbox: g.bbox,
-    );
+    ),
+    pieces.length ~/ 6,
+  );
+}
+
+GlyphAtlas buildGlyphAtlas(GPUFont font, String text) {
+  final curves = Float32Buf();
+  final rows = Uint32Buf();
+  final table = <String, GlyphTableEntry>{};
+  final seen = <int>{};
+  var monotoneTotal = 0;
+
+  for (final cp in text.runes) {
+    if (cp == 0x20 || !seen.add(cp)) continue;
+    final g = font.glyphOutlineById(font.glyphIdForRune(cp) ?? 0);
+    if (g == null) continue;
+    final (entry, pieces) = bandOutline(g, curves, rows);
+    table[String.fromCharCode(cp)] = entry;
+    monotoneTotal += pieces;
   }
 
   final bandedPieces = curves.length ~/ 6;
   return GlyphAtlas(
-    // Right-sized copies: GlyphAtlas is handed to callers, capacity slack isn't.
     curves: curves.toTypedList(),
     rows: rows.toTypedList(),
     table: table,
@@ -409,29 +419,11 @@ ColrEmojiAtlas buildColrEmojiAtlas(GPUFont font, Iterable<int> codePoints) {
   for (final cp in codePoints.toSet()) {
     final colr = font.colrForCodePoint(cp);
     if (colr == null || colr.isEmpty) continue;
-    final stack = <ColrGlyphLayer>[];
-    for (final layer in colr) {
-      final g = font.glyphOutlineById(layer.glyphId);
-      if (g == null) continue;
-      final pieces = <double>[];
-      for (var i = 0; i < g.quads.length; i += 6) {
-        pushMonotonePieces(g.quads.sublist(i, i + 6), pieces);
-      }
-      final header = bandPieces(pieces, g.bbox[1], g.bbox[3], curves, rows);
-      stack.add(
-        ColrGlyphLayer(
-          GlyphTableEntry(
-            rowBase: header.rowBase,
-            bandCount: header.bandCount,
-            y0: header.y0,
-            invH: header.invH,
-            advance: g.advance,
-            bbox: g.bbox,
-          ),
-          layer.color,
-        ),
-      );
-    }
+    final stack = <ColrGlyphLayer>[
+      for (final layer in colr)
+        if (font.glyphOutlineById(layer.glyphId) case final g?)
+          ColrGlyphLayer(bandOutline(g, curves, rows).$1, layer.color),
+    ];
     if (stack.isNotEmpty) layers[cp] = stack;
   }
 

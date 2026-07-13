@@ -21,7 +21,6 @@ import 'dart:typed_data';
 
 import '../bands.dart';
 import '../font.dart';
-import '../geometry.dart';
 import '../paragraph.dart';
 
 class SharedGlyphAtlas implements GlyphTable {
@@ -88,19 +87,7 @@ class SharedGlyphAtlas implements GlyphTable {
         _blank.add(key);
         continue;
       }
-      final pieces = <double>[];
-      for (var i = 0; i < g.quads.length; i += 6) {
-        pushMonotonePiecesAt(g.quads, i, pieces);
-      }
-      final header = bandPieces(pieces, g.bbox[1], g.bbox[3], _curves, _rows);
-      _table[key] = GlyphTableEntry(
-        rowBase: header.rowBase,
-        bandCount: header.bandCount,
-        y0: header.y0,
-        invH: header.invH,
-        advance: g.advance,
-        bbox: g.bbox,
-      );
+      _table[key] = bandOutline(g, _curves, _rows).$1;
       grew = true;
     }
     if (grew) _generation++;
@@ -125,19 +112,7 @@ class SharedGlyphAtlas implements GlyphTable {
       _blankGids.add(key);
       return false;
     }
-    final pieces = <double>[];
-    for (var i = 0; i < g.quads.length; i += 6) {
-      pushMonotonePiecesAt(g.quads, i, pieces);
-    }
-    final header = bandPieces(pieces, g.bbox[1], g.bbox[3], _curves, _rows);
-    _gidTable[key] = GlyphTableEntry(
-      rowBase: header.rowBase,
-      bandCount: header.bandCount,
-      y0: header.y0,
-      invH: header.invH,
-      advance: g.advance,
-      bbox: g.bbox,
-    );
+    _gidTable[key] = bandOutline(g, _curves, _rows).$1;
     _generation++;
     return true;
   }
@@ -259,8 +234,4 @@ class SharedGlyphAtlas implements GlyphTable {
   /// leaves the old view pointing at the old store.
   Float32List get curves => _curves.view;
   Uint32List get rows => _rows.view;
-
-  Float32List curvesData() => _curves.toTypedList();
-
-  Uint32List rowsData() => _rows.toTypedList();
 }

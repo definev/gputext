@@ -1370,7 +1370,7 @@ LayoutResult layoutParagraph(
     if (right > maxRight) maxRight = right;
   }
   return LayoutResult(
-    instances: emitted.instances.toList(),
+    instances: emitted.instances,
     bounds: LayoutBounds(
       minX: x,
       minY: top,

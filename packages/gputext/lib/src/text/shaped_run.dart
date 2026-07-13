@@ -111,6 +111,22 @@ class ShapedGlyphRun {
     );
   }
 
+  /// Copy with updated bidi metadata (glyphs/text unchanged).
+  ShapedGlyphRun withBidi({
+    required int bidiLevel,
+    required TextDirection direction,
+  }) => ShapedGlyphRun(
+    font: font,
+    fontSizePx: fontSizePx,
+    sourceText: sourceText,
+    pipelineText: pipelineText,
+    glyphs: glyphs,
+    sourceMap: sourceMap,
+    bidiLevel: bidiLevel,
+    direction: direction,
+    appliesKerning: appliesKerning,
+  );
+
   final GPUFont font;
   final double fontSizePx;
 

@@ -12,7 +12,7 @@ import '../engine/engine.dart';
 import '../font.dart' show GPUFont, GPUFontVariations, isZeroWidthCodePoint;
 import '../paragraph.dart' as wf;
 import '../text/bidi.dart' as bidi;
-import '../text/shaped_run.dart' as sr show ShapedGlyphRun, TextDirection;
+import '../text/shaped_run.dart' as sr show TextDirection;
 import '../text/shaper.dart';
 import '../timeline.dart';
 
@@ -462,17 +462,7 @@ List<wf.InlineItem>? _flattenSpan(
             final withBidi =
                 shaped.bidiLevel == br.level && shaped.direction == br.direction
                 ? shaped
-                : sr.ShapedGlyphRun(
-                    font: shaped.font,
-                    fontSizePx: shaped.fontSizePx,
-                    sourceText: shaped.sourceText,
-                    pipelineText: shaped.pipelineText,
-                    glyphs: shaped.glyphs,
-                    sourceMap: shaped.sourceMap,
-                    bidiLevel: br.level,
-                    direction: br.direction,
-                    appliesKerning: shaped.appliesKerning,
-                  );
+                : shaped.withBidi(bidiLevel: br.level, direction: br.direction);
             items.add(
               wf.TextRun(
                 text: withBidi.pipelineText,
@@ -511,7 +501,9 @@ List<wf.InlineItem>? _flattenSpan(
                 wf.EmojiItem(
                   font: emojiFont,
                   fontSizePx: fontSizePx,
-                  advanceUnits: emojiFont.advanceOf(String.fromCharCode(rune)),
+                  advanceUnits: emojiFont.advanceOfGlyphId(
+                    emojiFont.glyphIdForRune(rune) ?? 0,
+                  ),
                   layers: layers,
                   textColor: List<double>.of(paint.color),
                   background: paint.background == null

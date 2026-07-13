@@ -133,8 +133,14 @@ InlineSpan expandEmojiSpans(InlineSpan root, GPUTextEngine engine) {
   var changed = false;
 
   bool nativeEligible(String cluster) {
-    final cps = cluster.runes.where((r) => r != _vs16).toList();
-    return cps.length == 1 && engine.nativeEmojiCovers(cps.first);
+    int? sole;
+    var n = 0;
+    for (final r in cluster.runes) {
+      if (r == _vs16) continue;
+      if (++n > 1) return false;
+      sole = r;
+    }
+    return n == 1 && engine.nativeEmojiCovers(sole!);
   }
 
   InlineSpan transform(InlineSpan s, double inheritedSize) {

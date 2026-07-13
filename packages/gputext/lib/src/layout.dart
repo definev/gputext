@@ -124,10 +124,8 @@ LayoutResult layoutStack(
       color: color,
       fillRule: fillRule,
     );
-    maxWidth = [
-      maxWidth,
-      measureText(line.text, font, line.size),
-    ].reduce((a, b) => a > b ? a : b);
+    final w = measureText(line.text, font, line.size);
+    if (w > maxWidth) maxWidth = w;
     y = baselineY + inkBelow + gap;
   }
   final bottom = y - 0.34 * lines.last.size;
