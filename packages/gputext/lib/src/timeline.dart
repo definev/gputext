@@ -16,10 +16,7 @@ import 'dart:developer';
 
 const bool _kReleaseMode = bool.fromEnvironment('dart.vm.product');
 
-/// Measures how long gputext pipeline blocks take to run.
-///
-/// Drop-in style API compatible with [Timeline] (`startSync` / `finishSync` /
-/// `timeSync` / `instantSync` / `now`), plus optional in-process aggregation.
+/// Wraps [Timeline] with optional in-process aggregation for benches.
 abstract final class GPUTextTimeline {
   /// Flatten InlineSpan → inline items (fallback resolve + bidi + shape).
   static const flatten = 'gputext.flatten';
@@ -46,14 +43,10 @@ abstract final class GPUTextTimeline {
   static final List<_OpenBlock> _stack = <_OpenBlock>[];
   static final List<TimedBlock> _blocks = <TimedBlock>[];
 
-  /// Whether block timings are collected for [debugCollect].
-  ///
-  /// Always false in release mode. Most useful in profile mode.
+  /// Profile/debug only; always false in release.
   static bool get debugCollectionEnabled => _collectionEnabled;
 
-  /// Enables or disables in-process metric collection.
-  ///
-  /// When disabled, resets collected data. Throws in release mode.
+  /// Throws in release. Disabling resets collected data.
   static set debugCollectionEnabled(bool value) {
     if (_kReleaseMode) {
       throw StateError(
@@ -65,9 +58,7 @@ abstract final class GPUTextTimeline {
     debugReset();
   }
 
-  /// Start a synchronous operation labeled [name].
-  ///
-  /// Must be finished with [finishSync] before returning to the event queue.
+  /// Must pair with [finishSync] before returning to the event queue.
   static void startSync(
     String name, {
     Map<String, Object?>? arguments,
@@ -79,7 +70,6 @@ abstract final class GPUTextTimeline {
     }
   }
 
-  /// Finish the last synchronous operation started with [startSync].
   static void finishSync() {
     Timeline.finishSync();
     if (!_kReleaseMode && _collectionEnabled && _stack.isNotEmpty) {
@@ -94,13 +84,11 @@ abstract final class GPUTextTimeline {
     }
   }
 
-  /// Emit an instant event (zero-duration marker).
   static void instantSync(String name, {Map<String, Object?>? arguments}) {
     Timeline.instantSync(name, arguments: arguments);
   }
 
-  /// Time [function] under [name], forwarding to DevTools and optionally
-  /// collecting when [debugCollectionEnabled] is true.
+  /// Forwards to DevTools; aggregates when [debugCollectionEnabled] is true.
   static T timeSync<T>(
     String name,
     T Function() function, {
@@ -115,7 +103,6 @@ abstract final class GPUTextTimeline {
     }
   }
 
-  /// Current timeline clock in microseconds (same clock as [Timeline.now]).
   static int get now => Timeline.now;
 
   /// Timings collected since collection was enabled, the last [debugCollect],
@@ -164,17 +151,10 @@ final class TimedBlock {
   }) : assert(end >= start);
 
   final String name;
-
-  /// Start timestamp in microseconds.
   final double start;
-
-  /// End timestamp in microseconds.
   final double end;
 
-  /// Duration in microseconds.
   double get duration => end - start;
-
-  /// Duration in milliseconds.
   double get durationMs => duration / 1000;
 
   @override

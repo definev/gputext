@@ -143,7 +143,6 @@ double _tupleScalar(
   return scalar;
 }
 
-// ---------------------------------------------------------------------------
 // Item variation store (HVAR/MVAR): regions + per-item delta rows.
 
 class _ItemVariationData {
@@ -334,7 +333,6 @@ class _Mvar {
   }
 }
 
-// ---------------------------------------------------------------------------
 // gvar: per-glyph outline deltas. Header + shared tuples are parsed eagerly;
 // per-glyph tuple data is decoded on demand (the table is by far the largest
 // in a variable font).
@@ -680,7 +678,6 @@ String _tickKey(Int16List ticks) {
   return String.fromCharCodes(codes);
 }
 
-// ---------------------------------------------------------------------------
 // Public variation API.
 
 extension GPUFontVariations on GPUFont {

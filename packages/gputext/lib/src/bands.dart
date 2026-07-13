@@ -29,12 +29,11 @@ int chooseBands(int pieceCount, [int target = targetPerBand]) {
 // ~500k curve floats after a single variable-font weight sweep, so the boxed
 // form cost ~15 MB of Dart heap for data that is 2 MB as f32. Curves are
 // truncated to f32 at upload anyway (the textures are RGBA32F), so storing
-// them as f32 here is bit-identical on the GPU and simply moves the single
+// them as f32 here is bit-identical on the GPU and moves the single
 // rounding step from upload time to insert time.
 
 const _minBufCapacity = 1024;
 
-/// Append-only Float32List with capacity doubling.
 class Float32Buf {
   Float32Buf([int capacity = _minBufCapacity])
     : _data = Float32List(capacity < 1 ? _minBufCapacity : capacity);
@@ -70,17 +69,12 @@ class Float32Buf {
     _data = next;
   }
 
-  /// Zero-copy view of the filled prefix. Invalidated by any [add] that grows
-  /// the backing store, so re-read it rather than holding onto it.
+  /// Zero-copy filled prefix; invalidated if [add] grows the store.
   Float32List get view => Float32List.sublistView(_data, 0, _length);
 
-  /// Right-sized copy, for owners that must not see capacity slack.
   Float32List toTypedList() => Float32List.fromList(view);
 }
 
-/// Append-only Uint32List with capacity doubling. Row entries are u32 already
-/// (indices, counts, and bit-punned f32s), so nothing is lost versus the
-/// `List<int>` this replaces.
 class Uint32Buf {
   Uint32Buf([int capacity = _minBufCapacity])
     : _data = Uint32List(capacity < 1 ? _minBufCapacity : capacity);
@@ -105,7 +99,6 @@ class Uint32Buf {
     _data = next;
   }
 
-  /// See [Float32Buf.view].
   Uint32List get view => Uint32List.sublistView(_data, 0, _length);
 
   Uint32List toTypedList() => Uint32List.fromList(view);
@@ -381,5 +374,70 @@ GlyphAtlas buildGlyphAtlas(GPUFont font, String text) {
       bandedPieces: bandedPieces,
       duplication: monotoneTotal == 0 ? 1 : bandedPieces / monotoneTotal,
     ),
+  );
+}
+
+/// One COLR v0 layer: banded outline + palette RGBA 0..1 (null → text color).
+class ColrGlyphLayer {
+  const ColrGlyphLayer(this.entry, this.color);
+
+  final GlyphTableEntry entry;
+  final List<double>? color;
+}
+
+/// COLR v0 atlas keyed by code point; [layers] lists paint order per CP.
+/// Same curves/rows layout as [buildGlyphAtlas] / [uploadAtlasTextures].
+class ColrEmojiAtlas {
+  const ColrEmojiAtlas({
+    required this.curves,
+    required this.rows,
+    required this.layers,
+  });
+
+  final Float32List curves;
+  final Uint32List rows;
+  final Map<int, List<ColrGlyphLayer>> layers;
+}
+
+/// Band COLR v0 layers for [codePoints] into one atlas. Skips CPs without
+/// color glyphs. Layers use [GPUFont.glyphOutlineById].
+ColrEmojiAtlas buildColrEmojiAtlas(GPUFont font, Iterable<int> codePoints) {
+  final curves = Float32Buf();
+  final rows = Uint32Buf();
+  final layers = <int, List<ColrGlyphLayer>>{};
+
+  for (final cp in codePoints.toSet()) {
+    final colr = font.colrForCodePoint(cp);
+    if (colr == null || colr.isEmpty) continue;
+    final stack = <ColrGlyphLayer>[];
+    for (final layer in colr) {
+      final g = font.glyphOutlineById(layer.glyphId);
+      if (g == null) continue;
+      final pieces = <double>[];
+      for (var i = 0; i < g.quads.length; i += 6) {
+        pushMonotonePieces(g.quads.sublist(i, i + 6), pieces);
+      }
+      final header = bandPieces(pieces, g.bbox[1], g.bbox[3], curves, rows);
+      stack.add(
+        ColrGlyphLayer(
+          GlyphTableEntry(
+            rowBase: header.rowBase,
+            bandCount: header.bandCount,
+            y0: header.y0,
+            invH: header.invH,
+            advance: g.advance,
+            bbox: g.bbox,
+          ),
+          layer.color,
+        ),
+      );
+    }
+    if (stack.isNotEmpty) layers[cp] = stack;
+  }
+
+  return ColrEmojiAtlas(
+    curves: curves.toTypedList(),
+    rows: rows.toTypedList(),
+    layers: layers,
   );
 }

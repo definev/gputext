@@ -1,8 +1,8 @@
 // OpenType GSUB font features: single (type 1), multiple (type 2),
 // alternate (type 3), and ligature (type 4) substitution, plus type 7
 // extension wrappers. Contextual lookups (types 5/6/8) are skipped — the
-// features that need them (calt chains, frac, ccmp decomposition) simply
-// don't fire, degrading to the unsubstituted text.
+// features that need them (calt chains, frac, ccmp decomposition) don't
+// fire, degrading to the unsubstituted text.
 //
 // The rendering pipeline is character-keyed end to end, so substitution
 // results that have no code point of their own (ligature glyphs, tabular
@@ -305,7 +305,6 @@ _GsubSubtable? _parseGsubSubtable(ByteData d, int off, int type) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Public feature API.
 
 extension GPUFontFeatures on GPUFont {

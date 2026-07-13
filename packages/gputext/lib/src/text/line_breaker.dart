@@ -24,7 +24,7 @@ abstract class LineBreaker {
   /// The built-in first-fit walker (Flutter-parity breaks; the default).
   static const LineBreaker greedy = GreedyLineBreaker();
 
-  /// Knuth–Plass paragraph breaking. **LTR-only in v1** — RTL / mixed-direction
+  /// Knuth–Plass paragraph breaking. LTR-only in v1 — RTL / mixed-direction
   /// paragraphs should use [greedy] (the default). Passing KP on an RTL
   /// paragraph still runs, but fitness does not model visual order.
   static const LineBreaker knuthPlass = KnuthPlassLineBreaker();
@@ -93,8 +93,7 @@ class GreedyLineBreaker extends LineBreaker {
 /// space width.
 ///
 /// Intended for justified body text — pair it with TextAlign.justify.
-///
-/// **LTR-only in v1:** RTL / mixed-direction paragraphs should use
+/// LTR-only in v1: RTL / mixed-direction paragraphs should use
 /// [GreedyLineBreaker] (the default). KP fitness does not model visual order.
 ///
 /// Break candidates are whitespace, ZWSP, and soft hyphens; unlike the greedy

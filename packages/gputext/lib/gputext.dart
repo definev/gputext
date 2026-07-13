@@ -1,22 +1,24 @@
-// gputext — vector text rendered by an exact box-filtered winding
-// integral on the GPU (flutter_gpu), with a drop-in RichText replacement.
-//
-//   await GPUText.initialize();                       // optional, no-FOUT
-//   GPURichText(text: TextSpan(...));             // swap for RichText
-//   GPULabel('hello');                             // swap for Text
-//
-// Paint is hybrid: covered glyphs use the GPU coverage shader; color emoji
-// and uncovered/CJK characters delegate to platform Text via WidgetSpans.
-// Optional coverageGamma / coverageSharp / minificationGuardPx on
-// GPURichText (and FrameUniforms.style / guardPx) match windfoil's styling
-// and minification-guard dials; defaults leave coverage exact.
+// gputext — vector text via an exact box-filtered winding integral on the
+// GPU (flutter_gpu). Covered glyphs use the coverage shader; color emoji and
+// uncovered/CJK characters can delegate to platform Text via WidgetSpans.
+// Optional coverageGamma / coverageSharp / minificationGuardPx match
+// windfoil's dials; defaults leave coverage exact.
 //
 // Layout types that collide with Flutter (`TextAlign`, `ParagraphStyle`)
 // live in `package:gputext/internal.dart` — import with a prefix.
 library;
 
+export 'src/atlas.dart' show AtlasTextures, uploadAtlasTextures;
+export 'src/bands.dart'
+    show
+        GlyphAtlas,
+        GlyphTableEntry,
+        buildGlyphAtlas,
+        ColrEmojiAtlas,
+        ColrGlyphLayer,
+        buildColrEmojiAtlas;
 export 'src/engine/engine.dart' show AtlasFontUser, GPUText, GPUTextEngine;
-export 'src/engine/pipeline.dart' show FrameUniforms;
+export 'src/engine/pipeline.dart' show FrameUniforms, GPUTextPipeline;
 export 'src/font.dart'
     show
         GPUFont,

@@ -13,6 +13,7 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:gputext/gputext.dart';
 
 import 'bench/bench_page.dart';
+import 'dragon_demo.dart';
 import 'google_sans_flex_demo.dart';
 import 'justification_demo.dart';
 import 'leak_report_page.dart';
@@ -72,6 +73,7 @@ class GPUTextApp extends StatelessWidget {
         'bench' => const BenchPage(),
         'widgets' => const WidgetDemoPage(),
         'pretext' => const PretextDemoPage(),
+        'dragon' => const DragonDemoPage(),
         'justify' => const JustificationDemoPage(),
         'gsf' => const GoogleSansFlexDemoPage(),
         'vars' => const VariableFontDemoPage(),
@@ -507,6 +509,7 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
                               _demoButton('Pretext', const PretextDemoPage()),
+                              _demoButton('Dragon', const DragonDemoPage()),
                               _demoButton(
                                 'Justification',
                                 const JustificationDemoPage(),

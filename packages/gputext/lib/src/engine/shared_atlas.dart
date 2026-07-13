@@ -154,9 +154,9 @@ class SharedGlyphAtlas implements GlyphTable {
   /// atlas textures (existing texels move, so an in-place overwrite would
   /// corrupt any draw still in flight). [structureGeneration] is the signal.
   ///
-  /// Glyphs whose font is dropped are simply re-banded on the next
-  /// [ensureGlyphs], so evicting a font that is still on screen costs work but
-  /// is never incorrect.
+  /// Glyphs whose font is dropped are re-banded on the next [ensureGlyphs],
+  /// so evicting a font that is still on screen costs work but is never
+  /// incorrect.
   int retainFonts(Set<GPUFont> keep) {
     final drops = _table.keys.where((k) => !keep.contains(k.$1)).toList();
     final gidDrops = _gidTable.keys.where((k) => !keep.contains(k.$1)).toList();

@@ -133,21 +133,16 @@ class ParagraphStyle {
   final int? maxLines;
   final bool addEllipsis;
 
-  /// Strategy that chooses where lines end (greedy by default; e.g.
-  /// [KnuthPlassLineBreaker] for optimal justified paragraphs). Alignment,
-  /// ellipsis, maxLines, and justify space distribution are applied on top
-  /// of whatever breaks the strategy returns.
+  /// Line-break strategy (greedy by default; e.g. [KnuthPlassLineBreaker]).
   final LineBreaker lineBreaker;
 
-  /// Minimum (or, with StrutMetrics.force, exact) line metrics.
+  /// Minimum (or with StrutMetrics.force, exact) line metrics.
   final StrutMetrics? strut;
 
-  /// TextHeightBehavior: false → the first line's ascent ignores runs'
-  /// height multipliers (uses natural font ascent).
+  /// When false, first-line ascent ignores run height multipliers.
   final bool applyHeightToFirstAscent;
 
-  /// TextHeightBehavior: false → the last line's descent ignores runs'
-  /// height multipliers.
+  /// When false, last-line descent ignores run height multipliers.
   final bool applyHeightToLastDescent;
 
   /// Paragraph default for TextRun.evenLeading (TextHeightBehavior.

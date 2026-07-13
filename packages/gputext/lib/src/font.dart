@@ -252,7 +252,7 @@ class GPUFont {
   /// overflow or [clearVariantCache]) so engine-side caches — HB font handle,
   /// segment metrics — release immediately instead of waiting for GC, which
   /// atlas references can defer indefinitely. Set by [GPUTextEngine];
-  /// eviction is idempotent, so re-shaping an evicted variant just rebuilds.
+  /// eviction is idempotent — re-shaping an evicted variant rebuilds it.
   static void Function(GPUFont evicted)? onVariantEvicted;
 
   /// Variant instances by normalized coordinate key (base font only).
@@ -1101,7 +1101,6 @@ extension on _ByteReader {
   }
 }
 
-// ---------------------------------------------------------------------------
 // GPOS pair kerning ('kern' feature, lookup type 2, incl. type-9 extensions).
 // Only the first glyph's horizontal advance adjustment is read — that is what
 // kerning is. Evaluated lazily per pair against compact range structures, so
@@ -1375,11 +1374,9 @@ List<_PairPosSub> _parseGposKern(ByteData d, int gpos) {
   return subs;
 }
 
-// ---------------------------------------------------------------------------
 // COLR v0 + CPAL: layered color glyphs. Each base glyph maps to an ordered
 // run of (layer glyph id, palette color) — every layer is an ordinary glyf
-// outline, so the coverage shader renders color emoji natively as N colored
-// instances.
+// outline, painted as N coverage instances.
 
 class ColrLayer {
   const ColrLayer(this.glyphId, this.color);

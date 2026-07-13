@@ -20,16 +20,10 @@ class AtlasTextures {
   final int rowTexHeight;
 }
 
-/// Incremental texture uploader for the append-only shared atlas.
-///
-/// The atlas never mutates existing entries, so each generation only the
-/// tail is new: pixels are packed into persistent capacity-doubling buffers
-/// (O(delta) CPU repack instead of O(total)), and textures are recreated
-/// only on capacity growth. Overwriting a live texture while earlier frames'
-/// draws are still enqueued is safe here precisely because of append-only:
-/// every texel an in-flight draw can index lies in the prefix, whose bytes
-/// are rewritten with identical values; only never-yet-referenced tail
-/// texels actually change.
+/// Append-only atlas texture uploader: packs only the new tail each generation
+/// (O(delta) CPU). Recreates textures only on capacity growth. Safe to
+/// overwrite a live texture because in-flight draws only index the immutable
+/// prefix — rewritten with identical values; only the unreferenced tail changes.
 class AtlasTextureUploader {
   Float32List _curvePixels = Float32List(0);
   Float32List _rowPixels = Float32List(0);

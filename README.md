@@ -18,7 +18,12 @@ flutter run -d macos
 GPUTEXT_DEMO=<page> flutter run -d macos   # open a page directly
 ```
 
-`<page>` is one of `widgets`, `pretext`, `justify`, `vars`, or `bench`.
+`<page>` is one of `widgets`, `pretext`, `dragon`, `justify`, `vars`, or
+`bench`. `dragon` is the pretext-playground port: an interactive ASCII dragon
+whose every glyph is GPU-rendered by the coverage shader — Latin (Lato), CJK
+(a subset Noto Sans SC), and color emoji (Twemoji, drawn natively as COLR-layer
+coverage instances) — with per-character home positions laid out by the inner
+pretext prebuilt (prepare-once / relayout-per-width, shown live in the HUD).
 
 ## Workspace
 

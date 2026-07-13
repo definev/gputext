@@ -1,46 +1,22 @@
-// GPURichText — a drop-in replacement for RichText whose glyphs are
-// rasterized by the gputext coverage shader instead of the engine's text
-// pipeline.
+// GPURichText — RichText-compatible widget; glyphs use the coverage shader.
 //
-// Layout is pure Dart (font metrics only) in logical pixels; painting emits
-// glyph instances, renders them into an offscreen flutter_gpu surface at the
-// current effective scale, and blits the cached ui.Image. With
-// transformAdaptive (default), the render scale follows the ancestor paint
-// transform so text stays crisp inside zooming containers; pass a zooming
-// container's TransformationController as scaleHint when a RepaintBoundary
-// sits between it and this widget (retained layers skip paint otherwise).
+// Layout is pure Dart (font metrics) in logical px; paint emits instances into
+// an offscreen flutter_gpu surface at the effective scale and blits the
+// cached ui.Image. transformAdaptive (default) follows the ancestor paint
+// transform; pass scaleHint when a RepaintBoundary sits between a zooming
+// TransformationController and this widget.
 //
-// WidgetSpan is supported: children are extracted in span preorder
-// (WidgetSpan.extractFromInlineSpan), measured during layout, woven into the
-// wrap as unbreakable placeholder boxes, and painted/hit-tested as regular
-// render children on top of the text image.
+// WidgetSpan: extracted in preorder, measured in layout, woven as placeholders,
+// painted/hit-tested as render children on top of the text image.
+// Emoji / uncovered scripts: expandEmojiSpans / expandUncoveredSpans rewrite
+// to baseline-aligned platform Text; flattener still resolves fontFamilyFallback
+// + engine fallback for gputext-covered glyphs. Single-code-point COLR emoji
+// stay in-text when the emoji font covers them.
 //
-// Emoji are supported by delegation: expandEmojiSpans rewrites emoji
-// clusters (ZWJ sequences, skin tones, flags, keycaps) into baseline-aligned
-// inline Text children, so the platform's color-emoji font renders them
-// while gputext renders everything else.
-//
-// Font fallback is two-layered: the flattener resolves each character
-// against TextStyle.fontFamilyFallback + the engine's fallback chain
-// (still gputext-rendered), and expandUncoveredSpans delegates characters
-// no registered font covers to inline engine Text (platform fallback).
-//
-// Accessibility and pointer parity: link spans are exposed as individually
-// actionable semantics nodes (assembleSemanticsNode), and hit-testing puts
-// the TextSpan itself on the result so MouseTracker drives
-// mouseCursor/onEnter/onExit and recognizers get their events.
-//
-// Selection: SelectionArea/SelectableRegion is supported via per-fragment
-// Selectables (split at placeholders, like RenderParagraph) working in
-// SOURCE-text offsets — copied content is the pre-shaping characters even
-// when ligatures render as single proxy glyphs. RenderParagraph-style
-// geometry APIs (getPositionForOffset, getOffsetForCaret,
-// getBoxesForSelection, getWordBoundary, getLineBoundary) are exposed on
-// the render object.
-//
-// Bidi/RTL (Arabic + Hebrew) is shaped via HarfBuzz + UAX #9; locale is
-// passed as the OpenType language. Knuth–Plass stays LTR-only. Foreground
-// Paint contributes its flat color only (no shaders).
+// SelectionArea via per-fragment Selectables (source-text offsets). Link spans
+// are actionable semantics nodes; hit-test returns the TextSpan for cursor /
+// recognizer routing. Bidi via HarfBuzz + UAX #9; locale → OpenType language.
+// Knuth–Plass is LTR-only. Foreground Paint: flat color only.
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -65,18 +41,7 @@ import 'span_flattener.dart';
 
 const _maxSurfaceDim = 8192;
 
-/// Drop-in replacement for RichText. This public widget is a thin
-/// build-time layer: it expands emoji clusters and characters no registered
-/// font covers into inline engine-Text spans (consulting loaded fonts via
-/// ListenableBuilder, so late-loading fonts re-expand), then builds the
-/// render-object widget.
-///
-/// **Hybrid paint:** covered Latin/variable-font glyphs render via the GPU
-/// coverage shader into a cached image blit. Color-emoji clusters and
-/// characters no registered font covers are rewritten to baseline-aligned
-/// platform [Text] WidgetSpans (`expandEmojiSpans` /
-/// `expandUncoveredSpans`); explicit [WidgetSpan] children paint on top.
-/// Benchmark `pure` vs `hybrid` rows are not comparable.
+/// RichText-compatible widget backed by gputext layout + GPU coverage paint.
 class GPURichText extends StatelessWidget {
   const GPURichText({
     super.key,
@@ -115,8 +80,7 @@ class GPURichText extends StatelessWidget {
   /// alignment, ellipsis, and maxLines apply on top of any strategy.
   final wf.LineBreaker lineBreaker;
 
-  /// Accepted for RichText signature compatibility; ignored in v1
-  /// OpenType language for HarfBuzz shaping (BCP-47 via [Locale.toLanguageTag]).
+  /// OpenType language tag for HarfBuzz shaping ([Locale.toLanguageTag]).
   final Locale? locale;
 
   /// Selection registrar. Unlike RichText, a null registrar falls back to
@@ -237,8 +201,7 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
   final TextScaler textScaler;
   final int? maxLines;
 
-  /// Accepted for RichText signature compatibility; ignored in v1
-  /// OpenType language for HarfBuzz shaping (BCP-47 via [Locale.toLanguageTag]).
+  /// OpenType language tag for HarfBuzz shaping ([Locale.toLanguageTag]).
   final Locale? locale;
   final SelectionRegistrar? selectionRegistrar;
   final Color? selectionColor;
@@ -367,7 +330,6 @@ class RenderGPUParagraph extends RenderBox
 
   final GPUTextEngine _engine = GPUText.instance;
 
-  // ---- layout artifacts ----
   wf.ParagraphLines? _para;
   List<wf.InlineItem>? _items;
   wf.PreparedParagraph? _prepared;
@@ -388,7 +350,6 @@ class RenderGPUParagraph extends RenderBox
   bool _paraDirty = false; // paint-only span change pending recolor
   int _contentGen = 0; // bumped on any content change (layout or paint-only)
 
-  // ---- paint artifacts ----
   wf.ParagraphInstances? _emitted;
   int _emittedGen = -1;
   int _emittedStructureGen = -1; // atlas.structureGeneration at emit time
@@ -427,29 +388,17 @@ class RenderGPUParagraph extends RenderBox
   /// cached image is still valid and paint re-blits it instead of re-rendering.
   (wf.ParagraphInstances, double, double, double, double)? _cacheKey;
 
-  /// Process-wide count of offscreen GPU renders (_renderSurface successes),
-  /// including resize-heal and zoom-step re-renders. Benchmarks read deltas
-  /// to attribute re-render churn; reset between scenarios.
+  /// Benchmark counter: offscreen GPU renders (incl. resize/zoom re-renders).
   static int debugSurfaceRenders = 0;
 
-  /// Process-wide count of offscreen surface (texture) allocations — the
-  /// subset of [debugSurfaceRenders] that could not reuse the previous
-  /// surface. With bucketed allocation, a steady resize/width animation
-  /// should hold this near zero while renders keep counting.
+  /// Benchmark counter: surface allocations (subset of [debugSurfaceRenders]
+  /// that could not reuse the previous surface).
   static int debugSurfaceAllocs = 0;
 
-  /// Process-wide count of re-emits whose instances came out byte-identical to
-  /// the live buffer, so the offscreen render was skipped entirely and the
-  /// cached image re-blit. High during a steady left-aligned width resize:
-  /// line breaks that don't move produce identical glyph positions, so the
-  /// only per-frame cost is the cheap relayout + emit + the re-blit — no
-  /// instance re-upload, render pass, submit, or image/retire churn.
-  /// Benchmarks read deltas to attribute the resize fast path.
+  /// Benchmark counter: re-emits skipped because instances were byte-identical.
   static int debugSurfaceRenderSkips = 0;
 
-  /// Test/benchmark knob: force every re-emit down the full re-upload +
-  /// re-render path (as before the byte-identical fast path existed), so an
-  /// A/B run can attribute the resize-width win. Never set in production.
+  /// Force full re-upload + re-render (disables byte-identical skip). Bench only.
   static bool debugDisableRenderSkip = false;
 
   /// Bytes of the emitted per-glyph instance buffer (64 per glyph).
@@ -471,7 +420,6 @@ class RenderGPUParagraph extends RenderBox
   double _imageScale = 1;
   final LayerHandle<ClipRectLayer> _clipHandle = LayerHandle<ClipRectLayer>();
 
-  // ---- inputs ----
   InlineSpan get text => _text;
   InlineSpan _text;
   set text(InlineSpan value) {
@@ -596,8 +544,6 @@ class RenderGPUParagraph extends RenderBox
     _needsRelayout();
   }
 
-  // ---- selection ----
-
   SelectionRegistrar? _registrar;
   set registrar(SelectionRegistrar? value) {
     if (identical(value, _registrar)) return;
@@ -718,8 +664,6 @@ class RenderGPUParagraph extends RenderBox
     markNeedsSemanticsUpdate();
   }
 
-  // ---- engine / hint wiring ----
-
   @override
   void attach(PipelineOwner owner) {
     super.attach(owner);
@@ -820,8 +764,6 @@ class RenderGPUParagraph extends RenderBox
     markNeedsPaint(); // cheap when the quantized scale didn't cross a step
   }
 
-  // ---- layout ----
-
   wf.TextAlign get _resolvedAlign => switch (_textAlign) {
     TextAlign.left => wf.TextAlign.left,
     TextAlign.right => wf.TextAlign.right,
@@ -853,9 +795,8 @@ class RenderGPUParagraph extends RenderBox
         TextLeadingDistribution.even,
   );
 
-  /// StrutStyle → resolved px metrics against the engine's font registry.
-  /// Null while the strut's font isn't registered (strut then simply doesn't
-  /// constrain — layout reruns when fonts land, like text runs do).
+  /// StrutStyle → resolved px metrics. Null while the strut font isn't
+  /// registered (strut skipped; layout reruns when fonts land).
   wf.StrutMetrics? _resolveStrut() {
     final s = _strutStyle;
     if (s == null) return null;
@@ -1293,8 +1234,6 @@ class RenderGPUParagraph extends RenderBox
     _dryDims(constraints.maxWidth),
   ).para?.firstBaseline;
 
-  // ---- caret / selection geometry (RenderParagraph-compatible) ----
-  //
   // Offsets are in the paragraph's SOURCE text (effectiveText's plain text:
   // pre-shaping characters, '￼' per placeholder). Boundaries inside a
   // rendered ligature interpolate across the cluster's advance.
@@ -1520,8 +1459,6 @@ class RenderGPUParagraph extends RenderBox
     super.clearSemantics();
     _semanticsChildCache = null;
   }
-
-  // ---- paint ----
 
   /// Every font this paragraph has (or will have) banded, so the engine's atlas
   /// sweep keeps them. Must stay in step with the ensureGlyphs walk in
@@ -2273,8 +2210,6 @@ class _SelectableFragment with ChangeNotifier implements Selectable {
     );
   }
 
-  // ---- event dispatch ----
-
   @override
   SelectionResult dispatchSelectionEvent(SelectionEvent event) {
     final SelectionResult result;
@@ -2510,8 +2445,6 @@ class _SelectableFragment with ChangeNotifier implements Selectable {
     return result;
   }
 
-  // ---- content ----
-
   @override
   SelectedContent? getSelectedContent() {
     final s = _selectionStart;
@@ -2536,8 +2469,6 @@ class _SelectableFragment with ChangeNotifier implements Selectable {
 
   @override
   int get contentLength => range.end - range.start;
-
-  // ---- geometry plumbing ----
 
   @override
   Matrix4 getTransformTo(RenderObject? ancestor) =>

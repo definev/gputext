@@ -30,7 +30,6 @@ import 'shared_atlas.dart';
 const _defaultFontAsset = 'assets/Lato-Regular.ttf';
 const _defaultFontFamily = 'Lato';
 
-/// Public facade.
 abstract final class GPUText {
   static GPUTextEngine get instance => GPUTextEngine._instance;
 
@@ -266,11 +265,11 @@ class GPUTextEngine extends ChangeNotifier {
 
   GPUFont? _emojiFont;
 
-  /// COLR v0 font used to render single-code-point emoji natively through
-  /// the coverage shader; null → all emoji delegate to the platform.
+  /// COLR v0 font for single-code-point emoji via the coverage shader;
+  /// null → all emoji delegate to the platform.
   GPUFont? get emojiFont => _emojiFont;
 
-  /// Register (or clear, with null) the native color-emoji font.
+  /// Register (or clear with null) the color-emoji font.
   void registerEmojiFont(GPUFont? font) {
     assert(
       font == null || font.hasColorGlyphs,
@@ -495,7 +494,7 @@ class GPUTextEngine extends ChangeNotifier {
     return _textures;
   }
 
-  // ---- atlas eviction ----
+  // Atlas eviction
 
   /// Curve floats the atlas may hold before it compacts. 4 bytes each on the
   /// CPU and 8 on the GPU, so the default is ~2 MB / ~4 MB. null disables

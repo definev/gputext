@@ -126,12 +126,9 @@ List<EmojiSegment> splitEmojiSegments(String text) {
   return segs;
 }
 
-/// Rewrite emoji clusters into baseline-aligned WidgetSpans carrying
-/// engine-rendered Text — EXCEPT single-code-point clusters the engine's
-/// COLR emoji font covers, which stay in the text and render natively
-/// through the coverage shader (the flattener emits EmojiItems for them).
-/// Returns the original span unchanged (identical) when nothing needs
-/// delegation.
+/// Rewrite emoji clusters to baseline-aligned platform [Text] WidgetSpans,
+/// except single-CP clusters covered by the COLR emoji font (stay in-text).
+/// Returns [root] unchanged when nothing needs delegation.
 InlineSpan expandEmojiSpans(InlineSpan root, GPUTextEngine engine) {
   var changed = false;
 
@@ -163,7 +160,7 @@ InlineSpan expandEmojiSpans(InlineSpan root, GPUTextEngine engine) {
 
     final segments = splitEmojiSegments(text);
     if (segments.every((seg) => !seg.isEmoji || nativeEligible(seg.text))) {
-      // Everything renders natively — keep the span as plain text.
+      // COLR-covered — keep as plain text for the flattener's EmojiItems.
       if (!changed) return s;
       return TextSpan(
         text: text,
@@ -205,14 +202,9 @@ bool _isCjkIdeograph(int cp) =>
     (cp >= 0xFF00 && cp <= 0xFFEF) || // full/half-width forms
     (cp >= 0x20000 && cp <= 0x2FA1F); // SMP ideograph planes
 
-/// Font-fallback layer 2: characters that no registered gputext font covers
-/// (after the style's fontFamilyFallback and the engine fallback chain) are
-/// rewritten into baseline-aligned inline Text spans so the platform's font
-/// fallback renders them instead of .notdef tofu. CJK stretches split per
-/// character so lines can wrap between ideographs; other scripts stay whole
-/// (breaking inside a word would be wrong). No-op until fonts are loaded —
-/// call again on engine notify (GPURichText rebuilds via
-/// ListenableBuilder).
+/// Delegate uncovered code points to baseline-aligned platform [Text].
+/// CJK stretches split per character for wrap; other scripts stay whole.
+/// No-op until fonts are loaded — call again on engine notify.
 InlineSpan expandUncoveredSpans(InlineSpan root, GPUTextEngine engine) {
   if (!engine.fontsReady) return root;
   var changed = false;

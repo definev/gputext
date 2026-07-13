@@ -9,5 +9,13 @@
 //   gt.TextAlign.justify     // gputext
 library;
 
-export 'src/paragraph.dart' show TextAlign, ParagraphStyle;
+export 'src/paragraph.dart'
+    show
+        TextAlign,
+        ParagraphStyle,
+        LineMetrics,
+        LineItem,
+        LineRun,
+        LineEmoji,
+        LinePlaceholder;
 export 'src/text/shaped_run.dart' show TextDirection;

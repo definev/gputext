@@ -134,18 +134,15 @@ class TextRun extends InlineItem {
   InlineDecoration? decoration;
   final FillRule fillRule;
 
-  /// Highlight color behind the run (TextStyle.backgroundColor), RGBA 0..1.
+  /// Highlight behind the run (TextStyle.backgroundColor), RGBA 0..1.
   List<double>? background;
 
-  /// Shadows painted under the run's glyphs (TextStyle.shadows).
   List<InlineShadow>? shadows;
 
-  /// TextStyle.leadingDistribution: true → the height multiplier's extra
-  /// leading splits evenly above/below instead of proportionally; null →
-  /// the paragraph default.
+  /// Height-multiplier leading: true → split evenly; null → paragraph default.
   final bool? evenLeading;
 
-  /// The pre-shaping source characters this run renders.
+  /// Pre-shaping source characters when they differ from [text].
   String? get sourceText {
     final s = shaped.sourceText;
     return identical(s, shaped.pipelineText) || s == shaped.pipelineText
@@ -156,14 +153,13 @@ class TextRun extends InlineItem {
   /// Cluster map: shaped→source UTF-16 boundaries; null → identity.
   Int32List? get sourceMap => shaped.sourceMap;
 
-  /// The characters selection sees and copy produces.
+  /// Selection/copy content (pre-shaping characters).
   String get originalText => shaped.sourceText;
 
   /// Boundary map from shaped [text] offsets to [originalText] offsets.
   int sourceOffsetAt(int shapedOffset) => shaped.sourceOffsetAt(shapedOffset);
 
-  /// Opaque origin marker (the source TextSpan) so hit-testing can map a
-  /// glyph position back to its span (recognizers). Never inspected here.
+  /// Opaque origin marker (source TextSpan) for hit-testing / recognizers.
   Object? source;
 }
 
@@ -181,8 +177,7 @@ class EmojiItem extends InlineItem {
     this.source,
   });
 
-  /// The emoji character(s) this cluster renders; selection/copy content.
-  /// Falls back to the object-replacement character when unset.
+  /// Selection/copy content; falls back to U+FFFC when unset.
   final String? sourceText;
 
   String get originalText => sourceText ?? '￼';
@@ -192,11 +187,11 @@ class EmojiItem extends InlineItem {
   final double advanceUnits; // font units
   final List<ColrLayer> layers;
 
-  /// Surrounding text color for COLR layers that use the text palette slot.
-  /// Mutable for paint-only span updates (see [TextRun.color]).
+  /// Text color for COLR layers using the text palette slot. Mutable for
+  /// paint-only updates (see [TextRun.color]).
   List<double> textColor;
 
-  /// Highlight color behind the cluster, RGBA 0..1.
+  /// Highlight behind the cluster, RGBA 0..1.
   List<double>? background;
 
   Object? source;

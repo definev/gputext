@@ -27,7 +27,6 @@ class ShapedGlyph {
     this.yOffset = 0,
   });
 
-  /// Font glyph id.
   final int glyphId;
 
   /// Source UTF-16 start (inclusive) in [ShapedGlyphRun.sourceText].
