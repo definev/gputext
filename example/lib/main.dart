@@ -20,6 +20,7 @@ import 'leak_report_page.dart';
 import 'leak_tracking.dart';
 import 'pretext_demo.dart';
 import 'rtl_demo.dart';
+import 'shadow_demo.dart';
 import 'variable_font_demo.dart';
 import 'widget_demo.dart';
 
@@ -78,6 +79,7 @@ class GPUTextApp extends StatelessWidget {
         'gsf' => const GoogleSansFlexDemoPage(),
         'vars' => const VariableFontDemoPage(),
         'rtl' => const RtlDemoPage(),
+        'shadow' => const ShadowDemoPage(),
         'leaks' => const LeakReportPage(),
         _ => const GPUTextDemoPage(),
       },

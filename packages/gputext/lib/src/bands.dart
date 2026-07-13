@@ -419,11 +419,13 @@ ColrEmojiAtlas buildColrEmojiAtlas(GPUFont font, Iterable<int> codePoints) {
   for (final cp in codePoints.toSet()) {
     final colr = font.colrForCodePoint(cp);
     if (colr == null || colr.isEmpty) continue;
-    final stack = <ColrGlyphLayer>[
-      for (final layer in colr)
-        if (font.glyphOutlineById(layer.glyphId) case final g?)
-          ColrGlyphLayer(bandOutline(g, curves, rows).$1, layer.color),
-    ];
+    final stack = <ColrGlyphLayer>[];
+    for (final layer in colr) {
+      final g = font.glyphOutlineById(layer.glyphId);
+      if (g == null) continue;
+      final (entry, _) = bandOutline(g, curves, rows);
+      stack.add(ColrGlyphLayer(entry, layer.color));
+    }
     if (stack.isNotEmpty) layers[cp] = stack;
   }
 

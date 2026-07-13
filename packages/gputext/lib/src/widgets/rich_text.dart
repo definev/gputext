@@ -1869,8 +1869,13 @@ class RenderGPUParagraph extends RenderBox
                 BlendMode.srcIn,
               );
             if (s.blurRadius > 0) {
-              // ui.Shadow.convertRadiusToSigma.
-              final sigma = s.blurRadius * 0.57735 + 0.5;
+              // ui.Shadow.convertRadiusToSigma, divided by _imageScale: the
+              // blur runs over `image`, whose texels are _imageScale-
+              // oversampled relative to the logical destination, so a
+              // logical-px sigma would land scale× too wide and smear the run
+              // into a halo. Pre-dividing brings it back toward the logical
+              // blur Flutter's MaskFilter-based TextStyle.shadows produce.
+              final sigma = (s.blurRadius * 0.57735 + 0.5) / _imageScale;
               paint.imageFilter = ui.ImageFilter.blur(
                 sigmaX: sigma,
                 sigmaY: sigma,

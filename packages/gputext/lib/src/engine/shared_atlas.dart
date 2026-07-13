@@ -87,7 +87,8 @@ class SharedGlyphAtlas implements GlyphTable {
         _blank.add(key);
         continue;
       }
-      _table[key] = bandOutline(g, _curves, _rows).$1;
+      final (entry, _) = bandOutline(g, _curves, _rows);
+      _table[key] = entry;
       grew = true;
     }
     if (grew) _generation++;
@@ -112,7 +113,8 @@ class SharedGlyphAtlas implements GlyphTable {
       _blankGids.add(key);
       return false;
     }
-    _gidTable[key] = bandOutline(g, _curves, _rows).$1;
+    final (entry, _) = bandOutline(g, _curves, _rows);
+    _gidTable[key] = entry;
     _generation++;
     return true;
   }
