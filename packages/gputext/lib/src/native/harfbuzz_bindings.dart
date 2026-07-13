@@ -375,6 +375,9 @@ class HarfBuzzBindings {
   /// access when HarfBuzz is unavailable for this process.
   static bool _loadFailed = false;
 
+  /// Last failure detail from [tryLoad] (tests / Android diagnostics).
+  static String? lastLoadError;
+
   static HarfBuzzBindings? tryLoad() {
     if (_cached != null) return _cached;
     if (_loadFailed || _symbolLookupFailed) return null;
@@ -384,20 +387,29 @@ class HarfBuzzBindings {
       if (buf != nullptr) {
         _hb_buffer_destroy(buf);
         loadedViaNative = true;
+        lastLoadError = null;
         return _cached = HarfBuzzBindings._fromNative();
       }
-    } catch (_) {}
+      lastLoadError = '@Native hb_buffer_create returned null';
+    } catch (e) {
+      lastLoadError = '@Native: $e';
+    }
     // 2) Narrow fallback: process-local / packaged soname, then hooks output.
     final lib = _openBundledDylib();
     if (lib == null) {
       _loadFailed = true;
+      lastLoadError =
+          '${lastLoadError ?? 'no @Native'}; '
+          'DynamicLibrary.open fallback also failed';
       return null;
     }
     try {
       loadedViaNative = false;
+      lastLoadError = null;
       return _cached = HarfBuzzBindings._fromLibrary(lib);
-    } catch (_) {
+    } catch (e) {
       _symbolLookupFailed = true;
+      lastLoadError = 'symbol lookup: $e';
       return null;
     }
   }
@@ -603,11 +615,18 @@ class HarfBuzzBindings {
       if (Platform.isLinux || Platform.isAndroid) 'libgputext_harfbuzz.so',
       if (Platform.isWindows) 'gputext_harfbuzz.dll',
     ];
+    final openErrors = <String>[];
     // Packaged into the app (jniLibs / Frameworks / next to the executable).
     for (final name in names) {
       try {
         return DynamicLibrary.open(name);
-      } catch (_) {}
+      } catch (e) {
+        openErrors.add('$name: $e');
+      }
+    }
+    if (openErrors.isNotEmpty) {
+      lastLoadError =
+          '${lastLoadError ?? ''}; open: ${openErrors.join('; ')}';
     }
     // Desktop tests / JIT: hooks output under the package or workspace cwd.
     final os = Platform.operatingSystem;

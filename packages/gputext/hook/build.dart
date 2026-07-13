@@ -35,6 +35,9 @@ void main(List<String> args) async {
       language: Language.cpp,
       std: 'c++17',
       flags: _hbFlags(os),
+      // HarfBuzz uses sincosf/atanf/hypotf/tanf. Android's app linker
+      // namespace does not resolve those unless libm is a DT_NEEDED.
+      libraries: _hbLibraries(os),
       defines: const {
         'HB_NO_MT': '1',
         'HB_NO_PRAGMA_GCC_DIAGNOSTIC': '1',
@@ -80,4 +83,12 @@ String? _hbCppLinkStdLib(OS os) => switch (os) {
   OS.linux => 'stdc++',
   OS.windows => null,
   _ => null,
+};
+
+/// Extra system libraries for the HarfBuzz amalgamation.
+///
+/// Windows links the CRT math symbols implicitly; Unix-likes need `-lm`.
+List<String> _hbLibraries(OS os) => switch (os) {
+  OS.windows => const [],
+  _ => const ['m'],
 };

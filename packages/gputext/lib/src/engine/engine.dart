@@ -105,9 +105,11 @@ class GPUTextEngine extends ChangeNotifier {
     if (_shaperResolved) return;
     final hb = HarfBuzzBindings.tryLoad();
     if (hb == null) {
+      final detail = HarfBuzzBindings.lastLoadError;
       throw UnsupportedError(
         'gputext requires the HarfBuzz native library, which failed to load '
-        'on this platform.',
+        'on this platform.'
+        '${detail == null ? '' : '\n$detail'}',
       );
     }
     _shaper = HarfBuzzShaper(hb);
