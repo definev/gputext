@@ -863,6 +863,7 @@ extension GPUFontVariations on GPUFont {
       kern: _kern,
       gposKern: _gposKern,
       colr: _colr,
+      bitmap: _bitmap,
       fvar: _fvar,
       avar: _avar,
       gvar: _gvar,

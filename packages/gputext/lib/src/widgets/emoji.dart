@@ -14,20 +14,17 @@ import 'package:flutter/widgets.dart';
 
 import '../engine/engine.dart';
 import '../font.dart' show isZeroWidthCodePoint;
+import '../text/emoji_ranges.dart';
 
 const _zwj = 0x200D;
-const _vs15 = 0xFE0E; // text presentation selector
-const _vs16 = 0xFE0F; // emoji presentation selector
+const _vs15 = emojiVs15; // text presentation selector
+const _vs16 = emojiVs16; // emoji presentation selector
 const _keycapMark = 0x20E3;
 
-bool _isEmojiBase(int cp) =>
-    (cp >= 0x1F000 && cp <= 0x1FAFF) || // SMP pictographic blocks
-    (cp >= 0x2600 && cp <= 0x27BF) || // misc symbols + dingbats
-    (cp >= 0x2B00 && cp <= 0x2BFF) || // misc symbols and arrows
-    cp == 0x2934 ||
-    cp == 0x2935;
-
-bool _isRegional(int cp) => cp >= 0x1F1E6 && cp <= 0x1F1FF;
+// Emoji-base and regional-indicator tests are shared with the flattener so
+// both sites classify emoji identically — see text/emoji_ranges.dart.
+bool _isEmojiBase(int cp) => isEmojiBaseCp(cp);
+bool _isRegional(int cp) => isRegionalIndicatorCp(cp);
 bool _isSkinTone(int cp) => cp >= 0x1F3FB && cp <= 0x1F3FF;
 bool _isKeycapBase(int cp) =>
     cp == 0x23 || cp == 0x2A || (cp >= 0x30 && cp <= 0x39);

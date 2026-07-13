@@ -163,19 +163,27 @@ class TextRun extends InlineItem {
   Object? source;
 }
 
-/// A native color-emoji cluster: one advance, N stacked COLR layer glyphs
-/// each with its palette color (null → the surrounding text color).
+/// A native color-emoji cluster: one advance rendered either as N stacked COLR
+/// layer glyphs (each with its palette color, null → surrounding text color),
+/// OR — when [bitmapGlyphId] is set — as a single color-bitmap quad sampled
+/// from the color atlas (sbix / CBDT emoji). The two are mutually exclusive.
 class EmojiItem extends InlineItem {
   EmojiItem({
     required this.font,
     required this.fontSizePx,
     required this.advanceUnits,
-    required this.layers,
+    this.layers = const [],
+    this.bitmapGlyphId,
     this.textColor = const [0, 0, 0, 1],
     this.background,
     this.sourceText,
     this.source,
   });
+
+  /// Glyph id of the color-bitmap image to draw, or null for a COLR cluster.
+  final int? bitmapGlyphId;
+
+  bool get isBitmap => bitmapGlyphId != null;
 
   /// Selection/copy content; falls back to U+FFFC when unset.
   final String? sourceText;

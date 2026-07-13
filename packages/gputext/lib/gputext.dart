@@ -17,7 +17,9 @@ export 'src/bands.dart'
         ColrEmojiAtlas,
         ColrGlyphLayer,
         buildColrEmojiAtlas;
+export 'src/color_bitmap.dart' show BitmapGlyph, BitmapGlyphSource;
 export 'src/engine/engine.dart' show AtlasFontUser, GPUText, GPUTextEngine;
+export 'src/native/system_fonts.dart' show SystemFontProvider;
 export 'src/engine/pipeline.dart' show FrameUniforms, GPUTextPipeline;
 export 'src/font.dart'
     show

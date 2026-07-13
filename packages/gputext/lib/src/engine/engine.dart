@@ -20,10 +20,13 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 import '../atlas.dart';
 import '../font.dart';
 import '../native/harfbuzz_bindings.dart';
+import '../native/system_fonts.dart';
 import '../paragraph.dart' as wf;
 import '../text/harfbuzz_shaper.dart';
 import '../text/metrics_cache.dart';
 import '../text/shaper.dart';
+import 'color_atlas.dart';
+import 'color_atlas_texture.dart';
 import 'pipeline.dart';
 import 'shared_atlas.dart';
 
@@ -39,21 +42,32 @@ abstract final class GPUText {
   /// Load fonts and build the GPU pipeline up front (no first-frame flash).
   /// `fallbackFamilies` are tried, in order, for characters the styled
   /// family doesn't cover (after TextStyle.fontFamilyFallback).
+  /// [systemFonts] maps a gputext family name to an OS font family to resolve
+  /// natively (opt-in; see [GPUTextEngine.loadSystemFont]). [useSystemDefaultFont]
+  /// additionally registers the platform default UI font under `system-ui`.
   static Future<void> initialize({
     Map<String, String> fontAssets = const {},
     String? defaultFamily,
     List<String> fallbackFamilies = const [],
     String? emojiFontAsset,
+    Map<String, String> systemFonts = const {},
+    bool useSystemDefaultFont = false,
   }) => instance._initializeWith(
     fontAssets,
     defaultFamily,
     fallbackFamilies,
     emojiFontAsset,
+    systemFonts,
+    useSystemDefaultFont,
   );
 
   /// False when flutter_gpu/Impeller is unavailable; gputext widgets lay
   /// out but paint blank, so apps can fall back to stock RichText.
   static bool get isSupported => !instance.unsupported;
+
+  /// True when the platform can supply native system fonts (macOS/iOS/Android
+  /// with the resolver loaded). See [GPUTextEngine.systemFontsAvailable].
+  static bool get systemFontsAvailable => instance.systemFontsAvailable;
 }
 
 class GPUTextEngine extends ChangeNotifier {
@@ -76,6 +90,14 @@ class GPUTextEngine extends ChangeNotifier {
   Future<void>? _initFuture;
   GPUTextPipeline? _pipeline;
   final atlas = SharedGlyphAtlas();
+
+  /// Shared RGBA8 atlas for color-bitmap (emoji) glyphs. Parallel to [atlas]
+  /// but sampled by the color pipeline rather than integrated as coverage.
+  /// Populated only once a color-bitmap emoji font is registered, so apps that
+  /// never use sbix/CBDT emoji pay nothing for it.
+  final colorAtlas = SharedColorAtlas();
+  final _colorAtlasTexture = ColorAtlasTexture();
+
   final _fonts = <String, List<_FontVariant>>{};
   final _fallbackFamilies = <String>[];
   String? _defaultFamily;
@@ -240,15 +262,27 @@ class GPUTextEngine extends ChangeNotifier {
     String? defaultFamily,
     List<String> fallbackFamilies,
     String? emojiFontAsset,
+    Map<String, String> systemFonts,
+    bool useSystemDefaultFont,
   ) async {
     for (final e in fontAssets.entries) {
       await loadFontAsset(e.key, e.value);
     }
+    for (final e in systemFonts.entries) {
+      await loadSystemFont(e.key, systemName: e.value);
+    }
+    if (useSystemDefaultFont) await loadDefaultSystemFont();
     if (defaultFamily != null) _defaultFamily = defaultFamily;
     if (fallbackFamilies.isNotEmpty) setFallbackFamilies(fallbackFamilies);
     if (emojiFontAsset != null) await loadEmojiFontAsset(emojiFontAsset);
     await ensureInitialized();
   }
+
+  /// True when the platform has a native system-font backend loaded
+  /// (macOS/iOS/Android). Even when true, a specific family may still resolve
+  /// to null — e.g. a CFF-only font, or an iOS system font whose tables the OS
+  /// declines to hand over.
+  bool get systemFontsAvailable => SystemFontProvider.available;
 
   GPUFont? _emojiFont;
 
@@ -256,11 +290,14 @@ class GPUTextEngine extends ChangeNotifier {
   /// null → all emoji delegate to the platform.
   GPUFont? get emojiFont => _emojiFont;
 
-  /// Register (or clear with null) the color-emoji font.
+  /// Register (or clear with null) the color-emoji font. Accepts COLR (vector)
+  /// or sbix/CBDT (bitmap) color fonts; registering a bitmap font is itself the
+  /// opt-in — its glyphs then render through the GPU color pipeline. Apps that
+  /// want platform-delegated emoji instead simply don't register one.
   void registerEmojiFont(GPUFont? font) {
     assert(
-      font == null || font.hasColorGlyphs,
-      'Emoji font must carry COLR v0 color glyphs',
+      font == null || font.hasColorGlyphs || font.hasBitmapGlyphs,
+      'Emoji font must carry COLR v0 or color-bitmap (sbix/CBDT) glyphs',
     );
     _emojiFont = font;
     _bumpFontGeneration();
@@ -281,8 +318,33 @@ class GPUTextEngine extends ChangeNotifier {
     return font;
   }
 
-  /// True when the registered emoji font has a color glyph for `cp`.
-  bool nativeEmojiCovers(int cp) => _emojiFont?.colrForCodePoint(cp) != null;
+  /// True when the registered emoji font can render `cp` on the GPU — a COLR
+  /// glyph, or a color-bitmap (sbix/CBDT) strike. Such emoji stay in-text
+  /// instead of delegating to the platform.
+  bool nativeEmojiCovers(int cp) {
+    final font = _emojiFont;
+    if (font == null) return false;
+    if (font.colrForCodePoint(cp) != null) return true;
+    // Coverage is size-independent — any nominal ppem confirms a strike exists.
+    if (font.bitmapGlyphForCodePoint(cp, targetPpem: 64) != null) return true;
+    return false;
+  }
+
+  /// Decode + pack the color-bitmap glyph [glyphId] of [font] at [targetPpem]
+  /// into [colorAtlas] if absent (async PNG decode). On a newly packed glyph
+  /// the atlas generation bumps and listeners are notified to re-render — the
+  /// same deferral as async font load.
+  void ensureBitmapGlyph(GPUFont font, int glyphId, double targetPpem) {
+    final before = colorAtlas.generation;
+    colorAtlas.ensure(font, glyphId, targetPpem).then((_) {
+      if (colorAtlas.generation != before) notifyListeners();
+    });
+  }
+
+  /// Upload the color atlas to its GPU texture (on generation change). Null
+  /// while empty. Paired with [pipeline.renderColorInstances].
+  gpu.Texture? prepareColorTexture() =>
+      _colorAtlasTexture.prepare(gpu.gpuContext, colorAtlas);
 
   /// Engine-wide fallback chain, tried after a style's own family list.
   List<String> get fallbackFamilies => List.unmodifiable(_fallbackFamilies);
@@ -345,6 +407,69 @@ class GPUTextEngine extends ChangeNotifier {
     final font = GPUFont.parse(
       data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
     );
+    registerFont(family, font, weight: weight, style: style);
+    return font;
+  }
+
+  /// Resolve an OS-installed font family via the native resolver and register
+  /// it under [family]. [systemName] is the OS family to look up (defaults to
+  /// [family]) — pass it when the gputext name differs from the OS name.
+  ///
+  /// Returns null (never throws) when the platform has no system-font backend,
+  /// the font is unavailable, or it uses CFF/PostScript outlines gputext cannot
+  /// render; the caller then keeps whatever fallback it had. Call once per
+  /// weight/style variant, mirroring [registerFont].
+  Future<GPUFont?> loadSystemFont(
+    String family, {
+    String? systemName,
+    ui.FontWeight weight = ui.FontWeight.w400,
+    ui.FontStyle style = ui.FontStyle.normal,
+  }) async {
+    final provider = SystemFontProvider.tryLoad();
+    if (provider == null) return null;
+    final bytes = provider.fontData(
+      systemName ?? family,
+      weight: weight.value,
+      italic: style == ui.FontStyle.italic,
+    );
+    return _registerSystemBytes(family, bytes, weight, style, systemName ?? family);
+  }
+
+  /// Resolve the platform default UI font (San Francisco on Apple, Roboto on
+  /// Android) and register it under [family]. Same null-on-unavailable contract
+  /// as [loadSystemFont].
+  Future<GPUFont?> loadDefaultSystemFont({
+    String family = 'system-ui',
+    ui.FontWeight weight = ui.FontWeight.w400,
+    ui.FontStyle style = ui.FontStyle.normal,
+  }) async {
+    final provider = SystemFontProvider.tryLoad();
+    if (provider == null) return null;
+    final bytes = provider.defaultFontData(
+      weight: weight.value,
+      italic: style == ui.FontStyle.italic,
+    );
+    return _registerSystemBytes(family, bytes, weight, style, 'system default');
+  }
+
+  /// Parse resolver [bytes] and register under [family]; null on absent bytes or
+  /// a parse failure (e.g. an unexpected CFF face slipping through). [label] is
+  /// only for the diagnostic message.
+  GPUFont? _registerSystemBytes(
+    String family,
+    Uint8List? bytes,
+    ui.FontWeight weight,
+    ui.FontStyle style,
+    String label,
+  ) {
+    if (bytes == null) return null;
+    final GPUFont font;
+    try {
+      font = GPUFont.parse(bytes);
+    } catch (e) {
+      debugPrint('gputext: system font "$label" parse failed: $e');
+      return null;
+    }
     registerFont(family, font, weight: weight, style: style);
     return font;
   }

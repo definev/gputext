@@ -142,7 +142,9 @@ class _CursedDemoPageState extends State<CursedDemoPage> {
   Future<void> _loadFonts() async {
     final engine = GPUText.instance;
     // Native COLR emoji (single code points render through the gputext shader).
-    if (engine.emojiFont == null) {
+    // The emoji font is process-wide; reload Twemoji defensively if a CBDT font
+    // is somehow still active so this demo renders its own COLR emoji.
+    if (engine.emojiFont == null || engine.emojiFont!.hasBitmapGlyphs) {
       try {
         await engine.loadEmojiFontAsset('assets/TwemojiMozilla.ttf');
       } catch (e) {

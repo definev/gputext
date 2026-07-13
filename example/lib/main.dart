@@ -15,6 +15,7 @@ import 'package:gputext/gputext.dart';
 import 'bench/bench_page.dart';
 import 'cursed_demo.dart';
 import 'dragon_demo.dart';
+import 'emoji_bitmap_demo.dart';
 import 'google_sans_flex_demo.dart';
 import 'justification_demo.dart';
 import 'leak_report_page.dart';
@@ -22,6 +23,7 @@ import 'leak_tracking.dart';
 import 'pretext_demo.dart';
 import 'rtl_demo.dart';
 import 'shadow_demo.dart';
+import 'sysfont_demo.dart';
 import 'variable_font_demo.dart';
 import 'widget_demo.dart';
 
@@ -81,6 +83,8 @@ class GPUTextApp extends StatelessWidget {
         'vars' => const VariableFontDemoPage(),
         'rtl' => const RtlDemoPage(),
         'cursed' => const CursedDemoPage(),
+        'emoji' => const EmojiBitmapDemoPage(),
+        'sysfont' => const SysFontDemoPage(),
         'shadow' => const ShadowDemoPage(),
         'leaks' => const LeakReportPage(),
         _ => const GPUTextDemoPage(),
@@ -515,6 +519,11 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                               _demoButton('Pretext', const PretextDemoPage()),
                               _demoButton('Dragon', const DragonDemoPage()),
                               _demoButton('Cursed', const CursedDemoPage()),
+                              _demoButton(
+                                'Bitmap emoji',
+                                const EmojiBitmapDemoPage(),
+                              ),
+                              _demoButton('Sys font', const SysFontDemoPage()),
                               _demoButton(
                                 'Justification',
                                 const JustificationDemoPage(),

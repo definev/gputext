@@ -32,6 +32,7 @@ flutter:
   assets:
     - assets/Lato-Regular.ttf
     - assets/TwemojiMozilla.ttf
+    - assets/NotoColorEmoji.ttf
     - assets/NotoSansSC-subset.ttf
     - assets/Google_Sans_Flex/GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf
     - assets/bench/en-gatsby-opening.txt

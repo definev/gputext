@@ -56,6 +56,9 @@ class GPUTextPipeline {
     required this.curvesSlot,
     required this.rowsSlot,
     required this.cornerBuffer,
+    this.colorPipeline,
+    this.colorFrameSlot,
+    this.colorAtlasSlot,
   });
 
   final gpu.RenderPipeline pipeline;
@@ -63,6 +66,17 @@ class GPUTextPipeline {
   final gpu.UniformSlot curvesSlot;
   final gpu.UniformSlot rowsSlot;
   final gpu.DeviceBuffer cornerBuffer;
+
+  /// Color-bitmap (emoji) pipeline. Null when the loaded shader bundle predates
+  /// color support — bitmap glyphs then silently delegate instead of crashing.
+  final gpu.RenderPipeline? colorPipeline;
+  final gpu.UniformSlot? colorFrameSlot;
+  final gpu.UniformSlot? colorAtlasSlot;
+
+  /// 48-byte color instance: rect(vec4 world px) + uv(vec4) + tint(vec4).
+  static const colorInstanceStride = 48;
+
+  bool get hasColorPipeline => colorPipeline != null;
 
   static Future<GPUTextPipeline> create() async {
     gpu.ShaderLibrary? library;
@@ -104,7 +118,12 @@ class GPUTextPipeline {
       throw Exception('Missing GPUText shaders in bundle');
     }
 
-    return _fromShaders(vert, frag);
+    // Color-bitmap shaders are optional: an older bundle without them just
+    // disables the emoji raster path (glyphs delegate to the platform).
+    final colorVert = library['GPUColorVertex'];
+    final colorFrag = library['GPUColorFragment'];
+
+    return _fromShaders(vert, frag, colorVert, colorFrag);
   }
 
   /// Debug/test fallback: `flutter test` never registers hook data assets
@@ -186,7 +205,12 @@ class GPUTextPipeline {
     }
   }
 
-  static GPUTextPipeline _fromShaders(gpu.Shader vert, gpu.Shader frag) {
+  static GPUTextPipeline _fromShaders(
+    gpu.Shader vert,
+    gpu.Shader frag,
+    gpu.Shader? colorVert,
+    gpu.Shader? colorFrag,
+  ) {
     final vertexLayout = gpu.VertexLayout(
       buffers: [
         const gpu.VertexBuffer(
@@ -238,12 +262,64 @@ class GPUTextPipeline {
       corners.buffer.asByteData(),
     );
 
+    // Optional color-bitmap pipeline. Shares the unit-quad corner buffer and
+    // the identical FrameInfo block; only the instance layout differs.
+    gpu.RenderPipeline? colorPipeline;
+    gpu.UniformSlot? colorFrameSlot;
+    gpu.UniformSlot? colorAtlasSlot;
+    if (colorVert != null && colorFrag != null) {
+      final colorLayout = gpu.VertexLayout(
+        buffers: [
+          const gpu.VertexBuffer(
+            strideInBytes: 8,
+            attributes: [
+              gpu.VertexAttribute(
+                name: 'corner',
+                format: gpu.VertexFormat.float32x2,
+              ),
+            ],
+          ),
+          const gpu.VertexBuffer(
+            strideInBytes: colorInstanceStride,
+            stepMode: gpu.VertexStepMode.instance,
+            attributes: [
+              gpu.VertexAttribute(
+                name: 'rect',
+                format: gpu.VertexFormat.float32x4,
+                offsetInBytes: 0,
+              ),
+              gpu.VertexAttribute(
+                name: 'uv',
+                format: gpu.VertexFormat.float32x4,
+                offsetInBytes: 16,
+              ),
+              gpu.VertexAttribute(
+                name: 'tint',
+                format: gpu.VertexFormat.float32x4,
+                offsetInBytes: 32,
+              ),
+            ],
+          ),
+        ],
+      );
+      colorPipeline = gpu.gpuContext.createRenderPipeline(
+        colorVert,
+        colorFrag,
+        vertexLayout: colorLayout,
+      );
+      colorFrameSlot = colorVert.getUniformSlot('FrameInfo');
+      colorAtlasSlot = colorFrag.getUniformSlot('colorAtlas');
+    }
+
     return GPUTextPipeline._(
       pipeline: pipeline,
       frameSlot: vert.getUniformSlot('FrameInfo'),
       curvesSlot: frag.getUniformSlot('curvesTex'),
       rowsSlot: frag.getUniformSlot('rowsTex'),
       cornerBuffer: cornerBuffer,
+      colorPipeline: colorPipeline,
+      colorFrameSlot: colorFrameSlot,
+      colorAtlasSlot: colorAtlasSlot,
     );
   }
 
@@ -317,6 +393,97 @@ class GPUTextPipeline {
         instances,
         offsetInBytes: 0,
         lengthInBytes: instanceCount * 64,
+      ),
+      slot: 1,
+    );
+    pass.draw(4, instanceCount: instanceCount);
+  }
+
+  gpu.DeviceBuffer uploadColorInstances(Float32List instances) =>
+      gpu.gpuContext.createDeviceBufferWithCopy(instances.buffer.asByteData());
+
+  /// Draw color-bitmap (emoji) quads sampling [colorAtlas]. Meant to run on the
+  /// same [pass] after [renderInstances] so text and emoji composite in one
+  /// surface; premultiplied blend matches the coverage path (the shader
+  /// premultiplies the straight-alpha atlas). No-op if the bundle had no color
+  /// shaders or there is nothing to draw.
+  void renderColorInstances({
+    required gpu.RenderPass pass,
+    required FrameUniforms frame,
+    required gpu.DeviceBuffer instances,
+    required int instanceCount,
+    required gpu.Texture colorAtlas,
+  }) {
+    final cp = colorPipeline;
+    if (cp == null || instanceCount == 0) return;
+    // Reset binding state left by a prior pipeline on this pass (the coverage
+    // draw). The coverage instance layout is 64 bytes with an attribute at
+    // offset 48; without this reset, switching to the 48-byte color layout
+    // leaves a stale vertex descriptor and the color draw reads out of bounds —
+    // a SwiftShader/Impeller segfault in DrawCall::run. Harmless when the color
+    // pass is the only draw (nothing was bound yet).
+    pass.clearBindings();
+    final frameData = Float32List.fromList([
+      frame.width,
+      frame.height,
+      frame.style[0],
+      frame.style[1],
+      frame.cam[0],
+      frame.cam[1],
+      frame.cam[2],
+      frame.cam[3],
+      frame.guardPx,
+      0,
+      0,
+      0,
+    ]);
+    final frameBuffer = gpu.gpuContext.createDeviceBufferWithCopy(
+      frameData.buffer.asByteData(),
+    );
+    final frameView = gpu.BufferView(
+      frameBuffer,
+      offsetInBytes: 0,
+      lengthInBytes: frameBuffer.sizeInBytes,
+    );
+
+    pass.bindPipeline(cp);
+    pass.setColorBlendEnable(true);
+    pass.setColorBlendEquation(
+      gpu.ColorBlendEquation(
+        colorBlendOperation: gpu.BlendOperation.add,
+        sourceColorBlendFactor: gpu.BlendFactor.one,
+        destinationColorBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
+        alphaBlendOperation: gpu.BlendOperation.add,
+        sourceAlphaBlendFactor: gpu.BlendFactor.one,
+        destinationAlphaBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
+      ),
+    );
+    pass.setPrimitiveType(gpu.PrimitiveType.triangleStrip);
+    pass.bindUniform(colorFrameSlot!, frameView);
+    // Trilinear: linear min/mag for magnification, linear mip blend for the
+    // minified case (a large strike drawn small — e.g. single-strike CBDT).
+    pass.bindTexture(
+      colorAtlasSlot!,
+      colorAtlas,
+      sampler: gpu.SamplerOptions(
+        minFilter: gpu.MinMagFilter.linear,
+        magFilter: gpu.MinMagFilter.linear,
+        mipFilter: gpu.MipFilter.linear,
+      ),
+    );
+    pass.bindVertexBuffer(
+      gpu.BufferView(
+        cornerBuffer,
+        offsetInBytes: 0,
+        lengthInBytes: cornerBuffer.sizeInBytes,
+      ),
+      slot: 0,
+    );
+    pass.bindVertexBuffer(
+      gpu.BufferView(
+        instances,
+        offsetInBytes: 0,
+        lengthInBytes: instanceCount * colorInstanceStride,
       ),
       slot: 1,
     );

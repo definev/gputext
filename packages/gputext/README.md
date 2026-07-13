@@ -40,6 +40,41 @@ using the bundled Lato default. See the
 [example app](https://github.com/definev/gputext/tree/main/example) for demos
 (RTL, variable fonts, benchmarks).
 
+## System fonts (macOS / iOS / Android)
+
+Resolve an OS-installed font by family name — no bundled TTF — via the native
+resolver (CoreText on Apple, the NDK font matcher on Android). It's opt-in and
+non-breaking; the bundled Lato default is unchanged until you call it.
+
+```dart
+final engine = GPUText.instance;
+
+// Platform default UI font (San Francisco / Roboto), registered as `system-ui`.
+await engine.loadDefaultSystemFont();
+
+// A named installed family, in a specific weight.
+await engine.loadSystemFont('Georgia', weight: FontWeight.w700);
+
+// Or up front, no first-frame flash:
+await GPUText.initialize(
+  useSystemDefaultFont: true,
+  systemFonts: {'Serif': 'Georgia'}, // gputext family : OS family
+);
+```
+
+Each call returns `null` (never throws) when the platform has no backend, the
+family is unavailable, or it uses CFF/PostScript outlines gputext can't render —
+so callers keep their fallback. `GPUText.systemFontsAvailable` reports whether a
+backend is present. Try it: `GPUTEXT_DEMO=sysfont`.
+
+**Caveats.** gputext renders TrueType (`glyf`) outlines only, so CFF-flavored
+families fall back. The platform default UI font is `glyf` on both Apple and
+Android, so `loadDefaultSystemFont` is the reliable path. Android name matching
+uses the NDK matcher (API 29+; a `/system/fonts` best-effort below that) and may
+substitute a fallback for an unknown name. On iOS, some builds decline to hand
+over the synthetic system font's tables — reconstruction then returns `null` and
+your bundled default stays in place. Call once per weight/style variant.
+
 ## Hybrid rendering
 
 `GPURichText` is not a single paint path:
@@ -71,6 +106,7 @@ on it — no extra setup.
 
 - Impeller / `flutter_gpu` only.
 - `foreground` `Paint` is flat color only.
+- System fonts resolve TrueType (`glyf`) faces only; CFF families fall back.
 - Still evolving; APIs may change before `0.1.0`.
 
 ## License

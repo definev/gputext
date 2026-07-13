@@ -3,6 +3,45 @@ import 'font.dart';
 
 const floatsPerInstance = 16;
 
+/// Floats per color-bitmap (emoji) instance: rect(4) + uv(4) + tint(4). Matches
+/// GPUTextPipeline.colorInstanceStride (48 bytes) and gputext_color.vert.
+const floatsPerColorInstance = 12;
+
+/// A resolved color-bitmap glyph's atlas UV rect + placement, as the emit layer
+/// needs it. VM-pure mirror of the engine's ColorAtlasEntry so paragraph.dart
+/// stays free of dart:ui. Placement is strike-pixel space (divide by [ppem]).
+class ColorGlyphPlacement {
+  const ColorGlyphPlacement({
+    required this.u0,
+    required this.v0,
+    required this.u1,
+    required this.v1,
+    required this.width,
+    required this.height,
+    required this.ppem,
+    required this.bearingX,
+    required this.bearingY,
+  });
+
+  final double u0;
+  final double v0;
+  final double u1;
+  final double v1;
+  final int width; // decoded image px
+  final int height;
+  final int ppem;
+  final double bearingX; // px, origin → left edge
+  final double bearingY; // px, baseline → top edge (y-up)
+}
+
+/// Resolve a decoded+packed color-bitmap glyph for the emit layer, or null when
+/// it isn't in the atlas yet (a re-render follows once the async decode lands).
+typedef ColorGlyphLookup = ColorGlyphPlacement? Function(
+  GPUFont font,
+  int glyphId,
+  double targetPpem,
+);
+
 double measureText(String text, GPUFont font, double fontSizePx) {
   final scale = fontSizePx / font.unitsPerEm;
   var w = 0.0;

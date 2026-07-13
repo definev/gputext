@@ -945,14 +945,22 @@ class ParagraphInstances {
   ParagraphInstances({
     required this.instances,
     required this.inkBounds,
+    Float32List? colorInstances,
     this.placeholders = const [],
     this.decorations = const [],
     this.hitBoxes = const [],
     this.backgrounds = const [],
     this.shadowRuns = const [],
-  });
+  }) : colorInstances = colorInstances ?? _emptyColor;
+
+  static final Float32List _emptyColor = Float32List(0);
 
   final Float32List instances;
+
+  /// Color-bitmap (emoji) quad instances: 12 floats each — rect(vec4 world px)
+  /// + uv(vec4) + tint(vec4) — drawn by the color pipeline. Empty unless a
+  /// registered sbix/CBDT emoji font produced bitmap emoji.
+  final Float32List colorInstances;
 
   /// Union of glyph ink boxes in layout space, or null when nothing inked.
   /// Placeholder boxes are NOT included (their widgets paint themselves).
@@ -974,6 +982,9 @@ class ParagraphInstances {
   final List<ShadowRun> shadowRuns;
 
   int get glyphCount => instances.length ~/ floatsPerInstance;
+
+  /// Color-bitmap quads to draw (12 floats each).
+  int get colorGlyphCount => colorInstances.length ~/ floatsPerColorInstance;
 }
 
 /// Horizontal pen origin of a line within the alignment box (shared by the
@@ -1032,9 +1043,18 @@ ParagraphInstances emitInstances(
   GlyphTable? table, {
   double x = 0,
   double top = 0,
+  ColorGlyphLookup? colorLookup,
 }) => GPUTextTimeline.timeSync(
   GPUTextTimeline.emit,
-  () => _emitInstances(para, boxWidth, align, table, x: x, top: top),
+  () => _emitInstances(
+    para,
+    boxWidth,
+    align,
+    table,
+    x: x,
+    top: top,
+    colorLookup: colorLookup,
+  ),
 );
 
 ParagraphInstances _emitInstances(
@@ -1044,25 +1064,36 @@ ParagraphInstances _emitInstances(
   GlyphTable? table, {
   double x = 0,
   double top = 0,
+  ColorGlyphLookup? colorLookup,
 }) {
   // Instances land in a pre-sized typed buffer: a growable List<double>
   // boxes every element (same reason the atlas stores are typed), and this
   // walk re-runs on every content change and after every atlas compaction.
   // The glyph count bounds the size; table misses just leave the tail unused.
   var maxGlyphs = 0;
+  var maxColorGlyphs = 0;
   if (table != null) {
     for (final line in para.lines) {
       for (final item in line.items) {
         if (item is LineRun) {
           maxGlyphs += item.shaped.glyphs.length;
         } else if (item is LineEmoji) {
-          maxGlyphs += item.item.layers.length;
+          if (item.item.isBitmap) {
+            maxColorGlyphs += 1;
+          } else {
+            maxGlyphs += item.item.layers.length;
+          }
         }
       }
     }
   }
   final out = Float32List(maxGlyphs * floatsPerInstance);
   var outLen = 0;
+  // Color-bitmap emoji land in their own stream (drawn by the color pipeline).
+  final colorOut = maxColorGlyphs > 0
+      ? Float32List(maxColorGlyphs * floatsPerColorInstance)
+      : null;
+  var colorOutLen = 0;
   final placeholders = <PlaceholderBox>[];
   final decorations = <DecorationLine>[];
   final hitBoxes = <HitSpanBox>[];
@@ -1090,38 +1121,74 @@ ParagraphInstances _emitInstances(
     for (final item in line.items) {
       if (item is LineEmoji) {
         final e = item.item;
-        final scale = e.fontSizePx / e.font.unitsPerEm;
-        for (final layer in e.layers) {
-          final gl = table?.lookupGlyphId(e.font, layer.glyphId);
-          if (gl == null) continue;
-          final c = layer.color ?? e.textColor;
-          final a = c.length > 3 ? c[3] : 1.0;
-          final o = outLen;
-          out[o] = pen;
-          out[o + 1] = baselineY;
-          out[o + 2] = scale;
-          out[o + 3] = 0.0;
-          out[o + 4] = gl.bbox[0];
-          out[o + 5] = gl.bbox[1];
-          out[o + 6] = gl.bbox[2];
-          out[o + 7] = gl.bbox[3];
-          out[o + 8] = c[0];
-          out[o + 9] = c[1];
-          out[o + 10] = c[2];
-          out[o + 11] = a;
-          out[o + 12] = gl.rowBase.toDouble();
-          out[o + 13] = gl.bandCount.toDouble();
-          out[o + 14] = gl.y0;
-          out[o + 15] = gl.invH;
-          outLen = o + floatsPerInstance;
-          final gx0 = pen + gl.bbox[0] * scale;
-          final gx1 = pen + gl.bbox[2] * scale;
-          final gy0 = baselineY + gl.bbox[1] * scale;
-          final gy1 = baselineY + gl.bbox[3] * scale;
-          if (gx0 < inkMinX) inkMinX = gx0;
-          if (gx1 > inkMaxX) inkMaxX = gx1;
-          if (gy0 < inkMinY) inkMinY = gy0;
-          if (gy1 > inkMaxY) inkMaxY = gy1;
+        if (e.isBitmap) {
+          // One textured quad from the color atlas. Skipped silently until the
+          // async decode packs it — a re-render then re-emits with it present.
+          final place = colorOut == null
+              ? null
+              : colorLookup?.call(e.font, e.bitmapGlyphId!, e.fontSizePx);
+          if (place != null) {
+            final s = e.fontSizePx / place.ppem; // strike px → world px
+            final x0 = pen + place.bearingX * s;
+            final x1 = pen + (place.bearingX + place.width) * s;
+            final yTop = baselineY - place.bearingY * s;
+            final yBot = baselineY - (place.bearingY - place.height) * s;
+            final alpha = e.textColor.length > 3 ? e.textColor[3] : 1.0;
+            final o = colorOutLen;
+            colorOut![o] = x0;
+            colorOut[o + 1] = yTop;
+            colorOut[o + 2] = x1;
+            colorOut[o + 3] = yBot;
+            colorOut[o + 4] = place.u0;
+            colorOut[o + 5] = place.v0;
+            colorOut[o + 6] = place.u1;
+            colorOut[o + 7] = place.v1;
+            // Tint is a scalar opacity replicated across all four channels —
+            // the atlas is premultiplied, so fading = multiplying RGBA by α.
+            colorOut[o + 8] = alpha;
+            colorOut[o + 9] = alpha;
+            colorOut[o + 10] = alpha;
+            colorOut[o + 11] = alpha;
+            colorOutLen = o + floatsPerColorInstance;
+            if (x0 < inkMinX) inkMinX = x0;
+            if (x1 > inkMaxX) inkMaxX = x1;
+            if (yTop < inkMinY) inkMinY = yTop;
+            if (yBot > inkMaxY) inkMaxY = yBot;
+          }
+        } else {
+          final scale = e.fontSizePx / e.font.unitsPerEm;
+          for (final layer in e.layers) {
+            final gl = table?.lookupGlyphId(e.font, layer.glyphId);
+            if (gl == null) continue;
+            final c = layer.color ?? e.textColor;
+            final a = c.length > 3 ? c[3] : 1.0;
+            final o = outLen;
+            out[o] = pen;
+            out[o + 1] = baselineY;
+            out[o + 2] = scale;
+            out[o + 3] = 0.0;
+            out[o + 4] = gl.bbox[0];
+            out[o + 5] = gl.bbox[1];
+            out[o + 6] = gl.bbox[2];
+            out[o + 7] = gl.bbox[3];
+            out[o + 8] = c[0];
+            out[o + 9] = c[1];
+            out[o + 10] = c[2];
+            out[o + 11] = a;
+            out[o + 12] = gl.rowBase.toDouble();
+            out[o + 13] = gl.bandCount.toDouble();
+            out[o + 14] = gl.y0;
+            out[o + 15] = gl.invH;
+            outLen = o + floatsPerInstance;
+            final gx0 = pen + gl.bbox[0] * scale;
+            final gx1 = pen + gl.bbox[2] * scale;
+            final gy0 = baselineY + gl.bbox[1] * scale;
+            final gy1 = baselineY + gl.bbox[3] * scale;
+            if (gx0 < inkMinX) inkMinX = gx0;
+            if (gx1 > inkMaxX) inkMaxX = gx1;
+            if (gy0 < inkMinY) inkMinY = gy0;
+            if (gy1 > inkMaxY) inkMaxY = gy1;
+          }
         }
         final bg = e.background;
         if (bg != null && e.width > 0) {
@@ -1331,8 +1398,17 @@ ParagraphInstances _emitInstances(
   final instances = outLen == out.length
       ? out
       : (Float32List(outLen)..setRange(0, outLen, out));
+  // Same exact-size trim for the color stream: undecoded emoji leave gaps, and
+  // the buffer feeds render-skip's byte-identity check (so a glyph appearing a
+  // frame later must change it).
+  final colorInstances = colorOut == null
+      ? null
+      : (colorOutLen == colorOut.length
+            ? colorOut
+            : (Float32List(colorOutLen)..setRange(0, colorOutLen, colorOut)));
   return ParagraphInstances(
     instances: instances,
+    colorInstances: colorInstances,
     inkBounds: inkMinX.isFinite
         ? LayoutBounds(
             minX: inkMinX,

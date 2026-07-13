@@ -12,6 +12,7 @@ import '../engine/engine.dart';
 import '../font.dart' show GPUFont, GPUFontVariations, isZeroWidthCodePoint;
 import '../paragraph.dart' as wf;
 import '../text/bidi.dart' as bidi;
+import '../text/emoji_ranges.dart';
 import '../text/shaped_run.dart' as sr show TextDirection;
 import '../text/shaper.dart';
 import '../timeline.dart';
@@ -491,9 +492,21 @@ List<wf.InlineItem>? _flattenSpan(
         }
 
         final emojiFont = engine.emojiFont;
-        for (final rune in text.runes) {
+        final runes = text.runes.toList(growable: false);
+        for (var ri = 0; ri < runes.length; ri++) {
+          final rune = runes[ri];
+          // A rune routes to the emoji font ONLY when it is actually an emoji —
+          // an emoji-presentation base, a regional indicator, or a character
+          // carrying the emoji variation selector (VS16). Font coverage alone
+          // is not enough: color-emoji fonts include non-emoji glyphs (e.g.
+          // NotoColorEmoji maps ASCII digits 0-9 and #/* as keycap bases), and
+          // matching on coverage would hijack plain text into the color/bitmap
+          // pipeline. See text/emoji_ranges.dart.
+          final isEmojiRune = isEmojiBaseCp(rune) ||
+              isRegionalIndicatorCp(rune) ||
+              (ri + 1 < runes.length && runes[ri + 1] == emojiVs16);
           // Native color emoji: COLR layers render through the shader.
-          if (emojiFont != null && !isZeroWidthCodePoint(rune)) {
+          if (emojiFont != null && isEmojiRune && !isZeroWidthCodePoint(rune)) {
             final layers = emojiFont.colrForCodePoint(rune);
             if (layers != null) {
               flushSub();
@@ -514,6 +527,30 @@ List<wf.InlineItem>? _flattenSpan(
                 ),
               );
               continue;
+            }
+            // Color-bitmap emoji (sbix / CBDT): one atlas-sampled quad.
+            if (emojiFont.hasBitmapGlyphs) {
+              final gid = emojiFont.glyphIdForRune(rune);
+              if (gid != null &&
+                  emojiFont.bitmapGlyphForId(gid, targetPpem: fontSizePx) !=
+                      null) {
+                flushSub();
+                items.add(
+                  wf.EmojiItem(
+                    font: emojiFont,
+                    fontSizePx: fontSizePx,
+                    advanceUnits: emojiFont.advanceOfGlyphId(gid),
+                    bitmapGlyphId: gid,
+                    textColor: List<double>.of(paint.color),
+                    background: paint.background == null
+                        ? null
+                        : List<double>.of(paint.background!),
+                    sourceText: String.fromCharCode(rune),
+                    source: s,
+                  ),
+                );
+                continue;
+              }
             }
           }
           var target = current;

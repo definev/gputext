@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
+import 'color_bitmap.dart';
+
 part 'font_variations.dart';
 
 enum FillRule { nonzero, evenOdd }
@@ -163,6 +165,7 @@ class GPUFont {
     required this._kern,
     required this._gposKern,
     this._colr,
+    this._bitmap,
     this._fvar,
     this._avar,
     this._gvar,
@@ -191,6 +194,10 @@ class GPUFont {
   final Map<(int, int), double> _kern;
   final List<_PairPosSub> _gposKern;
   final _ColrData? _colr;
+
+  /// Color-bitmap glyph source (sbix or CBDT/CBLC); null for outline-only or
+  /// COLR-only fonts. Shared with variants (same font bytes).
+  final BitmapGlyphSource? _bitmap;
   final _Fvar? _fvar;
   final _Avar? _avar;
   final _Gvar? _gvar;
@@ -309,7 +316,19 @@ class GPUFont {
   static GPUFont parse(Uint8List bytes) {
     final data = ByteData.sublistView(bytes);
     final r = _ByteReader(data);
-    final scalerType = r.readU32();
+    var scalerType = r.readU32();
+    // TrueType Collection: skip to face 0's sfnt header. Table records inside a
+    // .ttc hold file-absolute offsets, so only the reader position moves and the
+    // rest of the parse is unchanged. (Android system fonts such as Noto CJK
+    // ship as .ttc; this unwraps the common -Regular face.)
+    if (scalerType == 0x74746366) {
+      // 'ttcf'
+      r.readU16(); // majorVersion
+      r.readU16(); // minorVersion
+      r.readU32(); // numFonts
+      r.seek(r.readU32()); // face 0 table-directory offset
+      scalerType = r.readU32();
+    }
     if (scalerType != 0x00010000 && scalerType != 0x74727565) {
       throw FormatException('Unsupported font scaler type: $scalerType');
     }
@@ -413,12 +432,12 @@ class GPUFont {
       numGlyphs,
       numOfLongHorMetrics,
     );
-    final glyphOffsets = _parseLoca(
-      data,
-      tableOffset('loca'),
-      numGlyphs,
-      indexToLocFormat,
-    );
+    // Color-bitmap fonts (Noto Color Emoji / CBDT) carry no glyf/loca — their
+    // glyphs are PNGs in CBDT, not outlines. Tolerate their absence: the
+    // outline path returns null and the bitmap path takes over.
+    final glyphOffsets = tables.containsKey('loca') && tables.containsKey('glyf')
+        ? _parseLoca(data, tableOffset('loca'), numGlyphs, indexToLocFormat)
+        : const <int>[];
     final kern = tables.containsKey('kern')
         ? _parseKern(data, tableOffset('kern'))
         : <(int, int), double>{};
@@ -438,6 +457,16 @@ class GPUFont {
         colr = null; // malformed color tables → monochrome glyphs only
       }
     }
+
+    // Color-bitmap glyphs (sbix / CBDT+CBLC): the platform emoji fonts.
+    // parseBitmapGlyphs guards its own parse; malformed → null (delegation).
+    final bitmap = parseBitmapGlyphs(
+      data: data,
+      numGlyphs: numGlyphs,
+      sbixOffset: tables.containsKey('sbix') ? tableOffset('sbix') : null,
+      cblcOffset: tables.containsKey('CBLC') ? tableOffset('CBLC') : null,
+      cbdtOffset: tables.containsKey('CBDT') ? tableOffset('CBDT') : null,
+    );
 
     // Variation tables stand or fall together — without fvar axes none of
     // the delta tables can be interpreted.
@@ -494,6 +523,7 @@ class GPUFont {
       kern: kern,
       gposKern: gposKern,
       colr: colr,
+      bitmap: bitmap,
       fvar: fvar,
       avar: avar,
       gvar: gvar,
@@ -704,6 +734,34 @@ class GPUFont {
     return colr.layersFor(gid);
   }
 
+  /// True when the font carries color-bitmap glyphs (sbix or CBDT/CBLC) — the
+  /// raster color-emoji formats (Apple / Noto). Independent of [hasColorGlyphs]
+  /// (COLR vectors); a font may have neither, either, or both.
+  bool get hasBitmapGlyphs => _bitmap != null;
+
+  /// Strike ppem sizes the bitmap glyphs are stored at, ascending; empty when
+  /// the font has none.
+  List<int> get bitmapStrikePpems => _bitmap?.strikePpems ?? const [];
+
+  /// The color-bitmap glyph for code point [cp] at the strike nearest
+  /// [targetPpem] (≥ when possible), or null. [targetPpem] is the on-screen
+  /// pixels-per-em (font size in device px) — the source buckets it to a strike.
+  BitmapGlyph? bitmapGlyphForCodePoint(int cp, {required double targetPpem}) {
+    final bitmap = _bitmap;
+    if (bitmap == null) return null;
+    final gid = _cmap[cp];
+    if (gid == null) return null;
+    return bitmap.glyphFor(gid, targetPpem: targetPpem);
+  }
+
+  /// The color-bitmap glyph for glyph id [gid] (post-shaping) at [targetPpem].
+  BitmapGlyph? bitmapGlyphForId(int gid, {required double targetPpem}) =>
+      _bitmap?.glyphFor(gid, targetPpem: targetPpem);
+
+  /// The strike ppem [bitmapGlyphForId] would resolve for [targetPpem] — the
+  /// atlas key so every size resolving to one strike shares a decoded entry.
+  int? bitmapStrikeFor(double targetPpem) => _bitmap?.chooseStrike(targetPpem);
+
   double advanceOfGlyphId(int gid) => _advanceFor(gid);
 
   double advanceOf(String ch) {
@@ -774,6 +832,7 @@ class GPUFont {
   /// glyphs.
   _GlyphPointData? _glyphPointsById(int id, [int depth = 0]) {
     if (id < 0 || id >= _numGlyphs || depth > 6) return null;
+    if (_glyphOffsets.isEmpty) return null; // CBDT-only font: no outlines
     final start = _glyphOffsets[id];
     final end = _glyphOffsets[id + 1];
     if (start == end) return null;

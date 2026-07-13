@@ -713,9 +713,11 @@ TextSpan _nestedQuoteSpan() => TextSpan(
 /// (e.g. SMP symbols) still delegate to the platform (layer 2).
 Future<void> _registerWideFallback() async {
   final engine = GPUText.instance;
-  // Native COLR emoji (Twemoji): single-code-point emoji render through the
-  // gputext shader itself; sequences still delegate to the platform.
-  if (engine.emojiFont == null) {
+  // This demo showcases COLR (Twemoji) emoji. The emoji font is process-wide;
+  // the Bitmap-emoji demo restores the prior font on leave, but reload Twemoji
+  // defensively if a CBDT font is somehow still active so this demo always
+  // renders its own COLR emoji. registerEmojiFont notifies, rebuilding samples.
+  if (engine.emojiFont == null || engine.emojiFont!.hasBitmapGlyphs) {
     try {
       await engine.loadEmojiFontAsset('assets/TwemojiMozilla.ttf');
     } catch (e) {

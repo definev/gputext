@@ -44,14 +44,29 @@ void main(List<String> args) async {
       },
       cppLinkStdLib: _hbCppLinkStdLib(os),
     );
-    await hb.run(
-      input: input,
-      output: output,
-      logger: Logger('')
-        ..level = Level.WARNING
-        // ignore: avoid_print
-        ..onRecord.listen((r) => print(r.message)),
+    final logger = Logger('')
+      ..level = Level.WARNING
+      // ignore: avoid_print
+      ..onRecord.listen((r) => print(r.message));
+    await hb.run(input: input, output: output, logger: logger);
+
+    // System-font resolver: a small C shim that turns an OS font family into
+    // TrueType sfnt bytes (CoreText on Apple, NDK font matcher on Android, a
+    // NULL-returning stub elsewhere). Its assetName must match the URI used by
+    // @Native(assetId: ...) in system_fonts.dart.
+    final systemFonts = CBuilder.library(
+      name: 'gputext_system_fonts',
+      assetName: 'src/native/system_fonts_dylib.dart',
+      sources: ['lib/src/native/system_fonts.c'],
+      language: Language.c,
+      // Apple links CoreText (+ CoreFoundation for CFData/refs); Android
+      // dlopen's libandroid at runtime so needs no extra link input. Passed as
+      // flags rather than `frameworks:` because native_toolchain_c only emits
+      // `-framework` for Objective-C sources — and this compiles+links in one
+      // clang invocation, so the flags reach the link step.
+      flags: _systemFontFlags(os),
     );
+    await systemFonts.run(input: input, output: output, logger: logger);
   });
 }
 
@@ -91,4 +106,16 @@ String? _hbCppLinkStdLib(OS os) => switch (os) {
 List<String> _hbLibraries(OS os) => switch (os) {
   OS.windows => const [],
   _ => const ['m'],
+};
+
+/// Link flags for the system-font resolver: CoreText/CoreFoundation on Apple,
+/// none elsewhere (Android dlopen's libandroid; other OSes compile a stub).
+List<String> _systemFontFlags(OS os) => switch (os) {
+  OS.iOS || OS.macOS => const [
+    '-framework',
+    'CoreText',
+    '-framework',
+    'CoreFoundation',
+  ],
+  _ => const [],
 };

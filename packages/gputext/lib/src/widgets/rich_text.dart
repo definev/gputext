@@ -33,7 +33,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 import '../engine/engine.dart';
 import '../engine/pipeline.dart';
 import '../font.dart' show GPUFont;
-import '../layout.dart' as wf show LayoutBounds;
+import '../layout.dart' as wf show LayoutBounds, ColorGlyphPlacement;
 import '../paragraph.dart' as wf;
 import '../timeline.dart';
 import 'emoji.dart';
@@ -353,6 +353,10 @@ class RenderGPUParagraph extends RenderBox
   wf.ParagraphInstances? _emitted;
   int _emittedGen = -1;
   int _emittedStructureGen = -1; // atlas.structureGeneration at emit time
+  // colorAtlas.generation at emit time: an async emoji decode bumps it, and
+  // (unlike content/structure) that arrives via a bare markNeedsPaint, so it
+  // must gate the emit or the newly-decoded quad would never be emitted.
+  int _emittedColorGen = -1;
   // Inputs the last actual emit ran against — the layout fast path (resize)
   // compares against these to prove a re-emit would be byte-identical without
   // running it. _emittedPara is the wrapped lines; _emittedPrepared is the
@@ -371,6 +375,7 @@ class RenderGPUParagraph extends RenderBox
   // performLayout that consumed _paraDirty (recolor coinciding with a resize).
   bool _paintDirtiedSinceEmit = false;
   gpu.DeviceBuffer? _instanceBuffer;
+  gpu.DeviceBuffer? _colorInstanceBuffer; // color-bitmap emoji quads
   gpu.GpuImageSurface? _surface;
   ui.Image? _image;
   // Superseded surface+image generations, each tagged with the number of the
@@ -702,6 +707,7 @@ class RenderGPUParagraph extends RenderBox
     _image = null;
     _surface = null;
     _instanceBuffer = null;
+    _colorInstanceBuffer = null;
     _cacheKey = null;
   }
 
@@ -1496,9 +1502,11 @@ class RenderGPUParagraph extends RenderBox
       // A compaction relocated every rowBase, so instances emitted against the
       // old layout are stale even when our own content hasn't changed.
       final structureGen = _engine.atlas.structureGeneration;
+      final colorGen = _engine.colorAtlas.generation;
       if (_emitted == null ||
           _emittedGen != _contentGen ||
-          _emittedStructureGen != structureGen) {
+          _emittedStructureGen != structureGen ||
+          _emittedColorGen != colorGen) {
         final prepared = _prepared;
         // Layout fast path — the resize-width win. When the glyph set (prepared
         // identity), the atlas layout (structureGen), and the line partition
@@ -1512,6 +1520,7 @@ class RenderGPUParagraph extends RenderBox
             _emitted != null &&
             _emittedPara != null &&
             _emittedStructureGen == structureGen &&
+            _emittedColorGen == colorGen &&
             identical(prepared, _emittedPrepared) &&
             (_resolvedAlign == wf.TextAlign.left ||
                 _boxWidth == _emittedBoxWidth) &&
@@ -1532,8 +1541,21 @@ class RenderGPUParagraph extends RenderBox
                 if (item is wf.LineRun) {
                   _engine.atlas.ensureShaped(item.shaped);
                 } else if (item is wf.LineEmoji) {
-                  for (final layer in item.item.layers) {
-                    _engine.atlas.ensureGlyphId(item.item.font, layer.glyphId);
+                  final e = item.item;
+                  if (e.isBitmap) {
+                    // Kicks off async PNG decode; a re-render follows once the
+                    // atlas generation bumps (gated above via colorGen). Strike
+                    // is chosen in DEVICE pixels (× DPR) so Retina gets a
+                    // crisper strike — must match _resolveColorGlyph's target.
+                    _engine.ensureBitmapGlyph(
+                      e.font,
+                      e.bitmapGlyphId!,
+                      e.fontSizePx * _devicePixelRatio,
+                    );
+                  } else {
+                    for (final layer in e.layers) {
+                      _engine.atlas.ensureGlyphId(e.font, layer.glyphId);
+                    }
                   }
                 }
               }
@@ -1546,26 +1568,32 @@ class RenderGPUParagraph extends RenderBox
             _boxWidth,
             _resolvedAlign,
             _engine.atlas,
+            colorLookup: _resolveColorGlyph,
           );
           // Re-read: ensureGlyphs above cannot compact, only grow, and
           // emitInstances read the table as it stands now.
           final freshStructureGen = _engine.atlas.structureGeneration;
+          final freshColorGen = _engine.colorAtlas.generation;
           final prev = _emitted;
           if (!debugDisableRenderSkip &&
               prev != null &&
               _emittedStructureGen == freshStructureGen &&
-              _sameInstances(prev.instances, fresh.instances)) {
+              _sameInstances(prev.instances, fresh.instances) &&
+              _sameInstances(prev.colorInstances, fresh.colorInstances)) {
             // Byte-identical to the live buffer even though the cheap layout
             // check bailed (e.g. first frame after a structure change): keep
             // the uploaded buffer, image, and render cache key.
             _emittedGen = _contentGen;
+            _emittedColorGen = freshColorGen;
             debugSurfaceRenderSkips++;
           } else {
             _emitted = fresh;
             _hitBoxes = fresh.hitBoxes;
             _instanceBuffer = null;
+            _colorInstanceBuffer = null;
             _emittedGen = _contentGen;
             _emittedStructureGen = freshStructureGen;
+            _emittedColorGen = freshColorGen;
             _cacheKey = null;
           }
           _emittedPara = para;
@@ -1583,6 +1611,35 @@ class RenderGPUParagraph extends RenderBox
     if (!s.isFinite || s <= 0) return dpr;
     final steps = (math.log(s / dpr) / math.log(1.25)).round();
     return dpr * math.pow(1.25, steps).toDouble();
+  }
+
+  /// Emit-time lookup of a decoded color-bitmap glyph. Null until the async
+  /// decode packs it (a re-emit follows once colorAtlas.generation bumps).
+  wf.ColorGlyphPlacement? _resolveColorGlyph(
+    GPUFont font,
+    int glyphId,
+    double targetPpem,
+  ) {
+    // Device-pixel target (× DPR) — must match the ensureBitmapGlyph call so
+    // the resolved strike key is identical.
+    final strike = _engine.colorAtlas.strikeFor(
+      font,
+      targetPpem * _devicePixelRatio,
+    );
+    if (strike == null) return null;
+    final e = _engine.colorAtlas.lookup(font, glyphId, strike);
+    if (e == null) return null;
+    return wf.ColorGlyphPlacement(
+      u0: e.u0,
+      v0: e.v0,
+      u1: e.u1,
+      v1: e.v1,
+      width: e.width,
+      height: e.height,
+      ppem: e.ppem,
+      bearingX: e.bearingX,
+      bearingY: e.bearingY,
+    );
   }
 
   @override
@@ -1787,7 +1844,7 @@ class RenderGPUParagraph extends RenderBox
     }
     if (emitted != null &&
         ink != null &&
-        emitted.glyphCount > 0 &&
+        (emitted.glyphCount > 0 || emitted.colorGlyphCount > 0) &&
         _engine.gpuReady &&
         !_engine.unsupported) {
       var scale = _devicePixelRatio;
@@ -1920,7 +1977,10 @@ class RenderGPUParagraph extends RenderBox
     double scale,
   ) {
     final textures = _engine.prepareTextures();
-    if (textures == null) return false;
+    // An all-emoji paragraph bands no coverage glyphs, so the curve atlas (and
+    // thus `textures`) is null — but it still has color quads to draw. Only bail
+    // when there is nothing at all to render.
+    if (textures == null && emitted.colorGlyphCount == 0) return false;
     // 4 device px of padding covers the shader's ~2px anti-aliasing skirt.
     const pad = 4;
     final devLeft = (ink.minX * scale).floor() - pad;
@@ -1934,7 +1994,22 @@ class RenderGPUParagraph extends RenderBox
       _maxSurfaceDim,
     );
 
-    _instanceBuffer ??= _engine.pipeline.uploadInstances(emitted.instances);
+    if (textures != null && emitted.glyphCount > 0) {
+      _instanceBuffer ??= _engine.pipeline.uploadInstances(emitted.instances);
+    }
+    // Prepare the color-atlas texture + instance buffer BEFORE opening the
+    // render pass. prepareColorTexture() uploads (overwrites) the atlas — doing
+    // that inside an already-recording pass corrupts the encoder and segfaults
+    // the GPU, exactly like prepareTextures() above must precede the pass.
+    gpu.Texture? colorTex;
+    if (emitted.colorGlyphCount > 0 && _engine.pipeline.hasColorPipeline) {
+      colorTex = _engine.prepareColorTexture();
+      if (colorTex != null) {
+        _colorInstanceBuffer ??= _engine.pipeline.uploadColorInstances(
+          emitted.colorInstances,
+        );
+      }
+    }
     var surface = _surface;
     // Surface allocations are bucketed: glyphs render into the top-left w×h
     // of a surface whose dims round up to _surfaceDimBucket, and the blit
@@ -1978,22 +2053,37 @@ class RenderGPUParagraph extends RenderBox
         ),
       );
       final pass = cmd.createRenderPass(target);
-      _engine.pipeline.renderInstances(
-        pass: pass,
-        frame: FrameUniforms(
-          // The full allocation, not the used w×h: the vertex shader maps
-          // device px → NDC against these, which pins the used rect to the
-          // texture's top-left where the blit's src rect samples it.
-          width: surface.width.toDouble(),
-          height: surface.height.toDouble(),
-          style: [_coverageGamma, _coverageSharp],
-          cam: [scale, scale, -devLeft.toDouble(), -devTop.toDouble()],
-          guardPx: _minificationGuardPx,
-        ),
-        instances: _instanceBuffer!,
-        instanceCount: emitted.glyphCount,
-        textures: textures,
+      final frameUniforms = FrameUniforms(
+        // The full allocation, not the used w×h: the vertex shader maps
+        // device px → NDC against these, which pins the used rect to the
+        // texture's top-left where the blit's src rect samples it.
+        width: surface.width.toDouble(),
+        height: surface.height.toDouble(),
+        style: [_coverageGamma, _coverageSharp],
+        cam: [scale, scale, -devLeft.toDouble(), -devTop.toDouble()],
+        guardPx: _minificationGuardPx,
       );
+      if (textures != null && emitted.glyphCount > 0) {
+        _engine.pipeline.renderInstances(
+          pass: pass,
+          frame: frameUniforms,
+          instances: _instanceBuffer!,
+          instanceCount: emitted.glyphCount,
+          textures: textures,
+        );
+      }
+      // Color-bitmap emoji: a second draw on the same pass, over the text.
+      // Texture + buffer were prepared above (outside the pass) to avoid a
+      // mid-pass upload.
+      if (colorTex != null && _colorInstanceBuffer != null) {
+        _engine.pipeline.renderColorInstances(
+          pass: pass,
+          frame: frameUniforms,
+          instances: _colorInstanceBuffer!,
+          instanceCount: emitted.colorGlyphCount,
+          colorAtlas: colorTex,
+        );
+      }
       frame.present(cmd);
       cmd.submit();
     } catch (e) {
