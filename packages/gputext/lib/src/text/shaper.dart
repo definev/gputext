@@ -1,5 +1,5 @@
-// Text shaping seam: VM-pure API with adapters for legacy GSUB (PUA proxies)
-// and HarfBuzz FFI (Phase 1). Layout/paint consume [ShapedGlyphRun] only.
+// Text shaping seam: VM-pure request API with a HarfBuzz FFI adapter
+// (see harfbuzz_shaper.dart). Layout/paint consume [ShapedGlyphRun] only.
 
 import '../font.dart';
 import 'shaped_run.dart';
@@ -45,29 +45,4 @@ abstract class TextShaper {
 
   /// Drop all native face/font caches. No-op for shapers without native state.
   void evictAllFonts() {}
-}
-
-/// Adapter over [GPUFontFeatures.applyFeaturesMapped]: keeps Latin/liga
-/// behavior identical to the pre-glyph-run pipeline.
-class LegacyGsubShaper extends TextShaper {
-  const LegacyGsubShaper();
-
-  @override
-  ShapedGlyphRun shape(ShapeRequest request) {
-    final (pipeline, map) = request.font.applyFeaturesMapped(
-      request.text,
-      features: request.features,
-      defaultLigatures: request.defaultLigatures,
-    );
-    return ShapedGlyphRun.fromPipelineText(
-      font: request.font,
-      fontSizePx: request.fontSizePx,
-      sourceText: request.text,
-      pipelineText: pipeline,
-      sourceMap: map,
-      bidiLevel: request.bidiLevel,
-      direction: request.direction,
-      appliesKerning: true,
-    );
-  }
 }

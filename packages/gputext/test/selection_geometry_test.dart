@@ -50,24 +50,6 @@ void main() {
   }
 
   group('cluster maps', () {
-    test('shaping keeps identity for plain text', () {
-      final (shaped, map) = font.applyFeaturesMapped('hello');
-      expect(shaped, 'hello');
-      expect(map, isNull);
-    });
-
-    test('ligatures map back to their source characters', () {
-      final (shaped, map) = font.applyFeaturesMapped('first');
-      // fi ligated into one cluster (a 2-unit PUA proxy).
-      expect(shaped.runes.length, lessThan('first'.runes.length));
-      expect(map, isNotNull);
-      expect(map![0], 0);
-      expect(map[shaped.length], 'first'.length);
-      // The ligature's shaped boundary after the cluster maps to source 2.
-      final ligUnits = shaped.runes.first >= 0x10000 ? 2 : 1;
-      expect(map[ligUnits], 2);
-    });
-
     test('flattener produces sourceText for ligated runs', () {
       final items = flattenSpan(
         const TextSpan(
@@ -79,15 +61,11 @@ void main() {
       )!;
       final r = items.single as wf.TextRun;
       expect(r.originalText, 'first');
-      // Legacy GSUB mints PUA proxies in pipeline text; HarfBuzz keeps
-      // source == pipeline and encodes liga in shaped.glyphs.
-      if (r.shaped.appliesKerning) {
-        expect(r.text, isNot('first'));
-        expect(r.sourceOffsetAt(r.text.length), 5);
-      } else {
-        expect(r.shaped.glyphs.length, lessThan('first'.runes.length));
-        expect(r.shaped.glyphs.first.clusterEnd, greaterThan(1));
-      }
+      // HarfBuzz keeps source == pipeline and encodes the fi ligature in
+      // shaped.glyphs: one glyph spanning both source characters.
+      expect(r.shaped.appliesKerning, isFalse);
+      expect(r.shaped.glyphs.length, lessThan('first'.runes.length));
+      expect(r.shaped.glyphs.first.clusterEnd, greaterThan(1));
     });
   });
 

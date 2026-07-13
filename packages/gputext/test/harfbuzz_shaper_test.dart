@@ -46,9 +46,8 @@ void main() {
       expect(run.glyphs, hasLength(1));
       expect(run.glyphs.single.cluster, 0);
       expect(run.glyphs.single.clusterEnd, 2);
-      // Ligature glyph id differs from our GSUB PUA path's cmap lookup
-      // (legacy maps via applyFeaturesMapped → proxy); HB returns the
-      // true OT glyph id. Just assert it's not the plain 'f'/'i' pair.
+      // HB returns the true OT ligature glyph id, distinct from a plain cmap
+      // lookup. Just assert it's not the plain 'f'/'i' pair.
       final fGid = font.glyphIdForRune('f'.codeUnitAt(0))!;
       final iGid = font.glyphIdForRune('i'.codeUnitAt(0))!;
       expect(run.glyphs.single.glyphId, isNot(anyOf(fGid, iGid)));
@@ -158,7 +157,7 @@ void main() {
       }
     });
 
-    test('legacy vs HB advance parity for plain Latin', () {
+    test('HB advance parity with cmap+kern for plain Latin', () {
       final hb = HarfBuzzBindings.tryLoad();
       if (hb == null) return;
       shaper = HarfBuzzShaper(hb);
@@ -166,19 +165,18 @@ void main() {
       final hbRun = shaper.shape(
         ShapeRequest(font: font, text: text, fontSizePx: 16),
       );
-      final legacy = const LegacyGsubShaper().shape(
-        ShapeRequest(font: font, text: text, fontSizePx: 16),
-      );
       final hbW = hbRun.glyphs.fold<double>(0, (s, g) => s + g.xAdvance);
-      // Legacy width includes pairwise kerning.
-      var legW = 0.0;
+      // Plain Latin has no GSUB substitution, so HB advances should match the
+      // sum of per-glyph cmap advances plus pairwise kerning.
+      var expected = 0.0;
       var prev = -1;
-      for (final g in legacy.glyphs) {
-        if (prev >= 0) legW += font.kerningOfGlyphIds(prev, g.glyphId);
-        legW += g.xAdvance;
-        prev = g.glyphId;
+      for (final cp in text.codeUnits) {
+        final gid = font.glyphIdForRune(cp)!;
+        if (prev >= 0) expected += font.kerningOfGlyphIds(prev, gid);
+        expected += font.advanceOfGlyphId(gid);
+        prev = gid;
       }
-      expect(hbW, closeTo(legW, 1.0));
+      expect(hbW, closeTo(expected, 1.0));
     });
 
     test('variable-font advances follow GPUFont HVAR instance', () {

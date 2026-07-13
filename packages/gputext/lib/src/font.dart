@@ -2,10 +2,18 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
-part 'font_features.dart';
 part 'font_variations.dart';
 
 enum FillRule { nonzero, evenOdd }
+
+/// The fi/fl/ffi/ffl → precomposed compatibility ligatures, longest-first so
+/// neither an ordered replace nor a char-walk splits "ffi" into f+"fi".
+const _basicLigatures = <(String, String)>[
+  ('ffi', 'ﬃ'),
+  ('ffl', 'ﬄ'),
+  ('fi', 'ﬁ'),
+  ('fl', 'ﬂ'),
+];
 
 /// Substitute the common Latin ligatures (ffi, ffl, fi, fl) with their
 /// precomposed compatibility code points when the font maps them — a
@@ -13,17 +21,10 @@ enum FillRule { nonzero, evenOdd }
 /// Callers should skip this when letterSpacing != 0 (typographic rule).
 String applyBasicLigatures(String text, GPUFont font) {
   var out = text;
-  if (out.contains('ffi') && font.hasGlyph('ﬃ')) {
-    out = out.replaceAll('ffi', 'ﬃ');
-  }
-  if (out.contains('ffl') && font.hasGlyph('ﬄ')) {
-    out = out.replaceAll('ffl', 'ﬄ');
-  }
-  if (out.contains('fi') && font.hasGlyph('ﬁ')) {
-    out = out.replaceAll('fi', 'ﬁ');
-  }
-  if (out.contains('fl') && font.hasGlyph('ﬂ')) {
-    out = out.replaceAll('fl', 'ﬂ');
+  for (final (from, to) in _basicLigatures) {
+    if (out.contains(from) && font.hasGlyph(to)) {
+      out = out.replaceAll(from, to);
+    }
   }
   return out;
 }
@@ -140,11 +141,6 @@ class _ByteReader {
     return v;
   }
 
-  int readF2Dot14() {
-    final raw = readI16();
-    return raw;
-  }
-
   double readFixed() {
     final v = readI32();
     return v / 65536.0;
@@ -172,7 +168,6 @@ class GPUFont {
     this._gvar,
     this._hvar,
     this._mvar,
-    this._gsub,
     this.variationCoordinates = const {},
     this._normCoords,
     this._gvarSharedScalars,
@@ -201,7 +196,6 @@ class GPUFont {
   final _Gvar? _gvar;
   final _Hvar? _hvar;
   final _Mvar? _mvar;
-  final _Gsub? _gsub;
 
   /// Design-space coordinates this instance actually renders (non-default axes
   /// only); empty for the base instance.
@@ -476,15 +470,6 @@ class GPUFont {
         mvar = null; // malformed variations → static default instance only
       }
     }
-    _Gsub? gsub;
-    if (tables.containsKey('GSUB')) {
-      try {
-        gsub = _Gsub.parse(data, tableOffset('GSUB'));
-      } catch (_) {
-        gsub = null; // malformed GSUB → cmap-riding basic ligatures only
-      }
-    }
-
     return GPUFont._(
       unitsPerEm: unitsPerEm,
       verticalMetrics: VerticalMetrics(
@@ -514,7 +499,6 @@ class GPUFont {
       gvar: gvar,
       hvar: hvar,
       mvar: mvar,
-      gsub: gsub,
     );
   }
 
@@ -574,7 +558,7 @@ class GPUFont {
     int subOffset,
     _ByteReader sr,
   ) {
-    final _ = sr.readU16();
+    sr.readU16(); // length
     sr.readU16(); // language
     final segCountX2 = sr.readU16();
     final segCount = segCountX2 ~/ 2;
@@ -701,15 +685,7 @@ class GPUFont {
 
   /// Rune-based twin of the string lookups: per-char pen walks, metrics,
   /// and banding resolve each code point once with no string round-trips.
-  int? glyphIdForRune(int cp) {
-    final mapped = _cmap[cp];
-    if (mapped != null) return mapped;
-    // Plane-15 PUA proxies minted by applyFeatures for substituted glyphs.
-    if (cp >= _glyphProxyBase && cp - _glyphProxyBase < _numGlyphs) {
-      return cp - _glyphProxyBase;
-    }
-    return null;
-  }
+  int? glyphIdForRune(int cp) => _cmap[cp];
 
   bool hasGlyph(String ch) => _glyphId(ch) != null;
 

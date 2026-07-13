@@ -33,10 +33,6 @@ const _defaultFontFamily = 'Lato';
 abstract final class GPUText {
   static GPUTextEngine get instance => GPUTextEngine._instance;
 
-  /// When true (default), prefer HarfBuzz for shaping if the native library
-  /// loaded; otherwise [LegacyGsubShaper]. Set false to force the legacy path.
-  static bool useHarfBuzz = true;
-
   /// True after a successful HarfBuzz native load (read-only diagnostic).
   static bool get harfBuzzAvailable => instance._harfBuzzAvailable;
 
@@ -69,7 +65,9 @@ class GPUTextEngine extends ChangeNotifier {
   }
 
   void _onVariantEvicted(GPUFont variant) {
-    _shaper.evictFont(variant);
+    // Null when shaping never ran (no native caches to drop). Don't force a
+    // HarfBuzz load — that would throw on an unsupported platform mid-evict.
+    _shaper?.evictFont(variant);
     debugClearSegmentMetricsFor(variant);
   }
 
@@ -83,16 +81,15 @@ class GPUTextEngine extends ChangeNotifier {
   String? _defaultFamily;
   var _unsupported = false;
 
-  /// Active text shaper (legacy GSUB until HarfBuzz loads).
+  /// Active text shaper (HarfBuzz, resolved on first access).
   TextShaper get shaper {
     _ensureShaper();
-    return _shaper;
+    return _shaper!;
   }
 
-  TextShaper _shaper = const LegacyGsubShaper();
+  TextShaper? _shaper;
   var _shaperResolved = false;
   var _harfBuzzAvailable = false;
-  var _loggedHbFallback = false;
 
   /// Replace the shaper (tests). Marks resolution done so auto-load won't
   /// overwrite.
@@ -101,33 +98,21 @@ class GPUTextEngine extends ChangeNotifier {
     _shaperResolved = true;
   }
 
+  /// Load HarfBuzz on first shaping. gputext has no fallback shaper: a
+  /// platform whose native library cannot load throws here rather than
+  /// silently rendering with a lesser engine.
   void _ensureShaper() {
-    if (_shaperResolved && (_harfBuzzAvailable || !GPUText.useHarfBuzz)) {
-      return;
-    }
-    if (!GPUText.useHarfBuzz) {
-      _shaper = const LegacyGsubShaper();
-      _shaperResolved = true;
-      return;
-    }
+    if (_shaperResolved) return;
     final hb = HarfBuzzBindings.tryLoad();
-    if (hb != null) {
-      _shaper = HarfBuzzShaper(hb);
-      _harfBuzzAvailable = true;
-      _shaperResolved = true;
-    } else {
-      _shaper = const LegacyGsubShaper();
-      // tryLoad negative-caches failure; resolve once so layout does not
-      // re-enter the load path on every shaper access.
-      _shaperResolved = true;
-      if (!_loggedHbFallback) {
-        _loggedHbFallback = true;
-        debugPrint(
-          'gputext: HarfBuzz native library unavailable; '
-          'using LegacyGsubShaper',
-        );
-      }
+    if (hb == null) {
+      throw UnsupportedError(
+        'gputext requires the HarfBuzz native library, which failed to load '
+        'on this platform.',
+      );
     }
+    _shaper = HarfBuzzShaper(hb);
+    _harfBuzzAvailable = true;
+    _shaperResolved = true;
   }
 
   AtlasTextures? _textures;
@@ -379,9 +364,10 @@ class GPUTextEngine extends ChangeNotifier {
     variants
       ..removeWhere((v) => v.weight == w && v.italic == italic)
       ..add(_FontVariant(w, italic, font));
+    final evictFont = _shaper?.evictFont ?? (_) {};
     for (final v in replaced) {
       v.font.releaseShaperCaches(
-        _shaper.evictFont,
+        evictFont,
         onEach: debugClearSegmentMetricsFor,
       );
     }
@@ -420,10 +406,11 @@ class GPUTextEngine extends ChangeNotifier {
     }
     if (removed.isEmpty) return;
 
-    final shaper = this.shaper;
+    // Null-safe: evicting native caches must not force a HarfBuzz load.
+    final evictFont = _shaper?.evictFont ?? (_) {};
     for (final v in removed) {
       v.font.releaseShaperCaches(
-        shaper.evictFont,
+        evictFont,
         onEach: debugClearSegmentMetricsFor,
       );
     }

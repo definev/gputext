@@ -42,7 +42,6 @@ class Float32Buf {
   int _length = 0;
 
   int get length => _length;
-  bool get isEmpty => _length == 0;
 
   double operator [](int i) => _data[i];
 

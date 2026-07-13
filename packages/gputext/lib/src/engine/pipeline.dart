@@ -11,7 +11,6 @@ import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter_gpu/gpu.dart' as gpu;
 
 import '../atlas.dart';
-import '../layout.dart';
 
 // Legacy file-asset key (pubspec / ShaderBundleAssetMode.legacyOnly).
 const _bundleAssetLegacy = 'build/shaderbundles/gputext.shaderbundle';
@@ -323,7 +322,4 @@ class GPUTextPipeline {
     );
     pass.draw(4, instanceCount: instanceCount);
   }
-
-  int instanceCountOf(Float32List instances) =>
-      instances.length ~/ floatsPerInstance;
 }

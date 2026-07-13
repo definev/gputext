@@ -10,8 +10,8 @@
 // are skipped without resetting the kerning pair, exactly like measureText.
 //
 // Prefer [segmentMetricsOfRange] when measuring a slice of an already-shaped
-// run (HarfBuzz / legacy) so advances match paint without allocating a
-// [ShapedGlyphRun.slice].
+// run (HarfBuzz or cmap-constructed) so advances match paint without
+// allocating a [ShapedGlyphRun.slice].
 
 import 'dart:typed_data';
 
@@ -120,7 +120,7 @@ SegmentMetrics segmentMetricsOfShaped(ShapedGlyphRun shaped) {
 }
 
 SegmentMetrics _measure(GPUFont font, String text) {
-  // Legacy path for callers that only have pipeline text (tests, soft
+  // Cmap fallback for callers that only have plain text (tests, soft
   // hyphen '-'). Prefer [segmentMetricsOfRange] when a run is available.
   final shaped = ShapedGlyphRun.fromPipelineText(
     font: font,

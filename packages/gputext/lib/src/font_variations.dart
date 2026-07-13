@@ -868,7 +868,6 @@ extension GPUFontVariations on GPUFont {
       gvar: _gvar,
       hvar: _hvar,
       mvar: _mvar,
-      gsub: _gsub,
       variationCoordinates: Map.unmodifiable(coords),
       normCoords: norm,
       gvarSharedScalars: _gvar?.sharedTupleScalars(norm),

@@ -542,14 +542,6 @@ List<int> reorderVisual(List<int> levels) {
   return order;
 }
 
-/// Reorder a list of items that each carry a bidi [level] into visual order.
-List<T> reorderByLevel<T>(List<T> items, int Function(T) levelOf) {
-  if (items.length <= 1) return List<T>.of(items);
-  final levels = [for (final i in items) levelOf(i)];
-  final order = reorderVisual(levels);
-  return [for (final i in order) items[i]];
-}
-
 /// Heuristic: Arabic letters should not break mid-word (no spaces). Used by
 /// analysis/prepare to keep Arabic clusters sticky.
 bool isArabicLetter(int cp) {

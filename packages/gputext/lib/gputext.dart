@@ -46,7 +46,7 @@ export 'src/text/line_breaker.dart'
 export 'src/text/metrics_cache.dart'
     show debugClearSegmentMetricsFor, debugSegmentMetricsLengthFor;
 export 'src/text/shaped_run.dart' show ShapedGlyph, ShapedGlyphRun, walkGlyphs;
-export 'src/text/shaper.dart' show TextShaper, LegacyGsubShaper, ShapeRequest;
+export 'src/text/shaper.dart' show TextShaper, ShapeRequest;
 export 'src/text/harfbuzz_shaper.dart' show HarfBuzzShaper;
 export 'src/timeline.dart'
     show

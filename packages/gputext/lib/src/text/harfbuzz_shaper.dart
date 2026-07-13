@@ -196,7 +196,7 @@ class HarfBuzzShaper implements TextShaper {
             glyphId: info.codepoint,
             cluster: c0,
             clusterEnd: c1,
-            // Pipeline == source for HB (no PUA proxies).
+            // Pipeline == source for HarfBuzz.
             shapedStart: c0,
             shapedEnd: c1,
             xAdvance: pos.xAdvance.toDouble(),
@@ -226,7 +226,7 @@ class HarfBuzzShaper implements TextShaper {
 
   (Pointer<HbFeature>, int) _buildFeatures(ShapeRequest request) {
     final specs = <String>[];
-    // Defaults matching LegacyGsubShaper / OpenType.
+    // OpenType default features.
     final enabled = <String, int>{
       'ccmp': 1,
       'locl': 1,

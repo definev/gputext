@@ -6,6 +6,45 @@ import 'bands.dart' show f32fromBits;
 
 const curveTexWidth = 1024;
 
+const _atlasFormat = gpu.PixelFormat.r32g32b32a32Float;
+
+/// Throws if the device can't sample the RGBA32F atlas textures gputext needs.
+void _requireAtlasFormat(gpu.GpuContext context) {
+  if (!context.supportsTextureFormat(_atlasFormat, shaderRead: true)) {
+    throw UnsupportedError(
+      'This device does not support ${_atlasFormat.name} shader-read textures '
+      'required for gputext curve data.',
+    );
+  }
+}
+
+/// Pack curve vec2s `[from, end)` into RGBA32F texels of [dst] — one vec2 per
+/// texel (.zw unused).
+void _packCurveTexels(Float32List dst, Float32List curves, int from, int end) {
+  for (var i = from; i < end; i++) {
+    final o = i * 4;
+    dst[o] = curves[i * 2];
+    dst[o + 1] = curves[i * 2 + 1];
+  }
+}
+
+/// Pack band rows `[from, end)` into RGBA32F texel PAIRS of [dst]. Each band is
+/// 5 u32s `[start, count, areaBits, xMinBits, xMaxBits]` (see bands.dart); the
+/// bit-punned f32s are un-punned here since the storage medium is a float
+/// texture:
+///   texel[2b]   = (start, count, area, xMin)
+///   texel[2b+1] = (xMax, 0, 0, 0)
+void _packRowTexels(Float32List dst, Uint32List rows, int from, int end) {
+  for (var i = from; i < end; i++) {
+    final o = i * 8;
+    dst[o] = rows[i * 5].toDouble();
+    dst[o + 1] = rows[i * 5 + 1].toDouble();
+    dst[o + 2] = f32fromBits(rows[i * 5 + 2]); // band winding area
+    dst[o + 3] = f32fromBits(rows[i * 5 + 3]); // ink hull xMin
+    dst[o + 4] = f32fromBits(rows[i * 5 + 4]); // ink hull xMax
+  }
+}
+
 class AtlasTextures {
   AtlasTextures({
     required this.curves,
@@ -39,13 +78,7 @@ class AtlasTextureUploader {
     Float32List curves,
     Uint32List rows,
   ) {
-    const format = gpu.PixelFormat.r32g32b32a32Float;
-    if (!context.supportsTextureFormat(format, shaderRead: true)) {
-      throw UnsupportedError(
-        'This device does not support ${format.name} shader-read textures '
-        'required for gputext curve data.',
-      );
-    }
+    _requireAtlasFormat(context);
     const maxH = 1 << 20;
 
     final curveVec2Count = curves.length ~/ 2;
@@ -63,16 +96,12 @@ class AtlasTextureUploader {
         gpu.StorageMode.hostVisible,
         curveTexWidth,
         capH,
-        format: format,
+        format: _atlasFormat,
         enableRenderTargetUsage: false,
         enableShaderReadUsage: true,
       );
     }
-    for (var i = _packedCurveVec2; i < curveVec2Count; i++) {
-      final o = i * 4;
-      _curvePixels[o] = curves[i * 2];
-      _curvePixels[o + 1] = curves[i * 2 + 1];
-    }
+    _packCurveTexels(_curvePixels, curves, _packedCurveVec2, curveVec2Count);
     _packedCurveVec2 = curveVec2Count;
     _curvesTex!.overwrite(_curvePixels.buffer.asByteData());
 
@@ -90,19 +119,12 @@ class AtlasTextureUploader {
         gpu.StorageMode.hostVisible,
         curveTexWidth,
         capH,
-        format: format,
+        format: _atlasFormat,
         enableRenderTargetUsage: false,
         enableShaderReadUsage: true,
       );
     }
-    for (var i = _packedRows; i < rowCount; i++) {
-      final o = i * 8;
-      _rowPixels[o] = rows[i * 5].toDouble();
-      _rowPixels[o + 1] = rows[i * 5 + 1].toDouble();
-      _rowPixels[o + 2] = f32fromBits(rows[i * 5 + 2]); // band winding area
-      _rowPixels[o + 3] = f32fromBits(rows[i * 5 + 3]); // ink hull xMin
-      _rowPixels[o + 4] = f32fromBits(rows[i * 5 + 4]); // ink hull xMax
-    }
+    _packRowTexels(_rowPixels, rows, _packedRows, rowCount);
     _packedRows = rowCount;
     _rowsTex!.overwrite(_rowPixels.buffer.asByteData());
 
@@ -120,44 +142,22 @@ AtlasTextures uploadAtlasTextures(
   Float32List curves,
   Uint32List rows,
 ) {
-  const format = gpu.PixelFormat.r32g32b32a32Float;
-  if (!context.supportsTextureFormat(format, shaderRead: true)) {
-    throw UnsupportedError(
-      'This device does not support ${format.name} shader-read textures '
-      'required for gputext curve data.',
-    );
-  }
+  _requireAtlasFormat(context);
   final curveVec2Count = curves.length ~/ 2;
   final curveTexHeight = (curveVec2Count + curveTexWidth - 1) ~/ curveTexWidth;
   final curvePixels = Float32List(curveTexWidth * curveTexHeight * 4);
-  for (var i = 0; i < curveVec2Count; i++) {
-    final o = i * 4;
-    curvePixels[o] = curves[i * 2];
-    curvePixels[o + 1] = curves[i * 2 + 1];
-  }
+  _packCurveTexels(curvePixels, curves, 0, curveVec2Count);
 
-  // Row table: 5 u32s per band [start, count, areaBits, xMinBits, xMaxBits]
-  // (see bands.dart). Packed as TWO RGBA32F texels per band — the bit-punned
-  // f32s are un-punned here since our storage medium is a float texture:
-  //   texel[2b]   = (start, count, area, xMin)
-  //   texel[2b+1] = (xMax, 0, 0, 0)
   final rowCount = rows.length ~/ 5;
   final rowTexHeight = (rowCount * 2 + curveTexWidth - 1) ~/ curveTexWidth;
   final rowPixels = Float32List(curveTexWidth * rowTexHeight * 4);
-  for (var i = 0; i < rowCount; i++) {
-    final o = i * 8;
-    rowPixels[o] = rows[i * 5].toDouble();
-    rowPixels[o + 1] = rows[i * 5 + 1].toDouble();
-    rowPixels[o + 2] = f32fromBits(rows[i * 5 + 2]); // band winding area
-    rowPixels[o + 3] = f32fromBits(rows[i * 5 + 3]); // ink hull xMin
-    rowPixels[o + 4] = f32fromBits(rows[i * 5 + 4]); // ink hull xMax
-  }
+  _packRowTexels(rowPixels, rows, 0, rowCount);
 
   final curvesTex = context.createTexture(
     gpu.StorageMode.hostVisible,
     curveTexWidth,
     curveTexHeight.clamp(1, 1 << 20),
-    format: format,
+    format: _atlasFormat,
     enableRenderTargetUsage: false,
     enableShaderReadUsage: true,
   );
@@ -167,7 +167,7 @@ AtlasTextures uploadAtlasTextures(
     gpu.StorageMode.hostVisible,
     curveTexWidth,
     rowTexHeight.clamp(1, 1 << 20),
-    format: format,
+    format: _atlasFormat,
     enableRenderTargetUsage: false,
     enableShaderReadUsage: true,
   );

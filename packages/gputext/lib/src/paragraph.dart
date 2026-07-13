@@ -170,9 +170,8 @@ class LineRun extends LineItem {
     this.source,
     this.itemIndex = -1,
     this.startInItem = -1,
-    ShapedGlyphRun? shaped,
-  }) : _parentShaped = null,
-       _shaped = shaped;
+    this._shaped,
+  }) : _parentShaped = null;
 
   LineRun.fromRun(
     TextRun run,
@@ -830,13 +829,32 @@ void _ellipsize(LineMetrics line, double maxWidth) {
   double total() =>
       line.items.fold<double>(0, (w, r) => w + r.width) + ellRun.width;
 
+  // Re-slicing a run's glyphs is O(run length); doing it per removed grapheme
+  // is quadratic. The trim loop only touches text/width; the surviving tail
+  // run (at most one) is re-sliced once, afterward.
+  final trimmed = <LineRun>{};
   while (line.items.isNotEmpty && total() > maxWidth) {
     final r = line.items.last;
     if (r is! LineRun || r.text.characters.length <= 1) {
+      trimmed.remove(r);
       line.items.removeLast();
       continue;
     }
     r.text = r.text.characters.skipLast(1).toString();
+    r.width = _measure(r.font, r.text, r.fontSizePx, r.letterSpacingPx);
+    trimmed.add(r);
+  }
+  // Strip a trailing space left at the cut.
+  while (line.items.isNotEmpty) {
+    final r = line.items.last;
+    if (r is LineRun && r.isSpace) {
+      trimmed.remove(r);
+      line.items.removeLast();
+    } else {
+      break;
+    }
+  }
+  for (final r in trimmed) {
     r.shaped = ShapedGlyphRun.fromPipelineText(
       font: r.font,
       fontSizePx: r.fontSizePx,
@@ -844,16 +862,6 @@ void _ellipsize(LineMetrics line, double maxWidth) {
       pipelineText: r.text,
       appliesKerning: r.shaped.appliesKerning,
     );
-    r.width = _measure(r.font, r.text, r.fontSizePx, r.letterSpacingPx);
-  }
-  // Strip a trailing space left at the cut.
-  while (line.items.isNotEmpty) {
-    final r = line.items.last;
-    if (r is LineRun && r.isSpace) {
-      line.items.removeLast();
-    } else {
-      break;
-    }
   }
   line.items.add(ellRun);
   line.width = line.items.fold<double>(0, (w, r) => w + r.width);
@@ -1361,11 +1369,7 @@ LayoutResult layoutParagraph(
   );
   var maxRight = x;
   for (final line in para.lines) {
-    final offset = switch (style.align) {
-      TextAlign.left || TextAlign.justify => 0.0,
-      TextAlign.center => (style.maxWidth - line.width) * 0.5,
-      TextAlign.right => style.maxWidth - line.width,
-    };
+    final offset = lineAlignOffset(style.align, style.maxWidth, line);
     final right = x + offset + line.width;
     if (right > maxRight) maxRight = right;
   }

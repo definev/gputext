@@ -1,10 +1,12 @@
 // VM-pure shaped glyph-run model: the shared representation for layout,
-// paint, and selection after OpenType shaping (legacy GSUB or HarfBuzz).
+// paint, and selection. Runs come from HarfBuzz shaping or the plain
+// cmap-lookup [ShapedGlyphRun.fromPipelineText] constructor (scene API,
+// synthesized runs).
 //
 // Advances and offsets are in font units. [walkGlyphs] scales to px and,
 // when [ShapedGlyphRun.appliesKerning] is true, folds pairwise kerning
-// between consecutive glyphs (legacy path). HarfBuzz runs bake GPOS into
-// advances/offsets and set appliesKerning=false.
+// between consecutive glyphs (cmap-constructed runs). HarfBuzz runs bake GPOS
+// into advances/offsets and set appliesKerning=false.
 
 import 'dart:typed_data';
 
@@ -64,8 +66,9 @@ class ShapedGlyphRun {
     this.appliesKerning = true,
   });
 
-  /// Build from already-shaped pipeline text (PUA proxies or plain chars).
-  /// Used by [LegacyGsubShaper] and by [TextRun] when tests omit [shaped].
+  /// Build a run by mapping each rune of [pipelineText] to its cmap glyph
+  /// (no OpenType shaping). Used by the VM-pure scene API, synthesized runs
+  /// (soft-hyphen '-', ellipsis tail), and [TextRun] when [shaped] is omitted.
   factory ShapedGlyphRun.fromPipelineText({
     required GPUFont font,
     required double fontSizePx,
@@ -133,8 +136,8 @@ class ShapedGlyphRun {
   /// Pre-shaping source characters (selection/copy space).
   final String sourceText;
 
-  /// Post-shaping pipeline text (PUA proxies for legacy GSUB). Line-break
-  /// analysis still concatenates this string through Phase 2.
+  /// Post-shaping pipeline text. Equal to [sourceText] for HarfBuzz and
+  /// cmap-constructed runs; line-break analysis concatenates this string.
   final String pipelineText;
 
   final List<ShapedGlyph> glyphs;
@@ -206,9 +209,9 @@ class ShapedGlyphRun {
   /// Glyphs whose pipeline range intersects `[start, end)` (UTF-16), with
   /// offsets rebased into the sliced pipeline/source strings.
   ///
-  /// LTR runs keep glyphs in non-decreasing [ShapedGlyph.shapedStart] order
-  /// (legacy GSUB and HarfBuzz), so the intersecting range is found with
-  /// binary search — required for long single-run corpora where prepare
+  /// LTR runs keep glyphs in non-decreasing [ShapedGlyph.shapedStart] order,
+  /// so the intersecting range is found with binary search — required for
+  /// long single-run corpora where prepare
   /// slices once per word (linear scan is O(n²) over ~270k glyphs).
   /// RTL visual order is non-increasing; those runs fall back to a linear
   /// scan (short runs in practice).

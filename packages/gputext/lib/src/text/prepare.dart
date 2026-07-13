@@ -90,11 +90,16 @@ class PreparedParagraph {
 }
 
 class _WindowPiece {
-  _WindowPiece(this.itemIndex, this.start, this.end);
+  _WindowPiece(this.itemIndex, this.start, this.end, [int? itemStart])
+    : itemStart = itemStart ?? start;
 
   final int itemIndex;
-  final int start; // window offsets
+  final int start; // window offsets (clamped to the query on intersection hits)
   final int end;
+
+  /// This item's un-clamped window start — carried onto intersection results
+  /// so callers recover the item-relative offset without rescanning the list.
+  final int itemStart;
 }
 
 PreparedParagraph prepareParagraph(List<InlineItem> items) =>
@@ -164,14 +169,30 @@ PreparedParagraph _prepareParagraph(List<InlineItem> items) {
   }
 
   List<_WindowPiece> intersections(int start, int end) {
+    // windowPieces are appended in item order, so they are sorted by `start`
+    // and contiguous (start_k == end_{k-1}). Binary-search the first piece
+    // whose end passes `start`, then walk until a piece starts at/after `end`
+    // — O(log K + hits) instead of O(K) per segment for many-run windows.
     final out = <_WindowPiece>[];
-    for (final p in windowPieces) {
-      if (p.end <= start || p.start >= end) continue;
+    var lo = 0;
+    var hi = windowPieces.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      if (windowPieces[mid].end <= start) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    for (var i = lo; i < windowPieces.length; i++) {
+      final p = windowPieces[i];
+      if (p.start >= end) break;
       out.add(
         _WindowPiece(
           p.itemIndex,
           p.start > start ? p.start : start,
           p.end < end ? p.end : end,
+          p.start, // un-clamped item start, for offset recovery
         ),
       );
     }
@@ -194,7 +215,7 @@ PreparedParagraph _prepareParagraph(List<InlineItem> items) {
     var width = 0.0;
     for (final p in intersections(startInWindow, startInWindow + text.length)) {
       final run = runOf(p.itemIndex);
-      final startInItem = p.start - _windowStartOf(windowPieces, p.itemIndex);
+      final startInItem = p.start - p.itemStart;
       // Cache by character; shaped range is only used on miss.
       final per =
           segmentMetricsOf(run.font, ch).widthUnits * scaleOf(run) +
@@ -232,7 +253,7 @@ PreparedParagraph _prepareParagraph(List<InlineItem> items) {
         final run = runOf(p.itemIndex);
         final scale = scaleOf(run);
         final pieceText = windowText.substring(p.start, p.end);
-        final startInItem = p.start - _windowStartOf(windowPieces, p.itemIndex);
+        final startInItem = p.start - p.itemStart;
         final endInItem = startInItem + pieceText.length;
         final m = segmentMetricsOfRange(
           run.font,
@@ -292,7 +313,7 @@ PreparedParagraph _prepareParagraph(List<InlineItem> items) {
       for (final p in rawPieces) {
         final run = runOf(p.itemIndex);
         final pieceText = windowText.substring(p.start, p.end);
-        final startInItem = p.start - _windowStartOf(windowPieces, p.itemIndex);
+        final startInItem = p.start - p.itemStart;
         final m = segmentMetricsOfRange(
           run.font,
           pieceText,
@@ -352,8 +373,7 @@ PreparedParagraph _prepareParagraph(List<InlineItem> items) {
                 itemIndex: p.itemIndex,
                 startInSegment: p.start - segStart,
                 endInSegment: p.end - segStart,
-                startInItem:
-                    p.start - _windowStartOf(windowPieces, p.itemIndex),
+                startInItem: p.start - p.itemStart,
                 width: 0,
               ),
           ]);
@@ -437,11 +457,4 @@ PreparedParagraph _prepareParagraph(List<InlineItem> items) {
     maxIntrinsicWidth: maxIntrinsic,
     fallbackStyleItem: lastRunIndex,
   );
-}
-
-int _windowStartOf(List<_WindowPiece> pieces, int itemIndex) {
-  for (final p in pieces) {
-    if (p.itemIndex == itemIndex) return p.start;
-  }
-  return 0;
 }

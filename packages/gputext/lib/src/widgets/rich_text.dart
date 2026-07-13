@@ -859,6 +859,19 @@ class RenderGPUParagraph extends RenderBox
   /// paint-INDEPENDENT [SpanLayoutKey] so color-only variants (animations,
   /// the same label in two colors) reuse one shaped layout; a hit adopts it
   /// by cloning + recoloring (see [_flattenAndPrepare]). fontGeneration
+  /// True when any span in [_text] carries a gesture recognizer.
+  bool _hasRecognizer() {
+    var found = false;
+    _text.visitChildren((span) {
+      if (span is TextSpan && span.recognizer != null) {
+        found = true;
+        return false;
+      }
+      return true;
+    });
+    return found;
+  }
+
   /// invalidates on font churn.
   Object? _prepareCacheKey() {
     if (childCount > 0) return null;
@@ -867,15 +880,7 @@ class RenderGPUParagraph extends RenderBox
     // (State, BuildContext) after the widget is gone — and since TextSpan ==
     // compares recognizers by identity, a widget minting a fresh recognizer
     // per build would insert a new dead entry on every rebuild.
-    var hasRecognizer = false;
-    _text.visitChildren((span) {
-      if (span is TextSpan && span.recognizer != null) {
-        hasRecognizer = true;
-        return false;
-      }
-      return true;
-    });
-    if (hasRecognizer) return null;
+    if (_hasRecognizer()) return null;
     return (
       SpanLayoutKey(_text),
       _textScaler,
@@ -1354,15 +1359,7 @@ class RenderGPUParagraph extends RenderBox
   @override
   void describeSemanticsConfiguration(SemanticsConfiguration config) {
     super.describeSemanticsConfiguration(config);
-    var hasRecognizer = false;
-    _text.visitChildren((span) {
-      if (span is TextSpan && span.recognizer != null) {
-        hasRecognizer = true;
-        return false;
-      }
-      return true;
-    });
-    if (hasRecognizer) {
+    if (_hasRecognizer()) {
       // Per-span child nodes (assembleSemanticsNode below) so links are
       // exposed as individually actionable nodes, like RenderParagraph.
       config
@@ -2137,7 +2134,7 @@ class RenderGPUParagraph extends RenderBox
 /// selection framework (SelectionArea / SelectableRegion). Mirrors
 /// RenderParagraph's _SelectableFragment: geometry queries go through the
 /// paragraph's ParagraphGeometry in SOURCE offsets, so copied content is the
-/// pre-shaping text even when ligatures render as single proxies.
+/// pre-shaping text even when ligatures render as single glyphs.
 class _SelectableFragment with ChangeNotifier implements Selectable {
   _SelectableFragment(this.paragraph, this.range);
 

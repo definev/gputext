@@ -84,10 +84,6 @@ abstract final class GPUTextTimeline {
     }
   }
 
-  static void instantSync(String name, {Map<String, Object?>? arguments}) {
-    Timeline.instantSync(name, arguments: arguments);
-  }
-
   /// Forwards to DevTools; aggregates when [debugCollectionEnabled] is true.
   static T timeSync<T>(
     String name,
@@ -102,8 +98,6 @@ abstract final class GPUTextTimeline {
       finishSync();
     }
   }
-
-  static int get now => Timeline.now;
 
   /// Timings collected since collection was enabled, the last [debugCollect],
   /// or the last [debugReset] — whichever was most recent.
@@ -144,11 +138,8 @@ abstract final class GPUTextTimeline {
 
 /// One timed block recorded by [GPUTextTimeline].
 final class TimedBlock {
-  const TimedBlock({
-    required this.name,
-    required this.start,
-    required this.end,
-  }) : assert(end >= start);
+  const TimedBlock({required this.name, required this.start, required this.end})
+    : assert(end >= start);
 
   final String name;
   final double start;
@@ -158,8 +149,7 @@ final class TimedBlock {
   double get durationMs => duration / 1000;
 
   @override
-  String toString() =>
-      'TimedBlock($name, ${durationMs.toStringAsFixed(3)} ms)';
+  String toString() => 'TimedBlock($name, ${durationMs.toStringAsFixed(3)} ms)';
 }
 
 /// Aggregated results from [GPUTextTimeline.debugCollect].

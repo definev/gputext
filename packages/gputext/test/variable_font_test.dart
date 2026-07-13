@@ -32,7 +32,6 @@ import 'package:gputext/src/widgets/span_flattener.dart';
 const _asset =
     'assets/Google_Sans_Flex/'
     'GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf';
-const _proxyBase = 0xF0000;
 
 void main() {
   late GPUFont font;
@@ -303,68 +302,6 @@ void main() {
     });
   });
 
-  group('GSUB features', () {
-    test('liga substitutes fi/ffi by default', () {
-      final fi = font.applyFeatures('fi');
-      expect(fi.runes.toList(), [_proxyBase + 371]);
-      expect(font.advanceOf(fi), closeTo(1210, 0.5));
-      expect(font.glyphQuads(fi), isNotNull);
-
-      final ffi = font.applyFeatures('ffi');
-      expect(ffi.runes.toList(), [_proxyBase + 365]);
-      expect(font.advanceOf(ffi), closeTo(1865, 0.5));
-    });
-
-    test('liga can be disabled per style rules', () {
-      expect(font.applyFeatures('fi', features: {'liga': 0, 'calt': 0}), 'fi');
-      expect(font.applyFeatures('fi', defaultLigatures: false), 'fi');
-    });
-
-    test('tnum swaps in uniform-width figures', () {
-      final shaped = font.applyFeatures('0123456789', features: {'tnum': 1});
-      final gids = shaped.runes.map((r) => r - _proxyBase).toList();
-      expect(gids, List.generate(10, (i) => 415 + i));
-      for (final gid in gids) {
-        expect(font.advanceOfGlyphId(gid), closeTo(1290, 0.5));
-      }
-      // Default figures are proportional.
-      expect(font.advanceOf('1'), closeTo(735, 0.5));
-    });
-
-    test('zero substitutes the slashed zero', () {
-      final shaped = font.applyFeatures('0', features: {'zero': 1});
-      expect(shaped.runes.toList(), [_proxyBase + 675]);
-    });
-
-    test('unknown features and uncovered characters pass through', () {
-      expect(font.applyFeatures('abc', features: {'zzzz': 1}), 'abc');
-      expect(font.applyFeatures('a🌚b'), 'a🌚b');
-      expect(font.applyFeatures(''), '');
-    });
-
-    test('spaces and text around ligatures survive', () {
-      final shaped = font.applyFeatures('a fi b');
-      final runes = shaped.runes.toList();
-      expect(runes.length, 5);
-      expect(String.fromCharCode(runes[0]), 'a');
-      expect(String.fromCharCode(runes[1]), ' ');
-      expect(runes[2], _proxyBase + 371);
-      expect(String.fromCharCode(runes[3]), ' ');
-      expect(String.fromCharCode(runes[4]), 'b');
-    });
-
-    test('proxies measure and kern like their glyphs', () {
-      final fi = font.applyFeatures('fi');
-      expect(font.hasGlyph(fi), isTrue);
-      // GPOS kerning is glyph-id based, so proxies participate.
-      expect(font.kerningOf('A', 'V'), lessThan(0));
-      final tabularOne = String.fromCharCode(
-        _proxyBase + 416,
-      ); // tnum '1' from above
-      expect(font.advanceOf(tabularOne), closeTo(1290, 0.5));
-    });
-  });
-
   group('variable metrics (MVAR present)', () {
     test('variant metrics stay sane', () {
       final black = font.variant({'wght': 1000});
@@ -471,12 +408,9 @@ void main() {
         engine,
       )!;
       final run = items.single as wf.TextRun;
-      // Legacy: PUA proxies in pipeline text. HarfBuzz: glyph ids on shaped.
-      if (run.shaped.appliesKerning) {
-        expect(run.text.runes.toList(), [_proxyBase + 415, _proxyBase + 416]);
-      } else {
-        expect(run.shaped.glyphs.map((g) => g.glyphId).toList(), [415, 416]);
-      }
+      // HarfBuzz resolves the tnum figures to glyph ids 415, 416 on the run.
+      expect(run.shaped.appliesKerning, isFalse);
+      expect(run.shaped.glyphs.map((g) => g.glyphId).toList(), [415, 416]);
     });
 
     test('letterSpacing disables default ligatures but not explicit ones', () {
@@ -492,11 +426,7 @@ void main() {
           flatten(const TextStyle(fontFamily: 'Flex', fontSize: 16)).single
               as wf.TextRun;
       expect(ligated.shaped.glyphs, hasLength(1));
-      if (ligated.shaped.appliesKerning) {
-        expect(ligated.text.runes.single, _proxyBase + 371);
-      } else {
-        expect(ligated.shaped.glyphs.single.glyphId, isNot(0));
-      }
+      expect(ligated.shaped.glyphs.single.glyphId, isNot(0));
 
       final tracked =
           flatten(
@@ -521,20 +451,16 @@ void main() {
               ).single
               as wf.TextRun;
       expect(explicit.shaped.glyphs, hasLength(1));
-      if (explicit.shaped.appliesKerning) {
-        expect(explicit.text.runes.single, _proxyBase + 371);
-      }
     });
   });
 
   group('pipeline round trip', () {
-    test('variant fonts and proxies lay out through the paragraph engine', () {
+    test('variant fonts lay out through the paragraph engine', () {
       final bold = font.variant({'wght': 700});
-      final shaped = bold.applyFeatures('final offer');
       final para = wf.breakLines(
         [
           wf.TextRun(
-            text: shaped,
+            text: 'final offer',
             font: bold,
             fontSizePx: 32,
             color: const [0, 0, 0, 1],
