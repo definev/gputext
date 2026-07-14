@@ -138,6 +138,7 @@ class GPUTextInstances {
     required this.height,
     required this.didExceedMaxLines,
     this.placeholders = const [],
+    this.atlasGeneration = 0,
   });
 
   final TransferableTypedData instances;
@@ -162,6 +163,11 @@ class GPUTextInstances {
   /// real widgets at these (each [PlaceholderBox.index] matches the
   /// [GPUPlaceholderSpec.index] you sent). Empty when there are no placeholders.
   final List<PlaceholderBox> placeholders;
+
+  /// [SharedGlyphAtlas.generation] at emit time. Prepared docs share one
+  /// atlas on the worker (append-only); when this rises, re-upload curves/rows.
+  /// Returned even when [curves]/[rows] were omitted (`includeAtlas: false`).
+  final int atlasGeneration;
 
   /// Materialize the coverage-glyph instance buffer on the receiving isolate.
   Float32List materialize() => instances.materialize().asFloat32List();
@@ -231,11 +237,12 @@ class GPUTextWorker {
   }
 
   /// PHASE 1, cached: shape + prepare a multi-run (rich text) paragraph once
-  /// and keep it under [id] with its glyph atlas. Run once per document, then
-  /// [reflowDoc] cheaply at any width. Fonts referenced by [runs] must already
-  /// be registered (see [registerFont]); flatten a Flutter `TextSpan` into
-  /// [runs] with `flattenInlineSpan`. A single-style document is just a
-  /// one-element list.
+  /// and keep it under [id]. Glyph outlines band into a **shared** atlas on the
+  /// worker (append-only across every prepared doc), so common glyphs are not
+  /// duplicated per paragraph. Run once per document, then [reflowDoc] cheaply
+  /// at any width. Fonts referenced by [runs] must already be registered (see
+  /// [registerFont]); flatten a Flutter `TextSpan` into [runs] with
+  /// `flattenInlineSpan`. A single-style document is just a one-element list.
   Future<void> prepareDoc(
     String id,
     List<GPUInlineSpec> runs, {
@@ -265,6 +272,16 @@ class GPUTextWorker {
     throw StateError('reflowDoc failed: $reply');
   }
 
+  /// Drop the document prepared under [id], freeing its shaped paragraph on the
+  /// worker. The shared glyph atlas is kept (append-only; other docs may still
+  /// reference its glyphs). Use it to bound shaped-paragraph memory when many
+  /// documents are prepared lazily (e.g. per-paragraph blocks): evict the ones
+  /// scrolled far out of view; re-[prepareDoc] them if they come back. A no-op
+  /// if unknown.
+  Future<void> disposeDoc(String id) async {
+    await _send(('disposeDoc', id));
+  }
+
   /// Tear the worker down. Pending requests complete with an error.
   void dispose() {
     if (_disposed) return;
@@ -284,6 +301,7 @@ class GPUTextWorker {
 // --- worker-side (runs in the spawned isolate) ---
 
 /// A document prepared once (phase 1) and kept warm for cheap re-breaks.
+/// [atlas] is the worker's shared glyph atlas (not private to this doc).
 class _Doc {
   _Doc(this.prepared, this.atlas);
   final PreparedParagraph prepared;
@@ -295,6 +313,10 @@ Future<void> _workerEntry(SendPort host) async {
   host.send(rx.sendPort);
   final fonts = <String, GPUFont>{};
   final docs = <String, _Doc>{};
+  // One atlas for every prepareDoc — append-only, so banding a new paragraph
+  // never moves existing glyph rowBases (already-emitted instance buffers stay
+  // valid). One-shot [layout] still builds a private atlas per request.
+  final sharedAtlas = SharedGlyphAtlas();
   // Load HarfBuzz once in this isolate (sets GPUFont.outlineProvider). Null on
   // an unsupported platform → the pure-Dart per-rune fallback.
   final shaper = loadHarfBuzzShaper();
@@ -327,6 +349,7 @@ Future<void> _workerEntry(SendPort host) async {
             fonts,
             shaper,
             docs,
+            sharedAtlas,
           );
         case (
           'reflow',
@@ -336,6 +359,9 @@ Future<void> _workerEntry(SendPort host) async {
           final bool includeAtlas,
         ):
           reply = _reflowDoc(id, width, lh, includeAtlas, docs);
+        case ('disposeDoc', final String id):
+          docs.remove(id);
+          reply = true;
         default:
           reply = 'unknown command';
       }
@@ -632,6 +658,7 @@ bool _prepareDoc(
   Map<String, GPUFont> fonts,
   TextShaper? shaper,
   Map<String, _Doc> docs,
+  SharedGlyphAtlas sharedAtlas,
 ) {
   final items = buildRunItems(
     runs,
@@ -642,12 +669,11 @@ bool _prepareDoc(
   );
   if (items.isEmpty) return false;
   final prepared = prepareParagraph(items);
-  // One atlas for the whole rich paragraph — SharedGlyphAtlas interleaves
-  // glyphs from every font (incl. COLR emoji layers) into a single curves/rows
-  // pair, so a multi-font document is still ONE self-contained drawable.
-  final atlas = SharedGlyphAtlas();
-  bandRunItems(atlas, items);
-  docs[id] = _Doc(prepared, atlas);
+  // Band into the worker-shared atlas. Append-only: new glyphs extend
+  // curves/rows; existing rowBases never move, so other docs' instance buffers
+  // stay valid. Duplicate glyphs across paragraphs are stored once.
+  bandRunItems(sharedAtlas, items);
+  docs[id] = _Doc(prepared, sharedAtlas);
   return true;
 }
 
@@ -674,8 +700,9 @@ GPUTextInstances _reflowDoc(
 /// Package laid-out [lines] + [atlas] into a self-contained, transfer-ready
 /// drawable. The fresh instance buffer is moved zero-copy; the atlas
 /// ([curves]/[rows]) is copied then moved when [includeAtlas], else empty — it
-/// is identical across a doc's reflows, so send it once. (A fresh empty buffer
-/// each time: TransferableTypedData is single-use.)
+/// is identical across a doc's reflows (and shared across prepared docs), so
+/// send it once per generation. (A fresh empty buffer each time:
+/// TransferableTypedData is single-use.)
 GPUTextInstances _drawable(
   ParagraphLines lines,
   SharedGlyphAtlas atlas,
@@ -702,5 +729,6 @@ GPUTextInstances _drawable(
     height: lines.height,
     didExceedMaxLines: lines.didExceedMaxLines,
     placeholders: emitted.placeholders,
+    atlasGeneration: atlas.generation,
   );
 }

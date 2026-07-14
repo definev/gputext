@@ -18,6 +18,8 @@ import 'dragon_demo.dart';
 import 'emoji_bitmap_demo.dart';
 import 'features_demo.dart';
 import 'google_sans_flex_demo.dart';
+import 'gpu_text_blocks_demo.dart';
+import 'gpu_text_view_demo.dart';
 import 'justification_demo.dart';
 import 'lowlevel_demo.dart';
 import 'leak_report_page.dart';
@@ -82,6 +84,8 @@ class GPUTextApp extends StatelessWidget {
         'dragon' => const DragonDemoPage(),
         'justify' => const JustificationDemoPage(),
         'lowlevel' => const LowLevelDemoPage(),
+        'view' => const GPUTextViewDemoPage(),
+        'blocks' => const GPUTextBlocksDemoPage(),
         'gsf' => const GoogleSansFlexDemoPage(),
         'vars' => const VariableFontDemoPage(),
         'rtl' => const RtlDemoPage(),
@@ -530,6 +534,14 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                               _demoButton(
                                 'Low-level / isolate',
                                 const LowLevelDemoPage(),
+                              ),
+                              _demoButton(
+                                'GPUTextView widget',
+                                const GPUTextViewDemoPage(),
+                              ),
+                              _demoButton(
+                                'Lazy blocks',
+                                const GPUTextBlocksDemoPage(),
                               ),
                               _demoButton(
                                 'Bitmap emoji',

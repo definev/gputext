@@ -138,6 +138,96 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
+  test('disposeDoc evicts a prepared document; re-prepare restores it',
+      () async {
+    const runs = [
+      GPUTextRunSpec(text: 'hello lazy world', fontId: 'lato', fontSizePx: 18),
+    ];
+    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+    final worker = await GPUTextWorker.spawn();
+    try {
+      await worker.registerFont('lato', bytes);
+      await worker.prepareDoc('block', runs);
+      expect((await worker.reflowDoc('block', 200)).glyphCount, greaterThan(0));
+
+      // Evict it — reflowing the freed id now fails.
+      await worker.disposeDoc('block');
+      await expectLater(
+        worker.reflowDoc('block', 200),
+        throwsA(isA<StateError>()),
+      );
+
+      // Re-preparing under the same id brings it back.
+      await worker.prepareDoc('block', runs);
+      expect((await worker.reflowDoc('block', 200)).glyphCount, greaterThan(0));
+    } finally {
+      worker.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('prepared docs share one atlas; generation is stable when glyphs overlap',
+      () async {
+    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+    final worker = await GPUTextWorker.spawn();
+    try {
+      await worker.registerFont('lato', bytes);
+      await worker.prepareDoc('a', const [
+        GPUTextRunSpec(text: 'hello', fontId: 'lato', fontSizePx: 18),
+      ]);
+      final first = await worker.reflowDoc('a', 200, includeAtlas: true);
+      expect(first.atlasGeneration, greaterThan(0));
+      final firstCurves = first.materializeCurves().length;
+
+      // Overlapping alphabet — should not grow the shared atlas much / at all
+      // beyond what 'hello' already banded (same Latin glyphs).
+      await worker.prepareDoc('b', const [
+        GPUTextRunSpec(text: 'hello hello', fontId: 'lato', fontSizePx: 18),
+      ]);
+      final second = await worker.reflowDoc('b', 200, includeAtlas: true);
+      expect(second.atlasGeneration, first.atlasGeneration);
+      expect(second.materializeCurves().length, firstCurves);
+
+      // First doc still reflows after the second prepare (shared atlas intact).
+      final again = await worker.reflowDoc('a', 200, includeAtlas: false);
+      expect(again.atlasGeneration, first.atlasGeneration);
+      expect(again.glyphCount, first.glyphCount);
+    } finally {
+      worker.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('shared atlas grows when a new glyph appears; old instances stay valid',
+      () async {
+    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+    final worker = await GPUTextWorker.spawn();
+    try {
+      await worker.registerFont('lato', bytes);
+      await worker.prepareDoc('a', const [
+        GPUTextRunSpec(text: 'aaa', fontId: 'lato', fontSizePx: 18),
+      ]);
+      final first = await worker.reflowDoc('a', 200, includeAtlas: true);
+      final gen1 = first.atlasGeneration;
+      final firstCurveFloats = first.materializeCurves().length;
+
+      await worker.prepareDoc('b', const [
+        GPUTextRunSpec(text: 'zzz', fontId: 'lato', fontSizePx: 18),
+      ]);
+      final second = await worker.reflowDoc('b', 200, includeAtlas: true);
+      expect(second.atlasGeneration, greaterThan(gen1));
+      expect(
+        second.materializeCurves().length,
+        greaterThan(firstCurveFloats),
+      );
+
+      // Doc A still emits against the grown atlas (append-only rowBases).
+      final again = await worker.reflowDoc('a', 200, includeAtlas: false);
+      expect(again.atlasGeneration, second.atlasGeneration);
+      expect(again.glyphCount, first.glyphCount);
+    } finally {
+      worker.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
   test('worker renders a CFF/OTF font (SourceSans3) via HarfBuzz outlines',
       () async {
     final shaper = loadHarfBuzzShaper();

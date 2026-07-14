@@ -11,10 +11,15 @@
 //     phase alone: same laid-out lines, a fresh emit() with a new colour, no
 //     re-break. The HUD shows the emit-only time, proving layout is reused.
 //
-// Both paths render through one offscreen GpuImageSurface -> ui.Image blit.
-// Nothing here touches GPUText.instance. Dev hook: GPUTEXT_DEMO=lowlevel.
-// GPU rendering needs Impeller + flutter_gpu; without them the page shows the
-// layout metrics and a CPU-text fallback.
+//   • Long book — [Worker isolate] uses [GPUTextBlocksView] (lazy per-paragraph
+//     layout; width reflows only the cache window). [UI thread] uses the same
+//     hand-rolled full-document path as the other chips, so you can feel the
+//     cost of laying out the whole book on the UI thread vs the lazy worker.
+//
+// Both hand-rolled paths render through one offscreen GpuImageSurface ->
+// ui.Image blit. Nothing here touches GPUText.instance. Dev hook:
+// GPUTEXT_DEMO=lowlevel. GPU rendering needs Impeller + flutter_gpu; without
+// them the page shows the layout metrics and a CPU-text fallback.
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -96,6 +101,10 @@ class _Stats {
 class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
   GPUTextWorker? _worker;
   _GlyphSurface? _surface; // null when flutter_gpu is unavailable
+  // Dedicated controller for the Long book chip — drives a [GPUTextBlocksView]
+  // (lazy per-paragraph layout) instead of the hand-rolled surface below.
+  GPUTextViewController? _viewController;
+  List<GPUTextDocument>? _bookBlocks;
   // Main-isolate font copies, keyed by the same ids registered on the worker;
   // used by the UI-thread + highlight paths.
   final Map<String, GPUFont> _mainFonts = {};
@@ -174,17 +183,18 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
     _scroll.dispose();
     _surface?.dispose(); // owns and disposes the window images
     _worker?.dispose();
+    _viewController?.dispose();
     _window.dispose();
     super.dispose();
   }
 
   Future<void> _boot() async {
     try {
-      final bytes = (await rootBundle.load('assets/Lato-Regular.ttf'))
-          .buffer
+      final bytes = (await rootBundle.load('assets/Lato-Regular.ttf')).buffer
           .asUint8List();
-      final gatsby =
-          await rootBundle.loadString('assets/bench/en-gatsby-opening.txt');
+      final gatsby = await rootBundle.loadString(
+        'assets/bench/en-gatsby-opening.txt',
+      );
       // A CFF/OTF font — HarfBuzz-in-the-worker extracts its PostScript
       // outlines; the pure-Dart glyf parser can't.
       final srcBytes = (await rootBundle.load('assets/SourceSans3-Regular.otf'))
@@ -202,6 +212,18 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
       await worker.registerFont(_sourceFontId, Uint8List.fromList(srcBytes));
       await worker.registerFont(_emojiFontId, Uint8List.fromList(emojiBytes));
 
+      // Separate controller for Long book → GPUTextView (owns its own worker).
+      final viewController = await GPUTextViewController.spawn();
+      await viewController.registerFont(_fontId, Uint8List.fromList(bytes));
+      await viewController.registerFont(
+        _sourceFontId,
+        Uint8List.fromList(srcBytes),
+      );
+      await viewController.registerFont(
+        _emojiFontId,
+        Uint8List.fromList(emojiBytes),
+      );
+
       // HarfBuzz on the main isolate too, so the UI-thread + highlight paths
       // shape identically (ligatures/kerning) and render the CFF font.
       _mainShaper = loadHarfBuzzShaper();
@@ -210,11 +232,12 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
       _mainFonts[_emojiFontId] = GPUFont.parse(emojiBytes);
 
       // Fallback fonts for scripts the Latin fonts don't cover. Register each
-      // on the worker and main (same ids), ordered: full system CJK first (mac)
-      // then bundled Noto, then RTL. Missing ones are skipped.
+      // on the worker, the view controller, and main (same ids), ordered: full
+      // system CJK first (mac) then bundled Noto, then RTL. Missing ones skipped.
       final fallbackIds = <String>[];
       Future<void> reg(String id, Uint8List b) async {
         await worker.registerFont(id, Uint8List.fromList(b));
+        await viewController.registerFont(id, Uint8List.fromList(b));
         _mainFonts[id] = GPUFont.parse(b);
         fallbackIds.add(id);
       }
@@ -255,9 +278,15 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
       _fallbackIds = fallbackIds;
 
       _worker = worker;
+      _viewController = viewController;
       _surface = await _GlyphSurface.tryCreate();
       _docs = _buildDocs(gatsby);
-      if (!mounted) return;
+      _bookBlocks = _buildBookBlocks(gatsby, fallbackIds);
+      if (!mounted) {
+        worker.dispose();
+        viewController.dispose();
+        return;
+      }
       setState(() => _ready = true);
       await _selectDoc(_docs.first);
     } catch (e) {
@@ -267,7 +296,11 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
   }
 
   /// First system font in [names] that loads (glyf only) and covers [probe].
-  Uint8List? _pickSystem(SystemFontProvider sys, List<String> names, int probe) {
+  Uint8List? _pickSystem(
+    SystemFontProvider sys,
+    List<String> names,
+    int probe,
+  ) {
     for (final name in names) {
       final bytes = sys.fontData(name);
       if (bytes == null) continue;
@@ -301,12 +334,59 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
     return [
       plain('excerpt', 'Excerpt', paras.take(3).join('\n\n')),
       plain('article', 'Article', paras.take(9).join('\n\n')),
-      // Long enough to scroll; laid out in full (heavy on the UI-thread path).
-      plain('book', 'Long book', [for (var i = 0; i < 3; i++) ...paras].join('\n\n')),
+      // Long book is rendered by GPUTextBlocksView (see [_bookBlocks]), not the
+      // hand-rolled surface — kept here so the chip + CPU-fallback span exist.
+      plain(
+        'book',
+        'Long book',
+        [for (var i = 0; i < 3; i++) ...paras].join('\n\n'),
+      ),
       _Doc('rich', 'Rich text', _flatten(rich), rich),
       _Doc('scripts', 'Scripts', _flatten(scripts), scripts),
       _buildStressDoc(),
     ];
+  }
+
+  /// Per-paragraph blocks for [GPUTextBlocksView] on the Long book chip.
+  /// Width changes only reflow the visible ± cache window — not the whole book.
+  ///
+  /// Cap the paragraph count: the Gatsby fixture has ~1600 paras; ×3 was ~5000
+  /// blocks and made scroll extent / hit-testing unusable. A few hundred is
+  /// enough to exercise lazy layout while still scrolling smoothly.
+  List<GPUTextDocument> _buildBookBlocks(
+    String gatsby,
+    List<String> fallbackIds,
+  ) {
+    final paras = gatsby
+        .split(RegExp(r'\n\s*\n'))
+        .map((p) => p.replaceAll('\n', ' ').trim())
+        .where((p) => p.isNotEmpty)
+        .take(80)
+        .toList();
+    final blocks = <GPUTextDocument>[];
+    var i = 0;
+    for (var rep = 0; rep < 3; rep++) {
+      for (final para in paras) {
+        blocks.add(
+          GPUTextDocument(
+            id: 'book-p$i',
+            lineHeight: _lineHeight,
+            fallbackFontIds: fallbackIds,
+            emojiFontId: _emojiFontId,
+            runs: [
+              GPUTextRunSpec(
+                text: para,
+                fontId: _fontId,
+                fontSizePx: _fontSizePx,
+                color: _inkColor,
+              ),
+            ],
+          ),
+        );
+        i++;
+      }
+    }
+    return blocks;
   }
 
   /// English + CJK + Arabic + Hebrew in one Lato-styled span. Coverage fallback
@@ -328,7 +408,11 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
       children: [
         const TextSpan(
           text: 'World scripts\n',
-          style: TextStyle(fontSize: 32, letterSpacing: -0.5, color: Color(0xFF0B3D91)),
+          style: TextStyle(
+            fontSize: 32,
+            letterSpacing: -0.5,
+            color: Color(0xFF0B3D91),
+          ),
         ),
         const TextSpan(
           text: 'Font fallback + bidi, all on the worker isolate.\n\n',
@@ -337,17 +421,26 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
         for (var i = 0; i < 4; i++) ...[
           const TextSpan(
             text: 'CJK: ',
-            style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF0B3D91)),
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF0B3D91),
+            ),
           ),
           const TextSpan(text: '$zh $ja\n'),
           const TextSpan(
             text: 'Arabic (RTL): ',
-            style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF0B3D91)),
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF0B3D91),
+            ),
           ),
           const TextSpan(text: '$ar\n'),
           const TextSpan(
             text: 'Hebrew (RTL): ',
-            style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF0B3D91)),
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF0B3D91),
+            ),
           ),
           const TextSpan(text: '$he\n'),
           const TextSpan(text: 'Mixed: English, then '),
@@ -363,15 +456,17 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
   /// TextSpan -> sendable specs, mapping each span's font family to a
   /// registered worker font id. [placeholderSize] reserves space for
   /// WidgetSpans.
-  List<GPUInlineSpec> _flatten(InlineSpan span, {PlaceholderSizer? placeholderSize}) =>
-      flattenInlineSpan(
-        span,
-        fontIdResolver: (style) =>
-            style.fontFamily == _sourceFamily ? _sourceFontId : _fontId,
-        defaultFontSizePx: _fontSizePx,
-        defaultColor: _inkColor,
-        placeholderSize: placeholderSize,
-      );
+  List<GPUInlineSpec> _flatten(
+    InlineSpan span, {
+    PlaceholderSizer? placeholderSize,
+  }) => flattenInlineSpan(
+    span,
+    fontIdResolver: (style) =>
+        style.fontFamily == _sourceFamily ? _sourceFontId : _fontId,
+    defaultFontSizePx: _fontSizePx,
+    defaultColor: _inkColor,
+    placeholderSize: placeholderSize,
+  );
 
   /// A rich paragraph mixing sizes, colours and letter-spacing across spans.
   InlineSpan _richSpan() {
@@ -428,7 +523,8 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
           ),
         ),
         const TextSpan(
-          text: ' (CFF/OTF) renders because HarfBuzz extracts its PostScript '
+          text:
+              ' (CFF/OTF) renders because HarfBuzz extracts its PostScript '
               'outlines on the worker, and ligatures/kerning are real.\n\n',
         ),
         TextSpan(text: bodyPara),
@@ -509,13 +605,18 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
         ph(_chip('CJK', const Color(0xFF1565C0)), const Size(40, 20)),
         const TextSpan(text: ' '),
         ph(
-          const Icon(Icons.translate_rounded, size: 18, color: Color(0xFF5B2A86)),
+          const Icon(
+            Icons.translate_rounded,
+            size: 18,
+            color: Color(0xFF5B2A86),
+          ),
           const Size(18, 18),
         ),
         const TextSpan(text: ' '),
         ph(_chip('ZWJ', const Color(0xFF6A1B9A)), const Size(40, 20)),
         const TextSpan(
-          text: ', all shaped, laid out and emitted on the worker isolate, '
+          text:
+              ', all shaped, laid out and emitted on the worker isolate, '
               'then rendered virtualized.\n\n',
         ),
       ]);
@@ -535,7 +636,10 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
   }
 
   Widget _badge(String label, Color color) => DecoratedBox(
-    decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
+    decoration: BoxDecoration(
+      color: color,
+      borderRadius: BorderRadius.circular(4),
+    ),
     child: Center(
       child: Text(
         label,
@@ -591,9 +695,23 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
       _placeholderWidgets = doc.placeholderWidgets;
       _placeholders = const [];
     });
+    // Long book + worker → GPUTextBlocksView owns layout (no hand-rolled reflow).
+    if (doc.id == 'book' && _isBookBlocksView) {
+      if (mounted) {
+        setState(() {
+          _switching = false;
+          _stats = null; // wait for onLaidOutChanged
+        });
+      }
+      return;
+    }
     await _reflowNow();
     if (mounted) setState(() => _switching = false);
   }
+
+  /// Long book on the worker path: lazy blocks widget (not the hand-rolled surface).
+  bool get _isBookBlocksView =>
+      _currentId == 'book' && _where == _Where.worker && !_highlight;
 
   // Slider / toggle changes route through here (fire-and-forget); a doc switch
   // uses [_reflowNow] to await the first frame. Both funnel through the one
@@ -620,7 +738,8 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
     // The highlight demo and the explicit UI-thread mode always run inline;
     // additionally, in worker mode, auto-route docs too small to be worth the
     // round-trip.
-    final autoInline = doc != null &&
+    final autoInline =
+        doc != null &&
         _where == _Where.worker &&
         !_highlight &&
         _docChars(doc) < _inlineCharThreshold;
@@ -721,12 +840,9 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
       ];
       final atlas = SharedGlyphAtlas();
       bandRunItems(atlas, items); // shaped glyphs + COLR emoji layers
-      return _MainDoc(
-        GPUTextLayout.compute(items),
-        runs,
-        [for (final r in runs) List<double>.of(r.color)],
-        atlas,
-      );
+      return _MainDoc(GPUTextLayout.compute(items), runs, [
+        for (final r in runs) List<double>.of(r.color),
+      ], atlas);
     });
 
     // Phase 2 only when the width actually changed; otherwise reuse the lines.
@@ -767,8 +883,8 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
       label: autoInline
           ? 'auto-routed inline · small doc — worker round-trip skipped'
           : relaidOut
-              ? 'UI thread · layout+emit — blocks the UI'
-              : 're-emit only · no relayout (display phase)',
+          ? 'UI thread · layout+emit — blocks the UI'
+          : 're-emit only · no relayout (display phase)',
       good: autoInline || !relaidOut,
       placeholders: emitted.placeholders,
     );
@@ -890,6 +1006,58 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
 
   Widget _documentView() {
     const bg = Color(0xFFF3F1EC);
+    // Long book + worker → GPUTextBlocksView. UI-thread / highlight fall
+    // through to the hand-rolled surface below for an apples-to-oranges
+    // comparison (full-doc layout on the UI thread vs lazy blocks off-thread).
+    if (_isBookBlocksView) {
+      final controller = _viewController;
+      final blocks = _bookBlocks;
+      if (controller == null || blocks == null) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      // Tight height is required: a width-only SizedBox leaves vertical
+      // constraints loose, and GPUTextBlocksView's scroll stack then sizes to
+      // the full content extent — viewport == content → scrollbar never scrolls.
+      return Container(
+        color: bg,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return Align(
+              alignment: Alignment.topCenter,
+              child: Material(
+                elevation: 2,
+                color: Colors.white,
+                child: SizedBox(
+                  width: _width,
+                  height: constraints.maxHeight,
+                  child: GPUTextBlocksView(
+                    controller: controller,
+                    blocks: blocks,
+                    blockSpacing: 12,
+                    cacheExtent: 600,
+                    onLaidOutChanged: (laidOut, total) {
+                      if (!mounted || !_isBookBlocksView) return;
+                      setState(() {
+                        _stats = _Stats(
+                          laidOut,
+                          total,
+                          0,
+                          'GPUTextBlocksView · laid out $laidOut/$total '
+                          '(width reflows only the cache window)',
+                          true,
+                        );
+                      });
+                    },
+                    fallbackBuilder: (context) =>
+                        _cpuFallback(scrollable: true),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    }
     // No GPU: plain scrollable CPU-text preview of the (fully laid-out) doc.
     if (_surface == null) {
       return Container(
@@ -1003,8 +1171,10 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
 
   Widget _placeholderOverlay(double viewportWidth, double vh) {
     final off = _scroll.hasClients ? _scroll.offset : 0.0;
-    final paperLeft =
-        ((viewportWidth - _paperWidth) / 2).clamp(0.0, double.infinity);
+    final paperLeft = ((viewportWidth - _paperWidth) / 2).clamp(
+      0.0,
+      double.infinity,
+    );
     return Stack(
       children: [
         for (final box in _placeholders)
@@ -1023,10 +1193,11 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
     );
   }
 
-  Widget _cpuFallback() {
-    return Padding(
+  Widget _cpuFallback({bool scrollable = false}) {
+    final body = Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (_surface == null)
@@ -1055,6 +1226,8 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
         ],
       ),
     );
+    // BlocksView's fallback sits in a tight viewport — must scroll the book.
+    return scrollable ? SingleChildScrollView(child: body) : body;
   }
 
   Widget _bottomBar() {
@@ -1087,7 +1260,13 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
                       ? null
                       : (sel) {
                           setState(() => _where = sel.first);
-                          _requestReflow();
+                          if (_currentId == 'book' &&
+                              sel.first == _Where.worker) {
+                            // Blocks view takes over; clear hand-rolled HUD.
+                            setState(() => _stats = null);
+                          } else {
+                            _requestReflow();
+                          }
                         },
                 ),
                 const SizedBox(width: 12),
@@ -1115,7 +1294,9 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
                     value: _width,
                     onChanged: (v) {
                       setState(() => _width = v);
-                      _requestReflow();
+                      // BlocksView reflows from LayoutBuilder; hand-rolled needs
+                      // an explicit request.
+                      if (!_isBookBlocksView) _requestReflow();
                     },
                   ),
                 ),
@@ -1134,7 +1315,9 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
                     _stat(
                       Icons.timer_outlined,
                       '${s.ms.toStringAsFixed(2)} ms',
-                      color: s.good ? Colors.green.shade700 : Colors.orange.shade800,
+                      color: s.good
+                          ? Colors.green.shade700
+                          : Colors.orange.shade800,
                     ),
                     _Pill(s.label, good: s.good),
                   ],
@@ -1152,8 +1335,10 @@ class _LowLevelDemoPageState extends State<LowLevelDemoPage> {
       children: [
         Icon(icon, size: 16, color: color),
         const SizedBox(width: 5),
-        Text(label,
-            style: TextStyle(color: color, fontWeight: FontWeight.w600)),
+        Text(
+          label,
+          style: TextStyle(color: color, fontWeight: FontWeight.w600),
+        ),
       ],
     );
   }
@@ -1172,8 +1357,7 @@ class _Pill extends StatelessWidget {
         color: c.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Text(text,
-          style: TextStyle(color: c.shade800, fontSize: 12)),
+      child: Text(text, style: TextStyle(color: c.shade800, fontSize: 12)),
     );
   }
 }

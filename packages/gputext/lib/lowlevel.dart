@@ -16,8 +16,16 @@ library;
 
 export 'src/lowlevel/gpu_text_layout.dart';
 export 'src/lowlevel/gpu_text_worker.dart';
+export 'src/lowlevel/gpu_text_view.dart'
+    show
+        GPUTextView,
+        GPUTextBlocksView,
+        GPUBlockHeightEstimator,
+        GPUTextViewController,
+        GPUTextDocument,
+        GPUTextMetrics;
 export 'src/lowlevel/text_span_specs.dart'
-    show flattenInlineSpan, PlaceholderSizer;
+    show flattenInlineSpan, PlaceholderSizer, GPUWidgetSpan;
 export 'src/text/shaper.dart' show TextShaper;
 
 // The Layer-0 primitives the facade composes, surfaced from one import.
