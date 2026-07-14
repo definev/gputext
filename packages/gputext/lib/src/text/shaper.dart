@@ -39,6 +39,14 @@ abstract class TextShaper {
 
   ShapedGlyphRun shape(ShapeRequest request);
 
+  /// Extract [font]'s outline for glyph [gid] as glyf-compatible quads (flat
+  /// stride-6, Y-down, cubics flattened to quadratics) — the same
+  /// representation [GPUFont.glyphOutlineById] produces from its own parser.
+  /// Works for glyf, CFF, CFF2, CID, and variable outlines uniformly. Returns
+  /// null when the shaper has no outline backend (caller falls back to the
+  /// pure-Dart parser); an empty list means the glyph has no outline.
+  List<double>? drawGlyphOutline(GPUFont font, int gid) => null;
+
   /// Drop any native resources cached for [font] (HarfBuzz face/font).
   /// No-op for shapers without native state.
   void evictFont(GPUFont font) {}

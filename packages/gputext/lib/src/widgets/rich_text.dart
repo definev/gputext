@@ -30,6 +30,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../atlas.dart' show AtlasTextures;
 import '../engine/engine.dart';
 import '../engine/pipeline.dart';
 import '../font.dart' show GPUFont;
@@ -40,6 +41,32 @@ import 'emoji.dart';
 import 'span_flattener.dart';
 
 const _maxSurfaceDim = 8192;
+
+/// Cap on vertical tiles a single paragraph's glyph image may span
+/// (_maxTiles × _maxSurfaceDim device px). Past this the paragraph is so tall
+/// that scaling it down (accepting blur) beats allocating unbounded VRAM.
+const _maxTiles = 16;
+
+/// One vertically-stacked tile of a paragraph's rasterized glyph image. The
+/// common case is a single tile covering the whole paragraph; extra tiles only
+/// appear when the paragraph is too tall for one [_maxSurfaceDim] surface at
+/// full render scale.
+class _SurfaceTile {
+  _SurfaceTile(this.surface, this.image, this.devRect);
+
+  /// The GPU surface backing [image]; may outlive one paint (reused across
+  /// resizes) or be retired when superseded.
+  final gpu.GpuImageSurface surface;
+
+  /// The presented glyph image for this band. Used region is [devRect]'s size
+  /// at the surface's top-left; the rest of the (bucketed) surface is
+  /// transparent.
+  final ui.Image image;
+
+  /// This tile's device-pixel rect within the paragraph's device space
+  /// (left/top = the band's origin, width/height = the used region).
+  final Rect devRect;
+}
 
 /// RichText-compatible widget backed by gputext layout + GPU coverage paint.
 class GPURichText extends StatelessWidget {
@@ -62,6 +89,7 @@ class GPURichText extends StatelessWidget {
     this.scaleHint,
     this.filterQuality = FilterQuality.low,
     this.lineBreaker = wf.LineBreaker.greedy,
+    this.lineBreak,
     this.coverageGamma = 1.0,
     this.coverageSharp = 1.0,
     this.minificationGuardPx = 3.7,
@@ -79,6 +107,11 @@ class GPURichText extends StatelessWidget {
   /// [wf.KnuthPlassLineBreaker] for TeX-style optimal justified paragraphs;
   /// alignment, ellipsis, and maxLines apply on top of any strategy.
   final wf.LineBreaker lineBreaker;
+
+  /// Opt-in automatic hyphenation and space-less-script segmentation. Null
+  /// (default) leaves breaking exactly as before. Reuse one instance (const or
+  /// app-level) so the shared layout cache can key on it by identity.
+  final wf.LineBreakConfig? lineBreak;
 
   /// OpenType language tag for HarfBuzz shaping ([Locale.toLanguageTag]).
   final Locale? locale;
@@ -144,6 +177,7 @@ class GPURichText extends StatelessWidget {
           scaleHint: scaleHint,
           filterQuality: filterQuality,
           lineBreaker: lineBreaker,
+          lineBreak: lineBreak,
           coverageGamma: coverageGamma,
           coverageSharp: coverageSharp,
           minificationGuardPx: minificationGuardPx,
@@ -181,6 +215,7 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
     this.scaleHint,
     this.filterQuality = FilterQuality.low,
     this.lineBreaker = wf.LineBreaker.greedy,
+    this.lineBreak,
     this.coverageGamma = 1.0,
     this.coverageSharp = 1.0,
     this.minificationGuardPx = 3.7,
@@ -224,6 +259,7 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
 
   final FilterQuality filterQuality;
   final wf.LineBreaker lineBreaker;
+  final wf.LineBreakConfig? lineBreak;
 
   @override
   RenderGPUParagraph createRenderObject(BuildContext context) {
@@ -247,6 +283,7 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
         scaleHint: scaleHint,
         filterQuality: filterQuality,
         lineBreaker: lineBreaker,
+        lineBreak: lineBreak,
         coverageGamma: coverageGamma,
         coverageSharp: coverageSharp,
         minificationGuardPx: minificationGuardPx,
@@ -280,6 +317,7 @@ class _RawGPURichText extends MultiChildRenderObjectWidget {
       ..scaleHint = scaleHint
       ..filterQuality = filterQuality
       ..lineBreaker = lineBreaker
+      ..lineBreak = lineBreak
       ..coverageGamma = coverageGamma
       ..coverageSharp = coverageSharp
       ..minificationGuardPx = minificationGuardPx
@@ -319,6 +357,7 @@ class RenderGPUParagraph extends RenderBox
     required this._scaleHint,
     required this._filterQuality,
     required this._lineBreaker,
+    this._lineBreak,
     this._coverageGamma = 1.0,
     this._coverageSharp = 1.0,
     this._minificationGuardPx = 3.7,
@@ -376,8 +415,15 @@ class RenderGPUParagraph extends RenderBox
   bool _paintDirtiedSinceEmit = false;
   gpu.DeviceBuffer? _instanceBuffer;
   gpu.DeviceBuffer? _colorInstanceBuffer; // color-bitmap emoji quads
-  gpu.GpuImageSurface? _surface;
-  ui.Image? _image;
+  // The paragraph's rasterized glyph image, split into vertically-stacked
+  // tiles when it exceeds one _maxSurfaceDim surface at full render scale. The
+  // common case is exactly one tile and behaves identically to a single
+  // surface (bucketed, reused across resizes). Multi-tile only kicks in for
+  // very tall paragraphs (or extreme zoom): rather than clamp to a single
+  // 8192² surface — which forces the render scale below devicePixelRatio and
+  // blurs the whole paragraph — each tile renders at full scale into its own
+  // surface, and paint blits them stacked.
+  final List<_SurfaceTile> _tiles = [];
   // Superseded surface+image generations, each tagged with the number of the
   // frame whose paint replaced them. Disposed only once the engine reports a
   // frame at least that new has finished rasterizing (see _renderSurface).
@@ -417,11 +463,23 @@ class RenderGPUParagraph extends RenderBox
 
   /// Device-pixel size of the cached glyph image, null before first render.
   (int, int)? get debugImageSize {
-    final img = _image;
-    return img == null ? null : (img.width, img.height);
+    if (_tiles.isEmpty) return null;
+    final img = _tiles.first.image;
+    return (img.width, img.height);
   }
 
-  Rect _imageDevRect = Rect.zero;
+  /// Number of vertical tiles the cached image is split into (1 in the common
+  /// case; >1 only when the paragraph is too tall for one surface at full
+  /// scale — the case that used to blur).
+  @visibleForTesting
+  int get debugTileCount => _tiles.length;
+
+  /// Device-pixel scale the glyph image was last rasterized at. A tall
+  /// paragraph now keeps this at devicePixelRatio (tiled) instead of clamping
+  /// below it (blurred).
+  @visibleForTesting
+  double get debugRenderScale => _imageScale;
+
   double _imageScale = 1;
   final LayerHandle<ClipRectLayer> _clipHandle = LayerHandle<ClipRectLayer>();
 
@@ -518,6 +576,13 @@ class RenderGPUParagraph extends RenderBox
   set lineBreaker(wf.LineBreaker value) {
     if (_lineBreaker == value) return;
     _lineBreaker = value;
+    _needsRelayout();
+  }
+
+  wf.LineBreakConfig? _lineBreak;
+  set lineBreak(wf.LineBreakConfig? value) {
+    if (identical(_lineBreak, value)) return;
+    _lineBreak = value;
     _needsRelayout();
   }
 
@@ -703,9 +768,10 @@ class RenderGPUParagraph extends RenderBox
       img.dispose();
     }
     _retired.clear();
-    _image?.dispose();
-    _image = null;
-    _surface = null;
+    for (final t in _tiles) {
+      t.image.dispose();
+    }
+    _tiles.clear();
     _instanceBuffer = null;
     _colorInstanceBuffer = null;
     _cacheKey = null;
@@ -893,6 +959,7 @@ class RenderGPUParagraph extends RenderBox
       _engine.fontGeneration,
       _textDirection,
       _locale,
+      _lineBreak,
     );
   }
 
@@ -916,6 +983,7 @@ class RenderGPUParagraph extends RenderBox
       _engine.fontGeneration,
       _textDirection,
       _locale,
+      _lineBreak,
       _dimsSignature(dims),
     );
   }
@@ -1056,7 +1124,7 @@ class RenderGPUParagraph extends RenderBox
       _rememberPrepared(localKey, runs, null, fromSharedCache: false);
       return (runs, null);
     }
-    final prepared = wf.prepareParagraph(runs);
+    final prepared = wf.prepareParagraph(runs, lineBreak: _lineBreak);
     var fromShared = false;
     if (key != null) {
       // Cost in UTF-16 units so the engine can bound cache bytes, not just
@@ -1854,10 +1922,16 @@ class RenderGPUParagraph extends RenderBox
           scale = _quantizeScale(t * _devicePixelRatio);
         }
       }
-      final maxDim = math.max(ink.maxX - ink.minX, ink.maxY - ink.minY);
+      // Only the WIDTH constrains the render scale: a paragraph too TALL for
+      // one _maxSurfaceDim surface is split into vertical tiles (in
+      // _renderSurfaceImpl) rather than scaled down, so height no longer forces
+      // the scale under devicePixelRatio and blurs the text. Width still bounds
+      // the scale — horizontal tiling is unnecessary (a line that wide is
+      // pathological).
+      final inkW = ink.maxX - ink.minX;
       final upper = math.min(
         16.0 * _devicePixelRatio,
-        (_maxSurfaceDim - 16) / math.max(maxDim, 1e-3),
+        (_maxSurfaceDim - 16) / math.max(inkW, 1e-3),
       );
       final lower = math.min(0.25 * _devicePixelRatio, upper);
       scale = ui.clampDouble(
@@ -1865,6 +1939,14 @@ class RenderGPUParagraph extends RenderBox
         math.max(lower, 1e-3),
         math.max(upper, 1e-3),
       );
+      // Cap total tiled height: past _maxTiles surfaces the paragraph is so
+      // tall that scaling it down (accepting some blur) beats allocating
+      // unbounded VRAM. Only fires above ~130k device px — an absurd paragraph.
+      final inkH = ink.maxY - ink.minY;
+      final maxTiledDev = _maxTiles * (_maxSurfaceDim - 16);
+      if (inkH * scale > maxTiledDev) {
+        scale = math.max(maxTiledDev / math.max(inkH, 1e-3), 1e-3);
+      }
 
       final key = (
         emitted,
@@ -1878,22 +1960,7 @@ class RenderGPUParagraph extends RenderBox
         rendered = _renderSurface(emitted, ink, scale);
         if (rendered) _cacheKey = key;
       }
-      final image = _image;
-      if (rendered && image != null) {
-        // The used region only — the bucketed allocation may be larger, and
-        // its slack is cleared-transparent, not content.
-        final src = Rect.fromLTWH(
-          0,
-          0,
-          _imageDevRect.width,
-          _imageDevRect.height,
-        );
-        final dst = Rect.fromLTWH(
-          offset.dx + _imageDevRect.left / _imageScale,
-          offset.dy + _imageDevRect.top / _imageScale,
-          _imageDevRect.width / _imageScale,
-          _imageDevRect.height / _imageScale,
-        );
+      if (rendered && _tiles.isNotEmpty) {
         // TextStyle.shadows: re-blit each shadowed run's slice of the glyph
         // image, offset, tinted (srcIn), and blurred, painted in list order
         // under the text like Flutter. The isolation must happen on the
@@ -1902,14 +1969,17 @@ class RenderGPUParagraph extends RenderBox
         // previous line's descenders, adjacent same-line spans) into the
         // shadow as smears with hard clip edges — and a blur clip has to be
         // inflated by the blur bloom, which admits even more of them.
+        //
+        // Shadows first (under the text), then the glyphs. Both blit per tile:
+        // a run (or the text) overlapping a tile boundary is split by
+        // intersecting with each tile's device rect. In the common single-tile
+        // case each run lands wholly in tile 0, so this is identical to a
+        // single-surface blit.
         for (final sr in emitted.shadowRuns) {
-          final runRect = Rect.fromLTWH(sr.left, sr.top, sr.width, sr.height);
-          final srcRun = Rect.fromLTRB(
-            runRect.left * _imageScale - _imageDevRect.left,
-            runRect.top * _imageScale - _imageDevRect.top,
-            runRect.right * _imageScale - _imageDevRect.left,
-            runRect.bottom * _imageScale - _imageDevRect.top,
-          );
+          final runDevLeft = sr.left * _imageScale;
+          final runDevRight = (sr.left + sr.width) * _imageScale;
+          final runDevTop = sr.top * _imageScale;
+          final runDevBottom = (sr.top + sr.height) * _imageScale;
           for (final s in sr.shadows) {
             final paint = Paint()
               ..filterQuality = _filterQuality
@@ -1924,7 +1994,7 @@ class RenderGPUParagraph extends RenderBox
               );
             if (s.blurRadius > 0) {
               // ui.Shadow.convertRadiusToSigma, divided by _imageScale: the
-              // blur runs over `image`, whose texels are _imageScale-
+              // blur runs over the image, whose texels are _imageScale-
               // oversampled relative to the logical destination, so a
               // logical-px sigma would land scale× too wide and smear the run
               // into a halo. Pre-dividing brings it back toward the logical
@@ -1936,20 +2006,41 @@ class RenderGPUParagraph extends RenderBox
                 tileMode: ui.TileMode.decal,
               );
             }
-            context.canvas.drawImageRect(
-              image,
-              srcRun,
-              runRect.shift(offset + Offset(s.dx, s.dy)),
-              paint,
-            );
+            for (final tile in _tiles) {
+              final r = tile.devRect;
+              final top = math.max(runDevTop, r.top);
+              final bottom = math.min(runDevBottom, r.bottom);
+              if (bottom <= top) continue;
+              final srcRun = Rect.fromLTRB(
+                runDevLeft - r.left,
+                top - r.top,
+                runDevRight - r.left,
+                bottom - r.top,
+              );
+              final dstRun = Rect.fromLTRB(
+                runDevLeft / _imageScale,
+                top / _imageScale,
+                runDevRight / _imageScale,
+                bottom / _imageScale,
+              ).shift(offset + Offset(s.dx, s.dy));
+              context.canvas.drawImageRect(tile.image, srcRun, dstRun, paint);
+            }
           }
         }
-        context.canvas.drawImageRect(
-          image,
-          src,
-          dst,
-          Paint()..filterQuality = _filterQuality,
-        );
+        final textPaint = Paint()..filterQuality = _filterQuality;
+        for (final tile in _tiles) {
+          final r = tile.devRect;
+          // The used region only — the bucketed allocation may be larger, and
+          // its slack is cleared-transparent, not content.
+          final src = Rect.fromLTWH(0, 0, r.width, r.height);
+          final dst = Rect.fromLTWH(
+            offset.dx + r.left / _imageScale,
+            offset.dy + r.top / _imageScale,
+            r.width / _imageScale,
+            r.height / _imageScale,
+          );
+          context.canvas.drawImageRect(tile.image, src, dst, textPaint);
+        }
       }
     }
     if (emitted != null && emitted.decorations.isNotEmpty) {
@@ -1989,15 +2080,19 @@ class RenderGPUParagraph extends RenderBox
       1,
       _maxSurfaceDim,
     );
-    final h = ((ink.maxY * scale).ceil() + pad - devTop).clamp(
-      1,
-      _maxSurfaceDim,
-    );
+    // Height is NOT clamped to one surface: an over-tall paragraph is split
+    // into stacked tiles, each rendered at full `scale`. Width is clamped
+    // (see the scale cap in _paintContents), so a single line always fits.
+    final totalH = math.max((ink.maxY * scale).ceil() + pad - devTop, 1);
+    final tileCount = (totalH / _maxSurfaceDim).ceil().clamp(1, _maxTiles);
+    final bandH = tileCount == 1 ? totalH : _maxSurfaceDim;
 
     if (textures != null && emitted.glyphCount > 0) {
+      // Uploaded once; every tile draws the same instances against its own cam
+      // offset, so a glyph on a tile boundary renders its portion into each.
       _instanceBuffer ??= _engine.pipeline.uploadInstances(emitted.instances);
     }
-    // Prepare the color-atlas texture + instance buffer BEFORE opening the
+    // Prepare the color-atlas texture + instance buffer BEFORE opening any
     // render pass. prepareColorTexture() uploads (overwrites) the atlas — doing
     // that inside an already-recording pass corrupts the encoder and segfaults
     // the GPU, exactly like prepareTextures() above must precede the pass.
@@ -2010,38 +2105,122 @@ class RenderGPUParagraph extends RenderBox
         );
       }
     }
-    var surface = _surface;
-    // Surface allocations are bucketed: glyphs render into the top-left w×h
-    // of a surface whose dims round up to _surfaceDimBucket, and the blit
-    // samples only that sub-rect. The few-device-px ink drift of a live
-    // resize or width animation then reuses the surface instead of paying a
-    // texture allocation (plus retire churn) every frame. A surface is kept
-    // while the used rect still fits and the surface wastes < 4× the
-    // bucketed need, so an oscillating width settles on one max-sized
-    // surface instead of reallocating at every bucket crossing.
+
+    final newTiles = <_SurfaceTile>[];
+    final reused = <gpu.GpuImageSurface>{};
+    for (var i = 0; i < tileCount; i++) {
+      final tileTop = devTop + i * bandH;
+      final tileH = math.min(bandH, devTop + totalH - tileTop);
+      // Reuse the surface that held this same tile last frame when it still
+      // fits (the resize/zoom fast path); index-matched so no aliasing.
+      final oldSurface = i < _tiles.length ? _tiles[i].surface : null;
+      final result = _renderTile(
+        emitted,
+        textures,
+        colorTex,
+        scale,
+        devLeft: devLeft,
+        tileTop: tileTop,
+        w: w,
+        h: tileH,
+        reuse: oldSurface,
+      );
+      if (result == null) {
+        // A tile failed. Retire the images we made this pass (deferred dispose)
+        // and keep the previous _tiles so paint still has a valid image.
+        final frame = ui.PlatformDispatcher.instance.frameData.frameNumber;
+        for (final t in newTiles) {
+          _retireSurface(
+            reused.contains(t.surface) ? null : t.surface,
+            t.image,
+            frame,
+          );
+        }
+        return false;
+      }
+      final (surface, image) = result;
+      if (identical(surface, oldSurface)) reused.add(surface);
+      newTiles.add(
+        _SurfaceTile(
+          surface,
+          image,
+          Rect.fromLTWH(
+            devLeft.toDouble(),
+            tileTop.toDouble(),
+            w.toDouble(),
+            tileH.toDouble(),
+          ),
+        ),
+      );
+    }
+    debugSurfaceRenders++;
+    // Retire the previous tiles instead of disposing them now: frames that
+    // reference their images may still be waiting to rasterize (paint outpaces
+    // raster during live window resizes), and disposing early lets the pool
+    // recycle a texture under a frame still on its way to the screen — which
+    // paints as text stretched to the wrong scale. A reused surface keeps its
+    // texture; only the superseded image is retired. Disposal happens in
+    // _onFrameTimings once a frame at least as new has finished rasterizing.
+    final frameNumber = ui.PlatformDispatcher.instance.frameData.frameNumber;
+    for (final t in _tiles) {
+      _retireSurface(
+        reused.contains(t.surface) ? null : t.surface,
+        t.image,
+        frameNumber,
+      );
+    }
+    _tiles
+      ..clear()
+      ..addAll(newTiles);
+    _imageScale = scale;
+    return true;
+  }
+
+  /// Render one tile band into a surface and return `(surface, presentedImage)`,
+  /// or null on GPU failure. Reuses [reuse] when its bucketed allocation still
+  /// fits (the resize fast path), else allocates a fresh surface.
+  (gpu.GpuImageSurface, ui.Image)? _renderTile(
+    wf.ParagraphInstances emitted,
+    AtlasTextures? textures,
+    gpu.Texture? colorTex,
+    double scale, {
+    required int devLeft,
+    required int tileTop,
+    required int w,
+    required int h,
+    required gpu.GpuImageSurface? reuse,
+  }) {
+    // Surface allocations are bucketed: glyphs render into the top-left w×h of
+    // a surface whose dims round up to a bucket, and the blit samples only that
+    // sub-rect. The few-device-px ink drift of a live resize or width animation
+    // then reuses the surface instead of paying a texture allocation (plus
+    // retire churn) every frame. Kept while the used rect still fits and the
+    // surface wastes < 4× the bucketed need, so an oscillating width settles on
+    // one max-sized surface instead of reallocating at every bucket crossing.
     final allocW = _bucketDim(w);
     final allocH = _bucketDim(h);
-    final fits =
-        surface != null &&
-        surface.width >= w &&
-        surface.height >= h &&
-        surface.width * surface.height <= allocW * allocH * 4;
+    final gpu.GpuImageSurface surface;
+    if (reuse != null &&
+        reuse.width >= w &&
+        reuse.height >= h &&
+        reuse.width * reuse.height <= allocW * allocH * 4) {
+      surface = reuse;
+    } else {
+      // Never resize() a live surface: while a presented image is still
+      // referenced by the compositor (in-flight raster, retained layers),
+      // resizing can leave later frames on a stale-size backing texture —
+      // observed on flutter_gpu master as text stretched to the wrong scale
+      // after live window resizes. A fresh surface gets fresh textures; the
+      // old one is retired by the caller with its presented image.
+      surface = gpu.gpuContext.createImageSurface(
+        allocW,
+        allocH,
+        format: _surfaceFormat(),
+      );
+      debugSurfaceAllocs++;
+    }
     gpu.GpuSurfaceFrame? frame;
     try {
-      if (!fits) {
-        // Never resize() a live surface: while a presented image is still
-        // referenced by the compositor (in-flight raster, retained layers),
-        // resizing can leave later frames on a stale-size backing texture —
-        // observed on flutter_gpu master as text stretched to the wrong
-        // scale after live window resizes. A fresh surface gets fresh
-        // textures; the old one is retired below with its presented image.
-        surface = gpu.gpuContext.createImageSurface(
-          allocW,
-          allocH,
-          format: _surfaceFormat(),
-        );
-        debugSurfaceAllocs++;
-      }
       frame = surface.acquireNextFrame();
       final cmd = gpu.gpuContext.createCommandBuffer();
       final target = gpu.RenderTarget.singleColor(
@@ -2054,13 +2233,14 @@ class RenderGPUParagraph extends RenderBox
       );
       final pass = cmd.createRenderPass(target);
       final frameUniforms = FrameUniforms(
-        // The full allocation, not the used w×h: the vertex shader maps
-        // device px → NDC against these, which pins the used rect to the
-        // texture's top-left where the blit's src rect samples it.
+        // The full allocation, not the used w×h: the vertex shader maps device
+        // px → NDC against these, which pins the used rect to the texture's
+        // top-left where the blit's src rect samples it. `tileTop` shifts the
+        // device origin so each tile captures its own vertical band.
         width: surface.width.toDouble(),
         height: surface.height.toDouble(),
         style: [_coverageGamma, _coverageSharp],
-        cam: [scale, scale, -devLeft.toDouble(), -devTop.toDouble()],
+        cam: [scale, scale, -devLeft.toDouble(), -tileTop.toDouble()],
         guardPx: _minificationGuardPx,
       );
       if (textures != null && emitted.glyphCount > 0) {
@@ -2086,40 +2266,15 @@ class RenderGPUParagraph extends RenderBox
       }
       frame.present(cmd);
       cmd.submit();
+      final image = surface.currentImage;
+      return image == null ? null : (surface, image);
     } catch (e) {
-      // Release an unpresented frame; otherwise every future resize() on
-      // this surface throws "frame still acquired". No-op after present().
+      // Release an unpresented frame; otherwise every future acquire on this
+      // surface throws "frame still acquired". No-op after present().
       frame?.discard();
       debugPrint('gputext: paragraph render failed: $e');
-      return false;
+      return null;
     }
-    debugSurfaceRenders++;
-    // Retire the previous surface+image instead of disposing them now:
-    // frames that reference the old image may still be waiting to
-    // rasterize (paint outpaces raster during live window resizes), and
-    // disposing it early lets the pool recycle its texture under a frame
-    // that is still on its way to the screen — which paints as text
-    // stretched to the wrong scale. The retired pair is disposed by
-    // _onFrameTimings once the engine reports a frame at least as new as
-    // this one has finished rasterizing.
-    final prevImage = _image;
-    if (prevImage != null) {
-      _retireSurface(
-        identical(_surface, surface) ? null : _surface,
-        prevImage,
-        ui.PlatformDispatcher.instance.frameData.frameNumber,
-      );
-    }
-    _surface = surface;
-    _image = surface.currentImage;
-    _imageScale = scale;
-    _imageDevRect = Rect.fromLTWH(
-      devLeft.toDouble(),
-      devTop.toDouble(),
-      w.toDouble(),
-      h.toDouble(),
-    );
-    return true;
   }
 
   /// Bit-exact equality of two instance buffers. Compared as raw 32-bit words

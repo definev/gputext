@@ -74,7 +74,7 @@ List<_Group> _groups() => [
       _Sample('rainbow flag (ZWJ)', '🏳️‍🌈'),
       _Sample('skin-tone modifier', '👋🏿  👍🏽'),
       _Sample('regional-indicator flags', '🇯🇵 🇺🇸 🇻🇳'),
-      _Sample('keycap', '1️⃣  #️⃣'),
+      _Sample('keycap', '1️⃣ #️⃣'),
     ],
     caption: 'GPUText looks up each code point in COLR per-rune, so ZWJ / '
         'flag / skin-tone sequences are NOT combined into one glyph.',

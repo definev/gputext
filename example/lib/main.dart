@@ -16,6 +16,7 @@ import 'bench/bench_page.dart';
 import 'cursed_demo.dart';
 import 'dragon_demo.dart';
 import 'emoji_bitmap_demo.dart';
+import 'features_demo.dart';
 import 'google_sans_flex_demo.dart';
 import 'justification_demo.dart';
 import 'leak_report_page.dart';
@@ -83,6 +84,7 @@ class GPUTextApp extends StatelessWidget {
         'vars' => const VariableFontDemoPage(),
         'rtl' => const RtlDemoPage(),
         'cursed' => const CursedDemoPage(),
+        'features' => const FeaturesDemoPage(),
         'emoji' => const EmojiBitmapDemoPage(),
         'sysfont' => const SysFontDemoPage(),
         'shadow' => const ShadowDemoPage(),
@@ -516,6 +518,10 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                             mainAxisSize: MainAxisSize.min,
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
+                              _demoButton(
+                                'New features',
+                                const FeaturesDemoPage(),
+                              ),
                               _demoButton('Pretext', const PretextDemoPage()),
                               _demoButton('Dragon', const DragonDemoPage()),
                               _demoButton('Cursed', const CursedDemoPage()),

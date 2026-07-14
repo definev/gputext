@@ -73,6 +73,66 @@ void main() {
     expect(identical(runs[2].font, lato), isTrue);
   });
 
+  test('a combining mark stays with its base in one fallback run', () {
+    if (wide == null) return;
+    // Lato has 'e' but no combining acute; Arial Unicode has both. The whole
+    // grapheme 'e\u0301' must resolve to ONE font that covers base + mark —
+    // NOT split 'e' (Lato) from the mark (wide), which detaches the accent and
+    // breaks its positioning. Per-rune fallback used to produce two runs here.
+    expect(lato.hasGlyphForRune(0x65), isTrue); // 'e'
+    expect(lato.hasGlyphForRune(0x0301), isFalse); // combining acute
+    expect(wide!.hasGlyphForRune(0x0301), isTrue);
+
+    final items = flattenSpan(
+      const TextSpan(
+        style: TextStyle(
+          fontFamily: 'Lato',
+          fontSize: 16,
+          fontFamilyFallback: ['WideFallback'],
+        ),
+        text: 'e\u0301', // é = base + combining mark
+      ),
+      TextScaler.noScaling,
+      engine,
+    );
+    final runs = items!.cast<wf.TextRun>();
+    expect(runs.length, 1, reason: 'the cluster must not split across fonts');
+    // The whole cluster went to the font covering base + mark.
+    expect(identical(runs.single.font, wide), isTrue);
+  });
+
+  test('no run is ever a lone combining mark across a fallback boundary', () {
+    if (wide == null) return;
+    // 'a' (Lato) then 'e\u0301' (cluster → wide) then 'b' (Lato). The mark must
+    // never end up in a run by itself.
+    final items = flattenSpan(
+      const TextSpan(
+        style: TextStyle(
+          fontFamily: 'Lato',
+          fontSize: 16,
+          fontFamilyFallback: ['WideFallback'],
+        ),
+        text: 'ae\u0301b',
+      ),
+      TextScaler.noScaling,
+      engine,
+    );
+    final runs = items!.cast<wf.TextRun>();
+    for (final r in runs) {
+      final src = r.sourceText ?? r.text;
+      expect(
+        src == '\u0301',
+        isFalse,
+        reason: 'a combining mark must never be its own run',
+      );
+    }
+    // And the mark rides with its base: some run contains both 'e' and the mark.
+    expect(
+      runs.any((r) => (r.sourceText ?? r.text).contains('e\u0301')),
+      isTrue,
+    );
+  });
+
   test('expandUncoveredSpans delegates uncovered chars, per CJK character', () {
     const span = TextSpan(
       style: TextStyle(fontFamily: 'Lato', fontSize: 18),

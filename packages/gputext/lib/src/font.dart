@@ -256,6 +256,14 @@ class GPUFont {
   /// eviction is idempotent — re-shaping an evicted variant rebuilds it.
   static void Function(GPUFont evicted)? onVariantEvicted;
 
+  /// Optional outline backend, set by [GPUTextEngine] to the HarfBuzz
+  /// `hb_font_draw_glyph` path. When set, [glyphOutlineById] extracts outlines
+  /// through it — one path for glyf, CFF, CFF2, CID, and variable fonts — and
+  /// only falls back to the pure-Dart glyf/CFF parser when it returns null
+  /// (backend unavailable / errored). Returns glyf-compatible quads, or an
+  /// empty list for a glyph with no outline (e.g. space).
+  static List<double>? Function(GPUFont font, int gid)? outlineProvider;
+
   /// Variant instances by normalized coordinate key (base font only).
   /// LinkedHashMap: re-insert on hit for LRU eviction at [variantCacheCapacity].
   final Map<String, GPUFont> _variantCache = <String, GPUFont>{};
@@ -329,7 +337,10 @@ class GPUFont {
       r.seek(r.readU32()); // face 0 table-directory offset
       scalerType = r.readU32();
     }
-    if (scalerType != 0x00010000 && scalerType != 0x74727565) {
+    // 0x00010000 / 'true' = TrueType (glyf); 'OTTO' = OpenType-PostScript (CFF).
+    if (scalerType != 0x00010000 &&
+        scalerType != 0x74727565 &&
+        scalerType != 0x4F54544F) {
       throw FormatException('Unsupported font scaler type: $scalerType');
     }
     final numTables = r.readU16();
@@ -435,7 +446,8 @@ class GPUFont {
     // Color-bitmap fonts (Noto Color Emoji / CBDT) carry no glyf/loca — their
     // glyphs are PNGs in CBDT, not outlines. Tolerate their absence: the
     // outline path returns null and the bitmap path takes over.
-    final glyphOffsets = tables.containsKey('loca') && tables.containsKey('glyf')
+    final glyphOffsets =
+        tables.containsKey('loca') && tables.containsKey('glyf')
         ? _parseLoca(data, tableOffset('loca'), numGlyphs, indexToLocFormat)
         : const <int>[];
     final kern = tables.containsKey('kern')
@@ -734,6 +746,11 @@ class GPUFont {
     return colr.layersFor(gid);
   }
 
+  /// COLR v0 layers for glyph id [gid] directly (bottom first); null when the
+  /// font has no color glyph for it. Used for shaped multi-codepoint emoji
+  /// clusters, whose ligated glyph id has no single source code point.
+  List<ColrLayer>? colrForGlyphId(int gid) => _colr?.layersFor(gid);
+
   /// True when the font carries color-bitmap glyphs (sbix or CBDT/CBLC) — the
   /// raster color-emoji formats (Apple / Noto). Independent of [hasColorGlyphs]
   /// (COLR vectors); a font may have neither, either, or both.
@@ -797,6 +814,23 @@ class GPUFont {
   /// Outline of a glyph by ID (COLR layers reference glyph IDs directly).
   GlyphOutline? glyphOutlineById(int id) {
     if (id < 0 || id >= _numGlyphs) return null;
+
+    // Outlines come from HarfBuzz's draw API (set by the engine as
+    // [outlineProvider]), which handles glyf, CFF, CFF2, CID, and variable
+    // fonts uniformly. CFF (OpenType-PostScript) has NO pure-Dart parser — it
+    // renders only through HarfBuzz. A null result means the backend is
+    // unavailable, so glyf falls through to the in-Dart parser below (which
+    // also keeps headless/VM tests on the pure-Dart path).
+    final provider = outlineProvider;
+    if (provider != null) {
+      final quads = provider(this, id);
+      if (quads != null) {
+        return quads.isEmpty ? null : _outlineFromQuads(id, quads);
+      }
+    }
+
+    // Pure-Dart glyf (TrueType) fallback. Empty for CFF fonts (no glyf table),
+    // so a CFF face with no HarfBuzz backend simply has no outlines.
     final pts = _glyphPointsById(id);
     if (pts == null || pts.xs.isEmpty) return null;
 
@@ -808,6 +842,12 @@ class GPUFont {
     }
 
     if (quads.isEmpty) return null;
+    return _outlineFromQuads(id, quads);
+  }
+
+  // bbox (from every quad point, control points included) + hmtx advance. The
+  // one place both the glyf and CFF paths converge.
+  GlyphOutline _outlineFromQuads(int id, List<double> quads) {
     var x0 = double.infinity;
     var y0 = double.infinity;
     var x1 = -double.infinity;
@@ -1424,45 +1464,60 @@ class ColrLayer {
 }
 
 class _ColrData {
-  _ColrData(
-    this.baseGids,
-    this.firstLayer,
-    this.layerCounts,
-    this.layerGids,
-    this.layerPalette,
-    this.palette,
-  );
+  _ColrData({
+    required this.baseGids,
+    required this.firstLayer,
+    required this.layerCounts,
+    required this.layerGids,
+    required this.layerPalette,
+    required this.palette,
+    this.data,
+    this.baseGlyphList = 0,
+    this.layerList = 0,
+  });
 
-  final Uint16List baseGids; // sorted
+  final Uint16List baseGids; // sorted (v0 base records)
   final Uint16List firstLayer;
   final Uint16List layerCounts;
   final Uint16List layerGids;
   final Uint16List layerPalette;
   final List<List<double>> palette; // palette 0, RGBA 0..1
 
+  // COLR v1 paint graph (null / 0 on a v0-only font). Absolute table offsets.
+  final ByteData? data;
+  final int baseGlyphList; // BaseGlyphList table start; 0 when absent
+  final int layerList; // LayerList table start; 0 when absent
+
   static _ColrData parse(ByteData d, int colr, int cpal) {
     final version = d.getUint16(colr, Endian.big);
-    if (version != 0) throw const FormatException('COLR v1 unsupported');
+    // v0 fields sit at the same offsets in v1; a v1 font may set the v0 record
+    // count/offset to zero (no legacy layer records).
     final numBase = d.getUint16(colr + 2, Endian.big);
-    final baseOff = colr + d.getUint32(colr + 4, Endian.big);
-    final layerOff = colr + d.getUint32(colr + 8, Endian.big);
+    final baseRecOff = d.getUint32(colr + 4, Endian.big);
+    final layerRecOff = d.getUint32(colr + 8, Endian.big);
     final numLayers = d.getUint16(colr + 12, Endian.big);
 
     final baseGids = Uint16List(numBase);
     final firstLayer = Uint16List(numBase);
     final layerCounts = Uint16List(numBase);
-    for (var i = 0; i < numBase; i++) {
-      final o = baseOff + i * 6;
-      baseGids[i] = d.getUint16(o, Endian.big);
-      firstLayer[i] = d.getUint16(o + 2, Endian.big);
-      layerCounts[i] = d.getUint16(o + 4, Endian.big);
+    if (numBase > 0 && baseRecOff != 0) {
+      final baseOff = colr + baseRecOff;
+      for (var i = 0; i < numBase; i++) {
+        final o = baseOff + i * 6;
+        baseGids[i] = d.getUint16(o, Endian.big);
+        firstLayer[i] = d.getUint16(o + 2, Endian.big);
+        layerCounts[i] = d.getUint16(o + 4, Endian.big);
+      }
     }
     final layerGids = Uint16List(numLayers);
     final layerPalette = Uint16List(numLayers);
-    for (var i = 0; i < numLayers; i++) {
-      final o = layerOff + i * 4;
-      layerGids[i] = d.getUint16(o, Endian.big);
-      layerPalette[i] = d.getUint16(o + 2, Endian.big);
+    if (numLayers > 0 && layerRecOff != 0) {
+      final layerOff = colr + layerRecOff;
+      for (var i = 0; i < numLayers; i++) {
+        final o = layerOff + i * 4;
+        layerGids[i] = d.getUint16(o, Endian.big);
+        layerPalette[i] = d.getUint16(o + 2, Endian.big);
+      }
     }
 
     // CPAL header; we only read palette 0.
@@ -1479,17 +1534,41 @@ class _ColrData {
       final a = d.getUint8(o + 3);
       palette.add([r / 255, g / 255, b / 255, a / 255]);
     }
+
+    var baseGlyphList = 0;
+    var layerList = 0;
+    if (version >= 1) {
+      // v1 additions follow the 14-byte v0 header.
+      final bgl = d.getUint32(colr + 14, Endian.big);
+      final ll = d.getUint32(colr + 18, Endian.big);
+      baseGlyphList = bgl == 0 ? 0 : colr + bgl;
+      layerList = ll == 0 ? 0 : colr + ll;
+    }
+
     return _ColrData(
-      baseGids,
-      firstLayer,
-      layerCounts,
-      layerGids,
-      layerPalette,
-      palette,
+      baseGids: baseGids,
+      firstLayer: firstLayer,
+      layerCounts: layerCounts,
+      layerGids: layerGids,
+      layerPalette: layerPalette,
+      palette: palette,
+      data: version >= 1 ? d : null,
+      baseGlyphList: baseGlyphList,
+      layerList: layerList,
     );
   }
 
   List<ColrLayer>? layersFor(int gid) {
+    final v0 = _v0LayersFor(gid);
+    if (v0 != null) return v0;
+    // COLR v1 flat subset: PaintColrLayers → PaintGlyph → PaintSolid. Gradients,
+    // composites, and non-identity transforms are not flat and return null (the
+    // glyph then delegates to the platform), a documented B1 limitation.
+    if (data != null && baseGlyphList != 0) return _v1FlatLayersFor(gid);
+    return null;
+  }
+
+  List<ColrLayer>? _v0LayersFor(int gid) {
     var lo = 0, hi = baseGids.length - 1;
     while (lo <= hi) {
       final mid = (lo + hi) >> 1;
@@ -1512,5 +1591,83 @@ class _ColrData {
       }
     }
     return null;
+  }
+
+  // Binary-search a BaseGlyphPaintRecord (glyphID u16, paint Offset32 from the
+  // BaseGlyphList start). Returns the absolute paint offset, or -1.
+  int _basePaintOffset(int gid) {
+    final d = data!;
+    final n = d.getUint32(baseGlyphList, Endian.big);
+    var lo = 0, hi = n - 1;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      final rec = baseGlyphList + 4 + mid * 6;
+      final g = d.getUint16(rec, Endian.big);
+      if (gid < g) {
+        hi = mid - 1;
+      } else if (gid > g) {
+        lo = mid + 1;
+      } else {
+        return baseGlyphList + d.getUint32(rec + 2, Endian.big);
+      }
+    }
+    return -1;
+  }
+
+  List<ColrLayer>? _v1FlatLayersFor(int gid) {
+    final paintOff = _basePaintOffset(gid);
+    if (paintOff < 0) return null;
+    final out = <ColrLayer>[];
+    if (!_evalPaint(paintOff, out, 0)) return null;
+    return out.isEmpty ? null : out;
+  }
+
+  static int _u24(ByteData d, int o) =>
+      (d.getUint8(o) << 16) | (d.getUint8(o + 1) << 8) | d.getUint8(o + 2);
+
+  // Accumulate flat solid-filled glyph layers. Returns false the moment a paint
+  // is anything but the flat subset — the caller then treats the glyph as
+  // non-flat (delegates).
+  bool _evalPaint(int off, List<ColrLayer> out, int depth) {
+    if (depth > 64) return false;
+    final d = data!;
+    switch (d.getUint8(off)) {
+      case 1: // PaintColrLayers: numLayers(u8), firstLayerIndex(u32)
+        if (layerList == 0) return false;
+        final n = d.getUint8(off + 1);
+        final first = d.getUint32(off + 2, Endian.big);
+        for (var i = 0; i < n; i++) {
+          final lp =
+              layerList +
+              d.getUint32(layerList + 4 + (first + i) * 4, Endian.big);
+          if (!_evalPaint(lp, out, depth + 1)) return false;
+        }
+        return true;
+      case 10: // PaintGlyph: paint(Offset24), glyphID(u16); fill must be solid
+        final (isSolid, color) = _evalSolid(off + _u24(d, off + 1));
+        if (!isSolid) return false;
+        out.add(ColrLayer(d.getUint16(off + 4, Endian.big), color));
+        return true;
+      case 11: // PaintColrGlyph: reuse another base glyph's paint
+        final poff = _basePaintOffset(d.getUint16(off + 1, Endian.big));
+        if (poff < 0) return false;
+        return _evalPaint(poff, out, depth + 1);
+      default:
+        return false; // gradients / composites / transforms → not flat
+    }
+  }
+
+  // (isSolid, color) for a PaintSolid/PaintVarSolid; color null = current text
+  // color (palette index 0xFFFF). Variation deltas are ignored (default value).
+  (bool, List<double>?) _evalSolid(int off) {
+    final d = data!;
+    final format = d.getUint8(off);
+    if (format != 2 && format != 3) return (false, null); // not a solid fill
+    final paletteIndex = d.getUint16(off + 1, Endian.big);
+    final alpha = d.getInt16(off + 3, Endian.big) / 16384.0;
+    if (paletteIndex == 0xFFFF) return (true, null); // current text color
+    if (paletteIndex >= palette.length) return (true, null);
+    final c = palette[paletteIndex];
+    return (true, [c[0], c[1], c[2], c[3] * alpha]);
   }
 }

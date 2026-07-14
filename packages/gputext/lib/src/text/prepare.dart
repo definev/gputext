@@ -26,6 +26,7 @@ import '../timeline.dart';
 import 'analysis.dart';
 import 'inline_items.dart';
 import 'line_break.dart';
+import 'line_break_config.dart';
 import 'metrics_cache.dart';
 
 /// One (item, offset-range) slice of a segment. `startInSegment == -1`
@@ -102,13 +103,18 @@ class _WindowPiece {
   final int itemStart;
 }
 
-PreparedParagraph prepareParagraph(List<InlineItem> items) =>
-    GPUTextTimeline.timeSync(
-      GPUTextTimeline.prepare,
-      () => _prepareParagraph(items),
-    );
+PreparedParagraph prepareParagraph(
+  List<InlineItem> items, {
+  LineBreakConfig? lineBreak,
+}) => GPUTextTimeline.timeSync(
+  GPUTextTimeline.prepare,
+  () => _prepareParagraph(items, lineBreak),
+);
 
-PreparedParagraph _prepareParagraph(List<InlineItem> items) {
+PreparedParagraph _prepareParagraph(
+  List<InlineItem> items,
+  LineBreakConfig? lineBreak,
+) {
   final widths = <double>[];
   final kinds = <SegmentBreakKind>[];
   final graphemeAdvances = <Float64List?>[];
@@ -339,6 +345,111 @@ PreparedParagraph _prepareParagraph(List<InlineItem> items) {
     pushSegment(kind, width, text, pieces);
   }
 
+  // --- opt-in hyphenation / segmentation (LineBreakConfig) ---
+
+  // A zero-length soft-hyphen break opportunity at window offset `at` (strictly
+  // inside a word's run). Breaking here renders a visible '-' — paragraph.dart
+  // materializes it from these pieces + width, exactly like a real U+00AD.
+  void pushSyntheticSoftHyphen(int at) {
+    final owner = intersections(at, at);
+    if (owner.isEmpty) return; // at a run boundary — drop this opportunity
+    final run = runOf(owner.first.itemIndex);
+    final hyphenW =
+        segmentMetricsOf(run.font, '-').widthUnits * scaleOf(run) +
+        run.letterSpacingPx;
+    pushSegment(SegmentBreakKind.softHyphen, hyphenW, '', [
+      for (final p in owner)
+        SegmentPiece(
+          itemIndex: p.itemIndex,
+          startInSegment: p.start - at,
+          endInSegment: p.end - at,
+          startInItem: p.start - p.itemStart,
+          width: 0,
+        ),
+    ]);
+  }
+
+  // A zero-width break opportunity at `at` (between segmented words).
+  void pushSyntheticZwsp(int at) {
+    final owner = intersections(at, at);
+    if (owner.isEmpty) return;
+    pushSegment(SegmentBreakKind.zeroWidthBreak, 0, '', [
+      for (final p in owner)
+        SegmentPiece(
+          itemIndex: p.itemIndex,
+          startInSegment: p.start - at,
+          endInSegment: p.end - at,
+          startInItem: p.start - p.itemStart,
+          width: 0,
+        ),
+    ]);
+  }
+
+  // Split a word at hyphenation points, inserting a soft-hyphen opportunity
+  // (renders '-') at each. Sub-parts stay grapheme-breakable as a safety net.
+  void pushHyphenatedWord(String segText, int segStart, Hyphenator hyphenator) {
+    final breaks = hyphenator.hyphenate(segText);
+    if (breaks.isEmpty) {
+      pushTextSegment(
+        segText,
+        segStart,
+        SegmentBreakKind.text,
+        allowBreaks: true,
+      );
+      return;
+    }
+    var prev = 0;
+    for (final b in breaks) {
+      if (b <= prev || b >= segText.length) continue;
+      pushTextSegment(
+        segText.substring(prev, b),
+        segStart + prev,
+        SegmentBreakKind.text,
+        allowBreaks: true,
+      );
+      pushSyntheticSoftHyphen(segStart + b);
+      prev = b;
+    }
+    pushTextSegment(
+      segText.substring(prev),
+      segStart + prev,
+      SegmentBreakKind.text,
+      allowBreaks: true,
+    );
+  }
+
+  // Split a space-less run into words with a zero-width break between each.
+  void pushSegmentedRun(String segText, int segStart, TextSegmenter segmenter) {
+    final bounds = segmenter.wordBoundaries(segText);
+    if (bounds.isEmpty) {
+      pushTextSegment(
+        segText,
+        segStart,
+        SegmentBreakKind.text,
+        allowBreaks: true,
+      );
+      return;
+    }
+    var prev = 0;
+    for (final b in bounds) {
+      if (b <= prev || b >= segText.length) continue;
+      pushTextSegment(
+        segText.substring(prev, b),
+        segStart + prev,
+        SegmentBreakKind.text,
+        allowBreaks: true,
+      );
+      pushSyntheticZwsp(segStart + b);
+      prev = b;
+    }
+    pushTextSegment(
+      segText.substring(prev),
+      segStart + prev,
+      SegmentBreakKind.text,
+      allowBreaks: true,
+    );
+  }
+
   void flushWindow() {
     if (windowBuf.isEmpty) {
       windowPieces.clear();
@@ -397,6 +508,13 @@ PreparedParagraph _prepareParagraph(List<InlineItem> items) {
                 allowBreaks: !containsCjk(unit.text),
               );
             }
+          } else if (lineBreak?.segmenter != null &&
+              containsSaScript(segText)) {
+            // Space-less script (Thai/Lao/Khmer/…): break between words.
+            pushSegmentedRun(segText, segStart, lineBreak!.segmenter!);
+          } else if (lineBreak?.hyphenator != null && segs.isWordLike[i]) {
+            // Automatic hyphenation of a Latin-ish word.
+            pushHyphenatedWord(segText, segStart, lineBreak!.hyphenator!);
           } else {
             pushTextSegment(
               segText,

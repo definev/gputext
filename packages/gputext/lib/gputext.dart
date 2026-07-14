@@ -43,6 +43,14 @@ export 'src/scene.dart' show GPUTextScene, background, maxSize;
 export 'src/text/analysis.dart' show SegmentBreakKind;
 export 'src/text/bidi.dart'
     show BidiRun, itemize, reorderVisual, paragraphLevel;
+export 'src/text/line_break_config.dart'
+    show
+        LineBreakConfig,
+        Hyphenator,
+        PatternHyphenator,
+        TextSegmenter,
+        isSaScriptCp,
+        containsSaScript;
 export 'src/text/line_breaker.dart'
     show LineBreaker, GreedyLineBreaker, KnuthPlassLineBreaker;
 export 'src/text/metrics_cache.dart'
@@ -51,11 +59,7 @@ export 'src/text/shaped_run.dart' show ShapedGlyph, ShapedGlyphRun, walkGlyphs;
 export 'src/text/shaper.dart' show TextShaper, ShapeRequest;
 export 'src/text/harfbuzz_shaper.dart' show HarfBuzzShaper;
 export 'src/timeline.dart'
-    show
-        AggregatedTimedBlock,
-        AggregatedTimings,
-        GPUTextTimeline,
-        TimedBlock;
+    show AggregatedTimedBlock, AggregatedTimings, GPUTextTimeline, TimedBlock;
 export 'src/widgets/rich_text.dart' show GPURichText, RenderGPUParagraph;
 export 'src/widgets/span_flattener.dart' show flattenSpan;
 export 'src/widgets/text.dart' show GPULabel;

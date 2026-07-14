@@ -62,6 +62,20 @@ void main() {
       );
     });
 
+    test(
+      'zero-width joiners and bidi controls never break a word (UAX#14)',
+      () {
+        // ZWJ (U+200D) welds — no break opportunity around it. Classified as
+        // `text` it used to split the word into two break-eligible segments.
+        final zwj = analyzeText('foo\u200Dbar').texts;
+        expect(zwj, contains('foo\u200Dbar'));
+        expect(zwj, isNot(contains('foo')));
+        // ZWNJ and an invisible bidi mark (LRM) likewise introduce no break.
+        expect(analyzeText('foo\u200Cbar').texts, contains('foo\u200Cbar'));
+        expect(analyzeText('foo\u200Ebar').texts, contains('foo\u200Ebar'));
+      },
+    );
+
     test('kinsoku merges prohibited punctuation into CJK units', () {
       final units = splitCjkUnits('「こんにちは。」');
       // The opener sticks forward, the closer/full stop stick backward:

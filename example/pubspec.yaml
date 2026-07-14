@@ -31,6 +31,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/Lato-Regular.ttf
+    - assets/SourceSans3-Regular.otf
     - assets/TwemojiMozilla.ttf
     - assets/NotoColorEmoji.ttf
     - assets/NotoSansSC-subset.ttf
@@ -42,3 +43,18 @@ flutter:
     - family: Lato
       fonts:
         - asset: assets/Lato-Regular.ttf
+    - family: SourceSans3
+      fonts:
+        - asset: assets/SourceSans3-Regular.otf
+    - family: TwemojiMozilla
+      fonts:
+        - asset: assets/TwemojiMozilla.ttf
+    - family: NotoColorEmoji
+      fonts:
+        - asset: assets/NotoColorEmoji.ttf
+    - family: NotoSansSC-subset
+      fonts:
+        - asset: assets/NotoSansSC-subset.ttf
+    - family: GoogleSansFlex
+      fonts:
+        - asset: assets/Google_Sans_Flex/GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf

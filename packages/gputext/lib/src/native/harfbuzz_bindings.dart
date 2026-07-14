@@ -14,6 +14,48 @@ typedef HbBlob = Opaque;
 typedef HbFace = Opaque;
 typedef HbFont = Opaque;
 typedef HbBuffer = Opaque;
+typedef HbDrawFuncs = Opaque;
+typedef HbDrawState = Opaque;
+
+// hb_draw_*_func_t callback native signatures (path segments emitted by
+// hb_font_draw_glyph). All receive (dfuncs, draw_data, state, ..., user_data).
+typedef HbDrawMoveToNative = Void Function(
+  Pointer<HbDrawFuncs>,
+  Pointer<Void>,
+  Pointer<HbDrawState>,
+  Float, // to_x
+  Float, // to_y
+  Pointer<Void>,
+);
+typedef HbDrawLineToNative = HbDrawMoveToNative;
+typedef HbDrawQuadToNative = Void Function(
+  Pointer<HbDrawFuncs>,
+  Pointer<Void>,
+  Pointer<HbDrawState>,
+  Float, // control_x
+  Float, // control_y
+  Float, // to_x
+  Float, // to_y
+  Pointer<Void>,
+);
+typedef HbDrawCubicToNative = Void Function(
+  Pointer<HbDrawFuncs>,
+  Pointer<Void>,
+  Pointer<HbDrawState>,
+  Float, // control1_x
+  Float, // control1_y
+  Float, // control2_x
+  Float, // control2_y
+  Float, // to_x
+  Float, // to_y
+  Pointer<Void>,
+);
+typedef HbDrawCloseNative = Void Function(
+  Pointer<HbDrawFuncs>,
+  Pointer<Void>,
+  Pointer<HbDrawState>,
+  Pointer<Void>,
+);
 
 final class HbGlyphInfo extends Struct {
   @Uint32()
@@ -76,7 +118,10 @@ int hbTagFromString(String tag) {
   final b = units.length > 1 ? units[1] : 0x20;
   final c = units.length > 2 ? units[2] : 0x20;
   final d = units.length > 3 ? units[3] : 0x20;
-  return ((a & 0xff) << 24) | ((b & 0xff) << 16) | ((c & 0xff) << 8) | (d & 0xff);
+  return ((a & 0xff) << 24) |
+      ((b & 0xff) << 16) |
+      ((c & 0xff) << 8) |
+      (d & 0xff);
 }
 
 const _assetId = 'package:gputext/src/native/harfbuzz_dylib.dart';
@@ -160,6 +205,112 @@ external void _hb_font_set_variations(
   symbol: 'hb_ot_font_set_funcs',
 )
 external void _hb_ot_font_set_funcs(Pointer<HbFont> font);
+
+// --- Outline extraction (hb-draw): works for glyf, CFF, CFF2, CID, variable. ---
+
+@Native<Pointer<HbDrawFuncs> Function()>(
+  assetId: _assetId,
+  isLeaf: true,
+  symbol: 'hb_draw_funcs_create',
+)
+external Pointer<HbDrawFuncs> _hb_draw_funcs_create();
+
+@Native<Void Function(Pointer<HbDrawFuncs>)>(
+  assetId: _assetId,
+  isLeaf: true,
+  symbol: 'hb_draw_funcs_destroy',
+)
+external void _hb_draw_funcs_destroy(Pointer<HbDrawFuncs> funcs);
+
+@Native<
+  Void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawMoveToNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+>(assetId: _assetId, isLeaf: true, symbol: 'hb_draw_funcs_set_move_to_func')
+external void _hb_draw_funcs_set_move_to_func(
+  Pointer<HbDrawFuncs> funcs,
+  Pointer<NativeFunction<HbDrawMoveToNative>> func,
+  Pointer<Void> userData,
+  Pointer<Void> destroy,
+);
+
+@Native<
+  Void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawLineToNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+>(assetId: _assetId, isLeaf: true, symbol: 'hb_draw_funcs_set_line_to_func')
+external void _hb_draw_funcs_set_line_to_func(
+  Pointer<HbDrawFuncs> funcs,
+  Pointer<NativeFunction<HbDrawLineToNative>> func,
+  Pointer<Void> userData,
+  Pointer<Void> destroy,
+);
+
+@Native<
+  Void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawQuadToNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+>(
+  assetId: _assetId,
+  isLeaf: true,
+  symbol: 'hb_draw_funcs_set_quadratic_to_func',
+)
+external void _hb_draw_funcs_set_quadratic_to_func(
+  Pointer<HbDrawFuncs> funcs,
+  Pointer<NativeFunction<HbDrawQuadToNative>> func,
+  Pointer<Void> userData,
+  Pointer<Void> destroy,
+);
+
+@Native<
+  Void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawCubicToNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+>(assetId: _assetId, isLeaf: true, symbol: 'hb_draw_funcs_set_cubic_to_func')
+external void _hb_draw_funcs_set_cubic_to_func(
+  Pointer<HbDrawFuncs> funcs,
+  Pointer<NativeFunction<HbDrawCubicToNative>> func,
+  Pointer<Void> userData,
+  Pointer<Void> destroy,
+);
+
+@Native<
+  Void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawCloseNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+>(assetId: _assetId, isLeaf: true, symbol: 'hb_draw_funcs_set_close_path_func')
+external void _hb_draw_funcs_set_close_path_func(
+  Pointer<HbDrawFuncs> funcs,
+  Pointer<NativeFunction<HbDrawCloseNative>> func,
+  Pointer<Void> userData,
+  Pointer<Void> destroy,
+);
+
+// NOT isLeaf: it invokes the Dart callbacks above during the call.
+@Native<
+  Void Function(Pointer<HbFont>, Uint32, Pointer<HbDrawFuncs>, Pointer<Void>)
+>(assetId: _assetId, symbol: 'hb_font_draw_glyph')
+external void _hb_font_draw_glyph(
+  Pointer<HbFont> font,
+  int glyph,
+  Pointer<HbDrawFuncs> drawFuncs,
+  Pointer<Void> drawData,
+);
 
 @Native<Pointer<HbBuffer> Function()>(
   assetId: _assetId,
@@ -291,6 +442,14 @@ class HarfBuzzBindings {
     required this.hbFontSetScale,
     required this.hbFontSetVariations,
     required this.hbOtFontSetFuncs,
+    required this.hbDrawFuncsCreate,
+    required this.hbDrawFuncsDestroy,
+    required this.hbDrawFuncsSetMoveTo,
+    required this.hbDrawFuncsSetLineTo,
+    required this.hbDrawFuncsSetQuadTo,
+    required this.hbDrawFuncsSetCubicTo,
+    required this.hbDrawFuncsSetClose,
+    required this.hbFontDrawGlyph,
     required this.hbBufferCreate,
     required this.hbBufferDestroy,
     required this.hbBufferAddUtf16,
@@ -329,6 +488,45 @@ class HarfBuzzBindings {
   final void Function(Pointer<HbFont>, Pointer<HbVariation>, int)
   hbFontSetVariations;
   final void Function(Pointer<HbFont>) hbOtFontSetFuncs;
+  final Pointer<HbDrawFuncs> Function() hbDrawFuncsCreate;
+  final void Function(Pointer<HbDrawFuncs>) hbDrawFuncsDestroy;
+  final void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawMoveToNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+  hbDrawFuncsSetMoveTo;
+  final void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawLineToNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+  hbDrawFuncsSetLineTo;
+  final void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawQuadToNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+  hbDrawFuncsSetQuadTo;
+  final void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawCubicToNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+  hbDrawFuncsSetCubicTo;
+  final void Function(
+    Pointer<HbDrawFuncs>,
+    Pointer<NativeFunction<HbDrawCloseNative>>,
+    Pointer<Void>,
+    Pointer<Void>,
+  )
+  hbDrawFuncsSetClose;
+  final void Function(Pointer<HbFont>, int, Pointer<HbDrawFuncs>, Pointer<Void>)
+  hbFontDrawGlyph;
   final Pointer<HbBuffer> Function() hbBufferCreate;
   final void Function(Pointer<HbBuffer>) hbBufferDestroy;
   final void Function(Pointer<HbBuffer>, Pointer<Uint16>, int, int, int)
@@ -424,6 +622,14 @@ class HarfBuzzBindings {
     hbFontSetScale: _hb_font_set_scale,
     hbFontSetVariations: _hb_font_set_variations,
     hbOtFontSetFuncs: _hb_ot_font_set_funcs,
+    hbDrawFuncsCreate: _hb_draw_funcs_create,
+    hbDrawFuncsDestroy: _hb_draw_funcs_destroy,
+    hbDrawFuncsSetMoveTo: _hb_draw_funcs_set_move_to_func,
+    hbDrawFuncsSetLineTo: _hb_draw_funcs_set_line_to_func,
+    hbDrawFuncsSetQuadTo: _hb_draw_funcs_set_quadratic_to_func,
+    hbDrawFuncsSetCubicTo: _hb_draw_funcs_set_cubic_to_func,
+    hbDrawFuncsSetClose: _hb_draw_funcs_set_close_path_func,
+    hbFontDrawGlyph: _hb_font_draw_glyph,
     hbBufferCreate: _hb_buffer_create,
     hbBufferDestroy: _hb_buffer_destroy,
     hbBufferAddUtf16: _hb_buffer_add_utf16,
@@ -438,12 +644,14 @@ class HarfBuzzBindings {
     hbBufferGetGlyphInfos: _hb_buffer_get_glyph_infos,
     hbBufferGetGlyphPositions: _hb_buffer_get_glyph_positions,
     hbFeatureFromString: _hb_feature_from_string,
-    hbFontDestroyPtr: Native.addressOf<
-      NativeFunction<Void Function(Pointer<HbFont>)>
-    >(_hb_font_destroy).cast(),
-    hbFaceDestroyPtr: Native.addressOf<
-      NativeFunction<Void Function(Pointer<HbFace>)>
-    >(_hb_face_destroy).cast(),
+    hbFontDestroyPtr:
+        Native.addressOf<NativeFunction<Void Function(Pointer<HbFont>)>>(
+          _hb_font_destroy,
+        ).cast(),
+    hbFaceDestroyPtr:
+        Native.addressOf<NativeFunction<Void Function(Pointer<HbFace>)>>(
+          _hb_face_destroy,
+        ).cast(),
   );
 
   static HarfBuzzBindings _fromLibrary(
@@ -506,6 +714,106 @@ class HarfBuzzBindings {
           Void Function(Pointer<HbFont>),
           void Function(Pointer<HbFont>)
         >('hb_ot_font_set_funcs'),
+    hbDrawFuncsCreate: lib
+        .lookupFunction<
+          Pointer<HbDrawFuncs> Function(),
+          Pointer<HbDrawFuncs> Function()
+        >('hb_draw_funcs_create'),
+    hbDrawFuncsDestroy: lib
+        .lookupFunction<
+          Void Function(Pointer<HbDrawFuncs>),
+          void Function(Pointer<HbDrawFuncs>)
+        >('hb_draw_funcs_destroy'),
+    hbDrawFuncsSetMoveTo: lib
+        .lookupFunction<
+          Void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawMoveToNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          ),
+          void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawMoveToNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          )
+        >('hb_draw_funcs_set_move_to_func'),
+    hbDrawFuncsSetLineTo: lib
+        .lookupFunction<
+          Void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawLineToNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          ),
+          void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawLineToNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          )
+        >('hb_draw_funcs_set_line_to_func'),
+    hbDrawFuncsSetQuadTo: lib
+        .lookupFunction<
+          Void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawQuadToNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          ),
+          void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawQuadToNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          )
+        >('hb_draw_funcs_set_quadratic_to_func'),
+    hbDrawFuncsSetCubicTo: lib
+        .lookupFunction<
+          Void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawCubicToNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          ),
+          void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawCubicToNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          )
+        >('hb_draw_funcs_set_cubic_to_func'),
+    hbDrawFuncsSetClose: lib
+        .lookupFunction<
+          Void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawCloseNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          ),
+          void Function(
+            Pointer<HbDrawFuncs>,
+            Pointer<NativeFunction<HbDrawCloseNative>>,
+            Pointer<Void>,
+            Pointer<Void>,
+          )
+        >('hb_draw_funcs_set_close_path_func'),
+    hbFontDrawGlyph: lib
+        .lookupFunction<
+          Void Function(
+            Pointer<HbFont>,
+            Uint32,
+            Pointer<HbDrawFuncs>,
+            Pointer<Void>,
+          ),
+          void Function(
+            Pointer<HbFont>,
+            int,
+            Pointer<HbDrawFuncs>,
+            Pointer<Void>,
+          )
+        >('hb_font_draw_glyph'),
     hbBufferCreate: lib
         .lookupFunction<
           Pointer<HbBuffer> Function(),
@@ -625,8 +933,7 @@ class HarfBuzzBindings {
       }
     }
     if (openErrors.isNotEmpty) {
-      lastLoadError =
-          '${lastLoadError ?? ''}; open: ${openErrors.join('; ')}';
+      lastLoadError = '${lastLoadError ?? ''}; open: ${openErrors.join('; ')}';
     }
     // Desktop tests / JIT: hooks output under the package or workspace cwd.
     final os = Platform.operatingSystem;

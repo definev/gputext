@@ -135,16 +135,41 @@ void main() {
       expect(identical(expandEmojiSpans(span, GPUText.instance), span), isTrue);
     });
 
-    test('sequences still delegate (until GSUB lands)', () {
-      const span = TextSpan(
-        style: TextStyle(fontFamily: 'Lato', fontSize: 16),
-        text:
-            'family \u{1F468}\u200D\u{1F469}\u200D\u{1F467} '
-            'flag \u{1F1FB}\u{1F1F3} tone \u{1F44D}\u{1F3FD}',
-      );
-      final out = expandEmojiSpans(span, GPUText.instance) as TextSpan;
-      final widgets = out.children!.whereType<WidgetSpan>().length;
-      expect(widgets, 3);
+    test(
+      'multi-codepoint sequences render on the GPU (ligated, no delegation)',
+      () {
+        const span = TextSpan(
+          style: TextStyle(fontFamily: 'Lato', fontSize: 16),
+          text:
+              'family \u{1F468}\u200D\u{1F469}\u200D\u{1F467} '
+              'flag \u{1F1FB}\u{1F1F3} tone \u{1F44D}\u{1F3FD}',
+        );
+        // Twemoji ligates each sequence to one COLR glyph, so they stay in-text
+        // (the GPU color pipeline draws them) \u2014 nothing delegates to a WidgetSpan.
+        expect(
+          identical(expandEmojiSpans(span, GPUText.instance), span),
+          isTrue,
+        );
+      },
+    );
+
+    test('flattener emits one EmojiItem for a ZWJ family sequence', () {
+      const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}';
+      final items = flattenSpan(
+        const TextSpan(
+          style: TextStyle(fontFamily: 'Lato', fontSize: 20),
+          text: 'a${family}b',
+        ),
+        TextScaler.noScaling,
+        GPUText.instance,
+      )!;
+      // 'a', the whole family as ONE emoji, 'b'.
+      expect(items.length, 3);
+      final emoji = items[1] as wf.EmojiItem;
+      // The ligated cluster keeps its full source text (for selection/copy).
+      expect(emoji.sourceText, family);
+      expect(emoji.layers.length, greaterThanOrEqualTo(1));
+      expect(emoji.width, greaterThan(10)); // ~1em advance
     });
 
     test('flattener emits EmojiItem with layers between text runs', () {
@@ -190,6 +215,36 @@ void main() {
       expect(emitted.instances[9], closeTo(c0[1], 1e-6));
       expect(emitted.instances[10], closeTo(c0[2], 1e-6));
       expect(emitted.inkBounds, isNotNull);
+    });
+
+    test('keycap sequence survives expandUncoveredSpans (regression)', () {
+      // U+20E3 (combining enclosing keycap) is covered by no registered plain-
+      // text font, yet 1️⃣ ligates to a single Twemoji COLR glyph. The uncovered-
+      // span pass must keep the whole cluster in-text so the flattener emits it
+      // as one colored EmojiItem. Splitting it — delegating the lone U+20E3 to a
+      // platform Text — detaches the enclosing box from its digit, and the box's
+      // negative bearing draws it backward over the neighbors (garbled render).
+      const keycap = '1\u{FE0F}\u{20E3}';
+      const span = TextSpan(
+        style: TextStyle(fontFamily: 'Lato', fontSize: 20),
+        text: '$keycap $keycap',
+      );
+      final engine = GPUText.instance;
+      // Precondition: the mark is genuinely uncovered outside the ligature, so
+      // the buggy path would otherwise delegate it.
+      expect(engine.resolveFontForChar('\u{20E3}'), isNull);
+
+      var eff = expandEmojiSpans(span, engine);
+      eff = expandUncoveredSpans(eff, engine);
+
+      final items = flattenSpan(eff, TextScaler.noScaling, engine)!;
+      // Both keycaps stay whole: two colored EmojiItems, no delegated
+      // placeholders and no split-off digit/keycap runs.
+      final emoji = items.whereType<wf.EmojiItem>().toList();
+      expect(emoji.length, 2);
+      expect(items.whereType<wf.PlaceholderItem>(), isEmpty);
+      expect(emoji.first.sourceText, keycap);
+      expect(emoji.first.layers.length, greaterThanOrEqualTo(2));
     });
 
     testWidgets('widget renders native emoji with no inline Text child', (

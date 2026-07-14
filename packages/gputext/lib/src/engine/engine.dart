@@ -24,6 +24,7 @@ import '../native/system_fonts.dart';
 import '../paragraph.dart' as wf;
 import '../text/harfbuzz_shaper.dart';
 import '../text/metrics_cache.dart';
+import '../text/shaped_run.dart';
 import '../text/shaper.dart';
 import 'color_atlas.dart';
 import 'color_atlas_texture.dart';
@@ -70,19 +71,55 @@ abstract final class GPUText {
   static bool get systemFontsAvailable => instance.systemFontsAvailable;
 }
 
+/// A multi-codepoint emoji cluster resolved to one ligated color glyph — the
+/// output of [GPUTextEngine.emojiGlyphForCluster]. Exactly one of [layers]
+/// (COLR v0/v1 flat) or [bitmapGlyphId] (sbix/CBDT) carries the color data.
+class ResolvedEmojiGlyph {
+  const ResolvedEmojiGlyph({
+    required this.advanceUnits,
+    this.layers = const [],
+    this.bitmapGlyphId,
+  });
+
+  /// The ligated cluster's advance, in font units.
+  final double advanceUnits;
+
+  /// COLR color layers (bottom first); empty for a bitmap glyph.
+  final List<ColrLayer> layers;
+
+  /// Color-bitmap glyph id; null for a COLR glyph.
+  final int? bitmapGlyphId;
+}
+
 class GPUTextEngine extends ChangeNotifier {
   GPUTextEngine._() {
     // Variant instances LRU-evicted from a base font's cache must release
     // their HB face/metrics immediately — waiting for GC leaves native
     // handles pinned while the atlas still references the variant.
     GPUFont.onVariantEvicted = _onVariantEvicted;
+    // Route outline extraction through HarfBuzz (glyf/CFF/CFF2/CID/variable,
+    // one code path). Returns null until the shaper is loaded and for
+    // unsupported platforms, so glyphOutlineById falls back to the pure-Dart
+    // parser (which also keeps headless/VM tests on the in-Dart path).
+    GPUFont.outlineProvider = _drawGlyphOutline;
   }
+
+  List<double>? _drawGlyphOutline(GPUFont font, int gid) =>
+      _shaper?.drawGlyphOutline(font, gid);
 
   void _onVariantEvicted(GPUFont variant) {
     // Null when shaping never ran (no native caches to drop). Don't force a
     // HarfBuzz load — that would throw on an unsupported platform mid-evict.
     _shaper?.evictFont(variant);
     debugClearSegmentMetricsFor(variant);
+    // The evicted variant's outlines are now dead weight in the shared atlas.
+    // Reclaiming them means a compaction, which relocates every rowBase (global
+    // re-emit) and rebuilds both textures — far too heavy to run per eviction.
+    // Batch instead: sweep only once enough evicted variants have piled up. A
+    // bounded animation (<= variantCacheCapacity distinct instances) never
+    // evicts, so it never reaches here; only genuine churn past the LRU does.
+    _deadVariants.add(variant);
+    if (_deadVariants.length >= _variantSweepBatch) _scheduleForcedAtlasSweep();
   }
 
   static final GPUTextEngine _instance = GPUTextEngine._();
@@ -171,6 +208,8 @@ class GPUTextEngine extends ChangeNotifier {
     _layoutCache.clear();
     _layoutCacheCosts.clear();
     _layoutCacheChars = 0;
+    _emojiClusterCache
+        .clear(); // a new/changed emoji font may ligate differently
   }
 
   // Cache observability (tests and the benchmark harness read these).
@@ -330,6 +369,56 @@ class GPUTextEngine extends ChangeNotifier {
     return false;
   }
 
+  // Multi-codepoint emoji clusters resolved to a single ligated color glyph.
+  // Keyed by cluster string; a shape+coverage probe is paid once per distinct
+  // cluster per font generation (cleared in [_bumpFontGeneration]).
+  final _emojiClusterCache = <String, ResolvedEmojiGlyph?>{};
+
+  /// Resolve a multi-codepoint emoji cluster (ZWJ sequence, flag, keycap,
+  /// skin-tone) to the single color glyph its emoji font ligates it to, so it
+  /// can render on the GPU through the same COLR / bitmap pipeline as a
+  /// single-codepoint emoji. Null when there is no emoji font, the font does not
+  /// ligate the sequence to one glyph, or that glyph has no color coverage
+  /// (caller then delegates the cluster to the platform text stack).
+  ResolvedEmojiGlyph? emojiGlyphForCluster(String cluster) {
+    final cached = _emojiClusterCache[cluster];
+    if (cached != null || _emojiClusterCache.containsKey(cluster)) {
+      return cached;
+    }
+    final resolved = _resolveEmojiCluster(cluster);
+    _emojiClusterCache[cluster] = resolved;
+    return resolved;
+  }
+
+  ResolvedEmojiGlyph? _resolveEmojiCluster(String cluster) {
+    final font = _emojiFont;
+    if (font == null) return null;
+    ShapedGlyphRun shaped;
+    try {
+      shaped = shaper.shape(
+        // Glyph-id resolution is ppem-independent; shape once at a nominal size.
+        ShapeRequest(font: font, text: cluster, fontSizePx: 64),
+      );
+    } catch (_) {
+      return null; // shaper unavailable (unsupported platform) — delegate
+    }
+    // The font ligates a supported sequence to exactly one glyph; anything else
+    // (a partial/unsupported sequence shaping to several glyphs) is delegated.
+    if (shaped.glyphs.length != 1) return null;
+    final gid = shaped.glyphs.first.glyphId;
+    if (gid == 0) return null; // .notdef
+    final advance = font.advanceOfGlyphId(gid);
+    final layers = font.colrForGlyphId(gid);
+    if (layers != null) {
+      return ResolvedEmojiGlyph(advanceUnits: advance, layers: layers);
+    }
+    if (font.hasBitmapGlyphs &&
+        font.bitmapGlyphForId(gid, targetPpem: 64) != null) {
+      return ResolvedEmojiGlyph(advanceUnits: advance, bitmapGlyphId: gid);
+    }
+    return null;
+  }
+
   /// Decode + pack the color-bitmap glyph [glyphId] of [font] at [targetPpem]
   /// into [colorAtlas] if absent (async PNG decode). On a newly packed glyph
   /// the atlas generation bumps and listeners are notified to re-render — the
@@ -369,6 +458,33 @@ class GPUTextEngine extends ChangeNotifier {
     for (final family in families.followedBy(_fallbackFamilies)) {
       final font = resolveFont(family, weight: weight, fontStyle: fontStyle);
       if (font != null && font.hasGlyph(ch)) return font;
+    }
+    return null;
+  }
+
+  /// First font along `families` + the engine fallback chain that covers EVERY
+  /// code point in [clusterRunes] (a base plus its combining marks), so the
+  /// grapheme cluster shapes in one font and the marks stay attached to their
+  /// base. Whitespace / zero-width runes don't constrain the choice. Null when
+  /// no single registered font covers the whole cluster.
+  GPUFont? resolveFontForCluster(
+    List<int> clusterRunes, {
+    List<String?> families = const [null],
+    ui.FontWeight? weight,
+    ui.FontStyle? fontStyle,
+  }) {
+    for (final family in families.followedBy(_fallbackFamilies)) {
+      final font = resolveFont(family, weight: weight, fontStyle: fontStyle);
+      if (font == null) continue;
+      var coversAll = true;
+      for (final r in clusterRunes) {
+        if (r == 0x20 || r == 0x0A || isZeroWidthCodePoint(r)) continue;
+        if (!font.hasGlyphForRune(r)) {
+          coversAll = false;
+          break;
+        }
+      }
+      if (coversAll) return font;
     }
     return null;
   }
@@ -432,7 +548,13 @@ class GPUTextEngine extends ChangeNotifier {
       weight: weight.value,
       italic: style == ui.FontStyle.italic,
     );
-    return _registerSystemBytes(family, bytes, weight, style, systemName ?? family);
+    return _registerSystemBytes(
+      family,
+      bytes,
+      weight,
+      style,
+      systemName ?? family,
+    );
   }
 
   /// Resolve the platform default UI font (San Francisco on Apple, Roboto on
@@ -622,6 +744,18 @@ class GPUTextEngine extends ChangeNotifier {
   int? atlasCurveFloatBudget = 512 * 1024;
 
   final _atlasClients = <AtlasFontUser>{};
+
+  // Variable-font instances LRU-evicted from their base's variant cache (see
+  // [_onVariantEvicted]). Their banded outlines linger in the shared atlas
+  // until a compaction drops them; batching bounds the atlas footprint of dead
+  // instances without compacting on every eviction. Cleared by [compactAtlas].
+  final _deadVariants = <GPUFont>{};
+
+  /// Evicted variants to accumulate before an eviction-triggered compaction is
+  /// worth its global re-emit. Kept below [GPUFont.variantCacheCapacity] so the
+  /// dead-instance footprint stays roughly the cache size plus this.
+  static const _variantSweepBatch = 16;
+
   var _sweepScheduled = false;
   var _nextSweepAt = 0;
   // Bumped whenever the live client set changes. A sweep can only reclaim
@@ -715,6 +849,10 @@ class GPUTextEngine extends ChangeNotifier {
       notifyListeners();
     }
     _sweptAtClientEpoch = _clientEpoch;
+    // Reclaimed if dead, kept if a client still uses them — either way the
+    // batch counter resets, since retainFonts consulted the authoritative
+    // keep-set above rather than this hint.
+    _deadVariants.clear();
     final budget = atlasCurveFloatBudget ?? 0;
     final doubled = atlas.curveFloatCount * 2;
     _nextSweepAt = doubled > budget ? doubled : budget;

@@ -58,6 +58,26 @@ GPUFont _withVariations(GPUFont font, TextStyle? style) {
   return font.variant(coords);
 }
 
+// Unicode Mark category (Mn/Mc/Me — combining diacritics, spacing marks, and
+// variation selectors). A grapheme cluster is a base followed by these, and
+// they must shape in the SAME font as their base or they detach and lose
+// positioning. Marks begin at U+0300, so the cheap range gate skips the regex
+// for the ASCII / CJK common case.
+final _combiningMarkRe = RegExp(r'\p{M}', unicode: true);
+bool _isCombiningMark(int rune) =>
+    rune >= 0x0300 && _combiningMarkRe.hasMatch(String.fromCharCode(rune));
+
+/// Whether [font] has a glyph for every non-whitespace, non-zero-width code
+/// point of `runes[start..end)` — i.e. covers the whole grapheme cluster.
+bool _fontCoversAll(GPUFont font, List<int> runes, int start, int end) {
+  for (var k = start; k < end; k++) {
+    final r = runes[k];
+    if (r == 0x20 || r == 0x0A || isZeroWidthCodePoint(r)) continue;
+    if (!font.hasGlyphForRune(r)) return false;
+  }
+  return true;
+}
+
 wf.InlineDecoration? _mapDecoration(TextStyle? style) {
   final deco = style?.decoration;
   if (deco == null || deco == TextDecoration.none) return null;
@@ -495,6 +515,47 @@ List<wf.InlineItem>? _flattenSpan(
         final runes = text.runes.toList(growable: false);
         for (var ri = 0; ri < runes.length; ri++) {
           final rune = runes[ri];
+          // Multi-codepoint emoji clusters (ZWJ sequences, flags, keycaps,
+          // skin-tone modifiers): shape the whole cluster to the single glyph
+          // its emoji font ligates it to and route THAT through the same
+          // COLR / bitmap pipeline as a single-CP emoji. A lone base (+VS16) is
+          // handled by the single-rune path below; only genuine multi-scalar
+          // sequences take this branch.
+          if (emojiFont != null) {
+            final clusterEnd = emojiClusterEnd(runes, ri);
+            var scalars = 0;
+            for (var k = ri; k < clusterEnd; k++) {
+              if (runes[k] != emojiVs16) scalars++;
+            }
+            if (scalars >= 2) {
+              final cluster = String.fromCharCodes(
+                runes.sublist(ri, clusterEnd),
+              );
+              final resolved = engine.emojiGlyphForCluster(cluster);
+              if (resolved != null) {
+                flushSub();
+                items.add(
+                  wf.EmojiItem(
+                    font: emojiFont,
+                    fontSizePx: fontSizePx,
+                    advanceUnits: resolved.advanceUnits,
+                    layers: resolved.layers,
+                    bitmapGlyphId: resolved.bitmapGlyphId,
+                    textColor: List<double>.of(paint.color),
+                    background: paint.background == null
+                        ? null
+                        : List<double>.of(paint.background!),
+                    sourceText: cluster,
+                    source: s,
+                  ),
+                );
+                ri = clusterEnd - 1; // loop ++ advances past the cluster
+                continue;
+              }
+              // Not GPU-renderable — expandEmojiSpans normally delegated these
+              // to platform WidgetSpans already; fall through as text.
+            }
+          }
           // A rune routes to the emoji font ONLY when it is actually an emoji —
           // an emoji-presentation base, a regional indicator, or a character
           // carrying the emoji variation selector (VS16). Font coverage alone
@@ -502,7 +563,8 @@ List<wf.InlineItem>? _flattenSpan(
           // NotoColorEmoji maps ASCII digits 0-9 and #/* as keycap bases), and
           // matching on coverage would hijack plain text into the color/bitmap
           // pipeline. See text/emoji_ranges.dart.
-          final isEmojiRune = isEmojiBaseCp(rune) ||
+          final isEmojiRune =
+              isEmojiBaseCp(rune) ||
               isRegionalIndicatorCp(rune) ||
               (ri + 1 < runes.length && runes[ri + 1] == emojiVs16);
           // Native color emoji: COLR layers render through the shader.
@@ -553,27 +615,57 @@ List<wf.InlineItem>? _flattenSpan(
               }
             }
           }
+          // Resolve the font at GRAPHEME-CLUSTER granularity: a base plus its
+          // trailing combining marks must shape in one font, or the marks
+          // detach and lose positioning. Extend the cluster over following
+          // marks, prefer a font covering the WHOLE cluster (base + marks), and
+          // only if none does keep it with the base's font — the marks may
+          // render .notdef there, but they stay attached rather than splitting
+          // into their own run.
+          var clusterEnd = ri + 1;
+          while (clusterEnd < runes.length &&
+              _isCombiningMark(runes[clusterEnd])) {
+            clusterEnd++;
+          }
           var target = current;
           if (!isZeroWidthCodePoint(rune) && rune != 0x20 && rune != 0x0A) {
-            if (primary.hasGlyphForRune(rune)) {
+            if (_fontCoversAll(primary, runes, ri, clusterEnd)) {
               target = primary;
             } else {
-              final fallback = engine.resolveFontForChar(
-                String.fromCharCode(rune),
+              final clusterRunes = runes.sublist(ri, clusterEnd);
+              final fallback = engine.resolveFontForCluster(
+                clusterRunes,
                 families: families,
                 weight: style?.fontWeight,
                 fontStyle: style?.fontStyle,
               );
-              target = fallback == null
-                  ? primary
-                  : _withVariations(fallback, style);
+              if (fallback != null) {
+                target = _withVariations(fallback, style);
+              } else {
+                // No single font covers base + marks: keep the cluster with the
+                // base's font so the marks still shape against their base.
+                final baseFont = primary.hasGlyphForRune(rune)
+                    ? primary
+                    : engine.resolveFontForChar(
+                        String.fromCharCode(rune),
+                        families: families,
+                        weight: style?.fontWeight,
+                        fontStyle: style?.fontStyle,
+                      );
+                target = baseFont == null
+                    ? primary
+                    : _withVariations(baseFont, style);
+              }
             }
           }
           if (!identical(target, current)) {
             flushSub();
             current = target;
           }
-          sub.writeCharCode(rune);
+          for (var k = ri; k < clusterEnd; k++) {
+            sub.writeCharCode(runes[k]);
+          }
+          ri = clusterEnd - 1; // the for-loop ++ advances to the next cluster
         }
         flushSub();
       }

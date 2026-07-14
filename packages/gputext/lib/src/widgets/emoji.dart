@@ -16,18 +16,13 @@ import '../engine/engine.dart';
 import '../font.dart' show isZeroWidthCodePoint;
 import '../text/emoji_ranges.dart';
 
-const _zwj = 0x200D;
 const _vs15 = emojiVs15; // text presentation selector
 const _vs16 = emojiVs16; // emoji presentation selector
-const _keycapMark = 0x20E3;
 
 // Emoji-base and regional-indicator tests are shared with the flattener so
 // both sites classify emoji identically — see text/emoji_ranges.dart.
 bool _isEmojiBase(int cp) => isEmojiBaseCp(cp);
 bool _isRegional(int cp) => isRegionalIndicatorCp(cp);
-bool _isSkinTone(int cp) => cp >= 0x1F3FB && cp <= 0x1F3FF;
-bool _isKeycapBase(int cp) =>
-    cp == 0x23 || cp == 0x2A || (cp >= 0x30 && cp <= 0x39);
 
 class EmojiSegment {
   const EmojiSegment(this.text, {required this.isEmoji});
@@ -42,7 +37,7 @@ bool containsEmoji(String text) {
   // ≥ U+20E3, so ordinary Latin text bails here without a rune list.
   var possible = false;
   for (var i = 0; i < text.length; i++) {
-    if (text.codeUnitAt(i) >= _keycapMark) {
+    if (text.codeUnitAt(i) >= emojiKeycapMark) {
       possible = true;
       break;
     }
@@ -78,46 +73,24 @@ List<EmojiSegment> splitEmojiSegments(String text) {
 
   var i = 0;
   while (i < n) {
-    final cp = cps[i];
-    var j = i + 1;
-    var emoji = false;
-
-    if (_isKeycapBase(cp) &&
-        ((j < n && cps[j] == _keycapMark) ||
-            (j + 1 < n && cps[j] == _vs16 && cps[j + 1] == _keycapMark))) {
-      j = i + (cps[j] == _vs16 ? 3 : 2);
-      emoji = true;
-    } else if (_isRegional(cp)) {
-      if (j < n && _isRegional(cps[j])) j++; // flag = RI pair
-      emoji = true;
-    } else if (j < n && cps[j] == _vs15 && _isEmojiBase(cp)) {
-      j++; // explicit text presentation: keep base + VS15 in the text run
-    } else if (_isEmojiBase(cp) || (j < n && cps[j] == _vs16)) {
-      emoji = true;
-      while (j < n) {
-        final c = cps[j];
-        if (c == _vs16 || _isSkinTone(c)) {
-          j++;
-          continue;
-        }
-        if (c == _zwj &&
-            j + 1 < n &&
-            (_isEmojiBase(cps[j + 1]) || _isRegional(cps[j + 1]))) {
-          j += 2;
-          continue;
-        }
-        break;
-      }
-    }
-
-    final s = String.fromCharCodes(cps.sublist(i, j));
-    if (emoji) {
+    final end = emojiClusterEnd(
+      cps,
+      i,
+    ); // shared clustering (emoji_ranges.dart)
+    if (end > i) {
       flushText();
-      segs.add(EmojiSegment(s, isEmoji: true));
+      segs.add(
+        EmojiSegment(String.fromCharCodes(cps.sublist(i, end)), isEmoji: true),
+      );
+      i = end;
     } else {
-      buf.write(s);
+      // Not an emoji cluster. Absorb a trailing VS15 so base + VS15 (explicit
+      // text presentation) stays whole in the text run.
+      var j = i + 1;
+      if (j < n && cps[j] == _vs15 && _isEmojiBase(cps[i])) j++;
+      buf.write(String.fromCharCodes(cps.sublist(i, j)));
+      i = j;
     }
-    i = j;
   }
   flushText();
   return segs;
@@ -134,10 +107,15 @@ InlineSpan expandEmojiSpans(InlineSpan root, GPUTextEngine engine) {
     var n = 0;
     for (final r in cluster.runes) {
       if (r == _vs16) continue;
-      if (++n > 1) return false;
+      n++;
       sole = r;
     }
-    return n == 1 && engine.nativeEmojiCovers(sole!);
+    // Single scalar (+optional VS16): cheap direct-coverage check.
+    if (n == 1) return engine.nativeEmojiCovers(sole!);
+    // Multi-scalar sequence (ZWJ family, flag, keycap, skin tone): native only
+    // when the emoji font ligates it to a single color glyph the GPU pipeline
+    // can draw. Otherwise it still delegates to a platform Text WidgetSpan.
+    return engine.emojiGlyphForCluster(cluster) != null;
   }
 
   InlineSpan transform(InlineSpan s, double inheritedSize) {
@@ -205,6 +183,29 @@ bool _isCjkIdeograph(int cp) =>
     (cp >= 0xFF00 && cp <= 0xFFEF) || // full/half-width forms
     (cp >= 0x20000 && cp <= 0x2FA1F); // SMP ideograph planes
 
+/// Exclusive end of a GPU-renderable emoji cluster beginning at [start] in
+/// [cps] — one the flattener emits as a single colored EmojiItem — or [start]
+/// when none begins there. Mirrors the keep-in-text decision [expandEmojiSpans]
+/// makes for the same cluster, so [expandUncoveredSpans] never splits it apart:
+/// a multi-scalar sequence's interior code points (the combining enclosing
+/// keycap U+20E3, ZWJ, skin-tone modifiers, regional indicators) are frequently
+/// uncovered by any plain-text font on their own, and delegating them piecemeal
+/// detaches the mark from its base — e.g. a keycap sequence rendered as a bare
+/// digit plus a floating enclosing box drawn backward over it. Single-scalar
+/// clusters are left to the per-rune coverage check, which already routes native
+/// emoji through [GPUTextEngine.nativeEmojiCovers].
+int _gpuEmojiClusterEnd(List<int> cps, int start, GPUTextEngine engine) {
+  if (engine.emojiFont == null) return start;
+  final end = emojiClusterEnd(cps, start);
+  var scalars = 0;
+  for (var k = start; k < end; k++) {
+    if (cps[k] != _vs16) scalars++;
+  }
+  if (scalars < 2) return start;
+  final cluster = String.fromCharCodes(cps.sublist(start, end));
+  return engine.emojiGlyphForCluster(cluster) != null ? end : start;
+}
+
 /// Delegate uncovered code points to baseline-aligned platform [Text].
 /// CJK stretches split per character for wrap; other scripts stay whole.
 /// No-op until fonts are loaded — call again on engine notify.
@@ -251,14 +252,21 @@ InlineSpan expandUncoveredSpans(InlineSpan root, GPUTextEngine engine) {
       );
     }
 
+    final cps = text == null ? const <int>[] : text.runes.toList();
     var allCovered = true;
-    if (text != null) {
-      for (final r in text.runes) {
-        if (!covered(r)) {
-          allCovered = false;
-          break;
-        }
+    for (var k = 0; k < cps.length;) {
+      // A GPU-renderable emoji cluster stays whole in the text run even when its
+      // interior code points aren't individually covered (see below).
+      final ce = _gpuEmojiClusterEnd(cps, k, engine);
+      if (ce > k) {
+        k = ce;
+        continue;
       }
+      if (!covered(cps[k])) {
+        allCovered = false;
+        break;
+      }
+      k++;
     }
     if (text == null || allCovered) {
       if (!changed) return s;
@@ -270,7 +278,6 @@ InlineSpan expandUncoveredSpans(InlineSpan root, GPUTextEngine engine) {
         semanticsLabel: s.semanticsLabel,
       );
     }
-    final cps = text.runes.toList();
 
     changed = true;
     final pieces = <InlineSpan>[];
@@ -306,6 +313,17 @@ InlineSpan expandUncoveredSpans(InlineSpan root, GPUTextEngine engine) {
 
     var i = 0;
     while (i < cps.length) {
+      // Keep a GPU-renderable emoji cluster intact so the flattener can emit it
+      // as one colored EmojiItem; splitting on per-rune coverage would detach a
+      // combining mark (e.g. the keycap U+20E3) from its base.
+      final ce = _gpuEmojiClusterEnd(cps, i, engine);
+      if (ce > i) {
+        for (var k = i; k < ce; k++) {
+          buf.writeCharCode(cps[k]);
+        }
+        i = ce;
+        continue;
+      }
       if (covered(cps[i])) {
         buf.writeCharCode(cps[i]);
         i++;
@@ -313,7 +331,9 @@ InlineSpan expandUncoveredSpans(InlineSpan root, GPUTextEngine engine) {
       }
       flushText();
       final start = i;
-      while (i < cps.length && !covered(cps[i])) {
+      while (i < cps.length &&
+          _gpuEmojiClusterEnd(cps, i, engine) == i &&
+          !covered(cps[i])) {
         i++;
       }
       final chunk = StringBuffer();

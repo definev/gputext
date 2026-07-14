@@ -463,5 +463,53 @@ void main() {
       expect(engine.debugAtlasSweeps, 1);
       expect(engine.debugAtlasCompactions, 1);
     });
+
+    testWidgets(
+      'variant LRU eviction batches a sweep that reclaims dead instances',
+      (tester) async {
+        // Disable the curve-float budget so the ONLY thing that can compact is
+        // the new eviction-driven sweep — this isolates #10 from the budget path.
+        final saved = engine.atlasCurveFloatBudget;
+        addTearDown(() => engine.atlasCurveFloatBudget = saved);
+        engine.atlasCurveFloatBudget = null;
+
+        // A live paragraph pins its own font as an atlas client; nothing else is
+        // on screen, so every instance it does not use is reclaimable.
+        await tester.pumpWidget(
+          MaterialApp(home: Center(child: label('A', FontWeight.w400))),
+        );
+        await tester.pump();
+
+        // Mint far more distinct exact instances than the variant LRU holds,
+        // banding a glyph for each. variantExact bypasses quantization, so every
+        // wght is a fresh instance and the LRU (variantCacheCapacity) starts
+        // evicting once it overflows. Each eviction is dead weight in the atlas.
+        const extra = 48; // well past _variantSweepBatch worth of evictions
+        final n = GPUFont.variantCacheCapacity + extra;
+        for (var i = 0; i < n; i++) {
+          final v = gsf.variantExact({'wght': 300.0 + i.toDouble()});
+          engine.atlas.ensureGlyphs(v, 'A');
+        }
+        // Nothing has compacted yet (the sweep is deferred to the frame
+        // boundary), so every banded instance is still resident.
+        expect(
+          engine.atlas.fonts.length,
+          greaterThan(GPUFont.variantCacheCapacity),
+          reason: 'dead instances accumulate in the atlas before the sweep',
+        );
+        expect(engine.debugAtlasCompactions, 0);
+
+        // The batched forced sweep runs at the frame boundary and drops every
+        // instance no client still uses.
+        await tester.pump();
+
+        expect(engine.debugAtlasCompactions, greaterThan(0));
+        expect(
+          engine.atlas.fonts.length,
+          lessThan(GPUFont.variantCacheCapacity),
+          reason: 'evicted variants must be reclaimed, not pinned forever',
+        );
+      },
+    );
   });
 }

@@ -31,11 +31,13 @@ import 'text/analysis.dart' show SegmentBreakKind;
 import 'text/bidi.dart' as bidi;
 import 'text/inline_items.dart';
 import 'text/line_break.dart';
+import 'text/line_break_config.dart';
 import 'text/line_breaker.dart';
 import 'text/prepare.dart';
 import 'timeline.dart';
 
 export 'text/inline_items.dart';
+export 'text/line_break_config.dart';
 export 'text/line_breaker.dart';
 export 'text/prepare.dart' show PreparedParagraph, prepareParagraph;
 export 'text/selection.dart';
@@ -452,8 +454,13 @@ void _commitLineMetrics(LineMetrics line, [StrutMetrics? strut]) {
 ParagraphLines breakLines(
   List<InlineItem> runs,
   double wrapWidth,
-  ParagraphStyle style,
-) => layoutPreparedLines(prepareParagraph(runs), wrapWidth, style);
+  ParagraphStyle style, {
+  LineBreakConfig? lineBreak,
+}) => layoutPreparedLines(
+  prepareParagraph(runs, lineBreak: lineBreak),
+  wrapWidth,
+  style,
+);
 
 /// The cheap per-width half of the split: stream the line walker over the
 /// prepared arrays and materialize LineMetrics. Pure arithmetic + string

@@ -3,6 +3,7 @@
 // by the engine when bindings fail to load.
 
 import 'dart:ffi';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -45,6 +46,14 @@ class HarfBuzzShaper implements TextShaper {
   /// Weak tracking so [evictAllFonts] can find live entries (Expando is not
   /// iterable). Does not keep fonts alive.
   final _weakFonts = <WeakReference<GPUFont>>[];
+
+  // Outline extraction (hb-draw). One shared draw-funcs object with the five
+  // path callbacks; the callables are kept alive for the shaper's lifetime.
+  Pointer<HbDrawFuncs>? _drawFuncsPtr;
+  final _drawCallables = <NativeCallable>[];
+  // Drawing is synchronous and single-threaded (HB calls the callbacks inline
+  // on this isolate during hb_font_draw_glyph), so one active sink is safe.
+  _DrawSink? _activeSink;
 
   // NativeFinalizers (unlike Dart Finalizers) also run at isolate shutdown /
   // hot restart, so native handles cannot outlive the process's Dart state.
@@ -353,5 +362,194 @@ class HarfBuzzShaper implements TextShaper {
     } finally {
       calloc.free(ptr);
     }
+  }
+
+  // --- Outline extraction via hb_font_draw_glyph ---
+
+  @override
+  List<double>? drawGlyphOutline(GPUFont font, int gid) {
+    try {
+      final entry = _fontFor(font);
+      final upem = font.unitsPerEm;
+      // Font-unit coordinates (scale == upem) so the quads match the glyf path.
+      _hb.hbFontSetScale(entry.font, upem, upem);
+      final sink = _DrawSink(upem * 0.0005);
+      _activeSink = sink;
+      try {
+        _hb.hbFontDrawGlyph(entry.font, gid, _drawFuncs(), nullptr);
+      } finally {
+        _activeSink = null;
+      }
+      sink.finish();
+      return sink.out;
+    } catch (_) {
+      return null; // any FFI failure → let the caller use the pure-Dart parser
+    }
+  }
+
+  Pointer<HbDrawFuncs> _drawFuncs() {
+    final existing = _drawFuncsPtr;
+    if (existing != null) return existing;
+    final funcs = _hb.hbDrawFuncsCreate();
+    final move = NativeCallable<HbDrawMoveToNative>.isolateLocal(_moveTo);
+    final line = NativeCallable<HbDrawLineToNative>.isolateLocal(_lineTo);
+    final quad = NativeCallable<HbDrawQuadToNative>.isolateLocal(_quadTo);
+    final cubic = NativeCallable<HbDrawCubicToNative>.isolateLocal(_cubicTo);
+    final close = NativeCallable<HbDrawCloseNative>.isolateLocal(_closePath);
+    _hb.hbDrawFuncsSetMoveTo(funcs, move.nativeFunction, nullptr, nullptr);
+    _hb.hbDrawFuncsSetLineTo(funcs, line.nativeFunction, nullptr, nullptr);
+    _hb.hbDrawFuncsSetQuadTo(funcs, quad.nativeFunction, nullptr, nullptr);
+    _hb.hbDrawFuncsSetCubicTo(funcs, cubic.nativeFunction, nullptr, nullptr);
+    _hb.hbDrawFuncsSetClose(funcs, close.nativeFunction, nullptr, nullptr);
+    // Kept alive for the shaper's lifetime (a process-wide singleton).
+    _drawCallables.addAll([move, line, quad, cubic, close]);
+    return _drawFuncsPtr = funcs;
+  }
+
+  void _moveTo(
+    Pointer<HbDrawFuncs> df,
+    Pointer<Void> dd,
+    Pointer<HbDrawState> st,
+    double x,
+    double y,
+    Pointer<Void> ud,
+  ) => _activeSink?.moveTo(x, y);
+
+  void _lineTo(
+    Pointer<HbDrawFuncs> df,
+    Pointer<Void> dd,
+    Pointer<HbDrawState> st,
+    double x,
+    double y,
+    Pointer<Void> ud,
+  ) => _activeSink?.lineTo(x, y);
+
+  void _quadTo(
+    Pointer<HbDrawFuncs> df,
+    Pointer<Void> dd,
+    Pointer<HbDrawState> st,
+    double cx,
+    double cy,
+    double x,
+    double y,
+    Pointer<Void> ud,
+  ) => _activeSink?.quadTo(cx, cy, x, y);
+
+  void _cubicTo(
+    Pointer<HbDrawFuncs> df,
+    Pointer<Void> dd,
+    Pointer<HbDrawState> st,
+    double c1x,
+    double c1y,
+    double c2x,
+    double c2y,
+    double x,
+    double y,
+    Pointer<Void> ud,
+  ) => _activeSink?.cubicTo(c1x, c1y, c2x, c2y, x, y);
+
+  void _closePath(
+    Pointer<HbDrawFuncs> df,
+    Pointer<Void> dd,
+    Pointer<HbDrawState> st,
+    Pointer<Void> ud,
+  ) => _activeSink?.closePath();
+}
+
+/// Accumulates hb-draw path callbacks into glyf-compatible quads: Y is negated
+/// to the atlas's Y-down space, lines become midpoint quads, cubics are
+/// flattened, and contours are explicitly closed — identical to what the glyf
+/// and CFF parsers produce, so the atlas/shader are unchanged.
+class _DrawSink {
+  _DrawSink(this.tolerance);
+
+  final double tolerance;
+  final List<double> out = [];
+  double _cx = 0, _cy = 0, _sx = 0, _sy = 0;
+  bool _open = false;
+
+  void moveTo(double x, double y) {
+    if (_open) _close();
+    _cx = x;
+    _cy = y;
+    _sx = x;
+    _sy = y;
+    _open = true;
+  }
+
+  void lineTo(double x, double y) {
+    _emitLine(_cx, _cy, x, y);
+    _cx = x;
+    _cy = y;
+  }
+
+  void quadTo(double qx, double qy, double x, double y) {
+    out.addAll([_cx, -_cy, qx, -qy, x, -y]);
+    _cx = x;
+    _cy = y;
+  }
+
+  void cubicTo(
+    double c1x,
+    double c1y,
+    double c2x,
+    double c2y,
+    double x,
+    double y,
+  ) {
+    _flatten(_cx, _cy, c1x, c1y, c2x, c2y, x, y, 0);
+    _cx = x;
+    _cy = y;
+  }
+
+  void closePath() => _close();
+
+  void finish() {
+    if (_open) _close();
+  }
+
+  void _close() {
+    if ((_cx - _sx).abs() > 1e-9 || (_cy - _sy).abs() > 1e-9) {
+      _emitLine(_cx, _cy, _sx, _sy);
+    }
+    _open = false;
+  }
+
+  void _emitLine(double x0, double y0, double x1, double y1) {
+    out.addAll([x0, -y0, (x0 + x1) / 2, -(y0 + y1) / 2, x1, -y1]);
+  }
+
+  void _flatten(
+    double x0,
+    double y0,
+    double x1,
+    double y1,
+    double x2,
+    double y2,
+    double x3,
+    double y3,
+    int depth,
+  ) {
+    final ex = x0 - 3 * x1 + 3 * x2 - x3;
+    final ey = y0 - 3 * y1 + 3 * y2 - y3;
+    if (depth >= 8 || 0.04811 * math.sqrt(ex * ex + ey * ey) <= tolerance) {
+      out.addAll([
+        x0,
+        -y0,
+        (3 * x1 - x0 + 3 * x2 - x3) / 4,
+        -(3 * y1 - y0 + 3 * y2 - y3) / 4,
+        x3,
+        -y3,
+      ]);
+      return;
+    }
+    final ax = (x0 + x1) / 2, ay = (y0 + y1) / 2;
+    final bx = (x1 + x2) / 2, by = (y1 + y2) / 2;
+    final cx = (x2 + x3) / 2, cy = (y2 + y3) / 2;
+    final dx = (ax + bx) / 2, dy = (ay + by) / 2;
+    final fx = (bx + cx) / 2, fy = (by + cy) / 2;
+    final mx = (dx + fx) / 2, my = (dy + fy) / 2;
+    _flatten(x0, y0, ax, ay, dx, dy, mx, my, depth + 1);
+    _flatten(mx, my, fx, fy, cx, cy, x3, y3, depth + 1);
   }
 }

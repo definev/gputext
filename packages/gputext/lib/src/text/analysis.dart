@@ -281,7 +281,26 @@ bool containsCjk(String s) {
 
 // --- Classification ---
 
+/// Zero-width format / control code points that must never introduce a line
+/// break on either side (UAX #14: WJ/GL glue, LB8a "no break after ZWJ", and
+/// the invisible bidi marks/isolates/embeddings). Left as `text` they would
+/// classify as bare non-word segments and spawn a spurious break opportunity on
+/// each side — e.g. splitting an emoji ZWJ sequence or breaking at an LRM.
+bool _isNoBreakFormatCp(int cp) =>
+    cp == 0xA0 || // no-break space
+    cp == 0x202F || // narrow no-break space
+    cp == 0x2060 || // word joiner
+    cp == 0xFEFF || // zero-width no-break space / BOM
+    cp == 0x200C || // zero-width non-joiner
+    cp == 0x200D || // zero-width joiner (ZWJ)
+    cp == 0x200E || // left-to-right mark
+    cp == 0x200F || // right-to-left mark
+    cp == 0x061C || // Arabic letter mark
+    (cp >= 0x202A && cp <= 0x202E) || // LRE RLE PDF LRO RLO
+    (cp >= 0x2066 && cp <= 0x2069); // LRI RLI FSI PDI
+
 SegmentBreakKind _classifyChar(int cp) {
+  if (_isNoBreakFormatCp(cp)) return SegmentBreakKind.glue;
   switch (cp) {
     case 0x20:
       return SegmentBreakKind.space;
@@ -289,8 +308,6 @@ SegmentBreakKind _classifyChar(int cp) {
       return SegmentBreakKind.tab;
     case 0x0A:
       return SegmentBreakKind.hardBreak;
-    case 0xA0 || 0x202F || 0x2060 || 0xFEFF:
-      return SegmentBreakKind.glue;
     case 0x200B:
       return SegmentBreakKind.zeroWidthBreak;
     case 0xAD:
@@ -387,8 +404,7 @@ bool _startsWithDecimalDigit(String text) {
   return (head: text.substring(0, units), tail: text.substring(units));
 }
 
-bool _isEmojiPresentationCp(int cp) =>
-    _inRanges(cp, _emojiPresentationRanges);
+bool _isEmojiPresentationCp(int cp) => _inRanges(cp, _emojiPresentationRanges);
 
 bool _isNoSpaceWordInternalSymbolCp(int cp) {
   if (cp < 0x80) {
