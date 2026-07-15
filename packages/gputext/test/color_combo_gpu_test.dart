@@ -32,10 +32,12 @@ void main() {
       markTestSkipped('GPU unavailable');
       return;
     }
-    final lato =
-        GPUFont.parse(_resolve('assets/Lato-Regular.ttf').readAsBytesSync());
-    final noto =
-        GPUFont.parse(_resolve('assets/NotoColorEmoji.ttf').readAsBytesSync());
+    final lato = GPUFont.parse(
+      _resolve('assets/Lato-Regular.ttf').readAsBytesSync(),
+    );
+    final noto = GPUFont.parse(
+      _resolve('assets/NotoColorEmoji.ttf').readAsBytesSync(),
+    );
 
     // --- Coverage glyph 'A' ---
     engine.atlas.ensureGlyphs(lato, 'A');

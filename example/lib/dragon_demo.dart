@@ -639,8 +639,9 @@ class _Game {
       return _manualBreak(entry.text, entry.fontSize, maxW);
     }
 
-    PreparedParagraph? prepared =
-        index < _prepared.length ? _prepared[index] : null;
+    PreparedParagraph? prepared = index < _prepared.length
+        ? _prepared[index]
+        : null;
     if (prepared == null) {
       final sw = Stopwatch()..start();
       final runs = [
@@ -869,8 +870,10 @@ class _Game {
         final f = ff * math.pow(1 - d / fr, 2);
         lVx[li] += (ldx / d * 0.4 + dx * 0.6) * f;
         lVy[li] += (ldy / d * 0.4 + dy * 0.6) * f - f * 0.2;
-        lBurnTimer[li] =
-            math.max(lBurnTimer[li], 0.5 + _rng.nextDouble() * 1.2);
+        lBurnTimer[li] = math.max(
+          lBurnTimer[li],
+          0.5 + _rng.nextDouble() * 1.2,
+        );
         hits++;
       }
     }
@@ -1077,10 +1080,10 @@ class _Game {
           score += e.kind == 1
               ? 30
               : e.kind == 2
-                  ? 20
-                  : e.kind == 3
-                      ? 25
-                      : 10;
+              ? 20
+              : e.kind == 3
+              ? 25
+              : 10;
           scoreFlash = 1;
           for (var j = 0; j < 3; j++) {
             _spawnEmber(e.x, e.y);
@@ -1092,8 +1095,18 @@ class _Game {
 
   // ── Instance emission (one 16-float glyph per _glyph call) ──────────────
 
-  static void _writeGlyph(Float32List s, int o, double pen, double baselineY,
-      double scale, GlyphTableEntry e, double r, double g, double b, double a) {
+  static void _writeGlyph(
+    Float32List s,
+    int o,
+    double pen,
+    double baselineY,
+    double scale,
+    GlyphTableEntry e,
+    double r,
+    double g,
+    double b,
+    double a,
+  ) {
     s[o] = pen;
     s[o + 1] = baselineY;
     s[o + 2] = scale;
@@ -1113,24 +1126,62 @@ class _Game {
   }
 
   // Lato glyph, centered at (cx, cy).
-  void _glyph(String ch, double cx, double cy, double sizeEff, double r,
-      double g, double b, double a) {
+  void _glyph(
+    String ch,
+    double cx,
+    double cy,
+    double sizeEff,
+    double r,
+    double g,
+    double b,
+    double a,
+  ) {
     final e = _atlas?[ch];
     if (e == null || _outLen + _floatsPerInstance > _scratch.length) return;
     final scale = sizeEff / _unitsPerEm;
     final pen = cx - e.advance / _unitsPerEm * sizeEff / 2;
-    _writeGlyph(_scratch, _outLen, pen, cy + sizeEff * 0.34, scale, e, r, g, b, a);
+    _writeGlyph(
+      _scratch,
+      _outLen,
+      pen,
+      cy + sizeEff * 0.34,
+      scale,
+      e,
+      r,
+      g,
+      b,
+      a,
+    );
     _outLen += _floatsPerInstance;
   }
 
   // CJK glyph, centered at (cx, cy).
-  void _glyphCjk(String ch, double cx, double cy, double sizeEff, double r,
-      double g, double b, double a) {
+  void _glyphCjk(
+    String ch,
+    double cx,
+    double cy,
+    double sizeEff,
+    double r,
+    double g,
+    double b,
+    double a,
+  ) {
     final e = _atlasCjk?[ch];
     if (e == null || _outCjk + _floatsPerInstance > _scCjk.length) return;
     final scale = sizeEff / _uemCjk;
     final pen = cx - e.advance / _uemCjk * sizeEff / 2;
-    _writeGlyph(_scCjk, _outCjk, pen, cy + sizeEff * 0.34, scale, e, r, g, b, a);
+    _writeGlyph(
+      _scCjk,
+      _outCjk,
+      pen,
+      cy + sizeEff * 0.34,
+      scale,
+      e,
+      r,
+      g,
+      b,
+      a,
+    );
     _outCjk += _floatsPerInstance;
   }
 
@@ -1148,14 +1199,33 @@ class _Game {
       if (_outEmoji + _floatsPerInstance > _scEmoji.length) return;
       final c = layer.color;
       final la = (c != null && c.length > 3 ? c[3] : 1.0) * a;
-      _writeGlyph(_scEmoji, _outEmoji, pen, baselineY, scale, layer.entry,
-          c != null ? c[0] : 1, c != null ? c[1] : 1, c != null ? c[2] : 1, la);
+      _writeGlyph(
+        _scEmoji,
+        _outEmoji,
+        pen,
+        baselineY,
+        scale,
+        layer.entry,
+        c != null ? c[0] : 1,
+        c != null ? c[1] : 1,
+        c != null ? c[2] : 1,
+        la,
+      );
       _outEmoji += _floatsPerInstance;
     }
   }
 
-  void _string(String str, double cx, double cy, double size, double r,
-      double g, double b, double a, {bool centered = true}) {
+  void _string(
+    String str,
+    double cx,
+    double cy,
+    double size,
+    double r,
+    double g,
+    double b,
+    double a, {
+    bool centered = true,
+  }) {
     final atlas = _atlas;
     if (atlas == null) return;
     final scale = size / _unitsPerEm;
@@ -1194,9 +1264,7 @@ class _Game {
     _emitParticles();
     if (score > 0) {
       final a = (0.3 + scoreFlash * 0.4).clamp(0.0, 1.0);
-      final c = scoreFlash > 0
-          ? const [1.0, 0.67, 0.2]
-          : const [0.4, 0.4, 0.4];
+      final c = scoreFlash > 0 ? const [1.0, 0.67, 0.2] : const [0.4, 0.4, 0.4];
       _string('SCORE $score', 20, 24, 14, c[0], c[1], c[2], a, centered: false);
     }
   }
@@ -1243,8 +1311,16 @@ class _Game {
       }
       final op = (runeOp[i] * (0.5 + math.sin(time * 0.4 + runePhase[i]) * 0.5))
           .clamp(0.0, 1.0);
-      _glyph(runeC[i], runeX[i] + math.sin(time * 0.7 + runePhase[i]) * 12,
-          runeY[i], runeSz[i], 1, 0.4, 0, op);
+      _glyph(
+        runeC[i],
+        runeX[i] + math.sin(time * 0.7 + runePhase[i]) * 12,
+        runeY[i],
+        runeSz[i],
+        1,
+        0.4,
+        0,
+        op,
+      );
     }
   }
 
@@ -1286,8 +1362,16 @@ class _Game {
       for (var i = 0; i < emberCount; i++) {
         final alpha = math.min(1.0, emLife[i] * 2);
         final c = emColor[i];
-        _glyph(emChar[i], emX[i], emY[i], emSize[i], ((c >> 16) & 0xff) / 255,
-            ((c >> 8) & 0xff) / 255, (c & 0xff) / 255, alpha);
+        _glyph(
+          emChar[i],
+          emX[i],
+          emY[i],
+          emSize[i],
+          ((c >> 16) & 0xff) / 255,
+          ((c >> 8) & 0xff) / 255,
+          (c & 0xff) / 255,
+          alpha,
+        );
       }
     }
     if (cfg.showParticles) {
@@ -1309,8 +1393,16 @@ class _Game {
           b = 0;
         }
         final sz = pSize[i] * (0.4 + pLife[i] * 0.6);
-        _glyph(pChar[i], pX[i], pY[i], sz, r, g, b,
-            (pLife[i] * 0.85).clamp(0.0, 1.0));
+        _glyph(
+          pChar[i],
+          pX[i],
+          pY[i],
+          sz,
+          r,
+          g,
+          b,
+          (pLife[i] * 0.85).clamp(0.0, 1.0),
+        );
       }
     }
   }
@@ -1327,8 +1419,16 @@ class _Game {
             ? (0.4 + math.sin(time * 3 + e.phase) * 0.2).clamp(0.0, 1.0)
             : 0.75;
         final c = e.color;
-        _glyph(e.char, e.x, e.y + bob, e.size, ((c >> 16) & 0xff) / 255,
-            ((c >> 8) & 0xff) / 255, (c & 0xff) / 255, alpha);
+        _glyph(
+          e.char,
+          e.x,
+          e.y + bob,
+          e.size,
+          ((c >> 16) & 0xff) / 255,
+          ((c >> 8) & 0xff) / 255,
+          (c & 0xff) / 255,
+          alpha,
+        );
       }
     }
   }
@@ -1358,19 +1458,42 @@ class _Game {
 
       if (cfg.showSpines && i >= 4 && i <= 30 && i % 3 == 0) {
         final sa = angle + math.pi / 2;
-        _glyph('^', chX[i] + math.cos(sa) * size * 0.35,
-            chY[i] + math.sin(sa) * size * 0.35,
-            size * (0.6 + math.sin(time * 3 + i) * 0.15), r, g, b, a * 0.7);
+        _glyph(
+          '^',
+          chX[i] + math.cos(sa) * size * 0.35,
+          chY[i] + math.sin(sa) * size * 0.35,
+          size * (0.6 + math.sin(time * 3 + i) * 0.15),
+          r,
+          g,
+          b,
+          a * 0.7,
+        );
       }
 
       if (cfg.showWings && i >= 7 && i <= 16 && i % 2 == 0) {
         final wp = math.sin(time * 3.5 + i * 0.4) * 0.5;
         final ws = size * (1.8 - (i - 11.5).abs() * 0.12), wd = size * 1.4;
         final w1 = angle + math.pi / 2 + wp, w2 = angle - math.pi / 2 - wp;
-        _glyph('<', chX[i] + math.cos(w1) * wd, chY[i] + math.sin(w1) * wd, ws,
-            r, g, b, a * 0.8);
-        _glyph('>', chX[i] + math.cos(w2) * wd, chY[i] + math.sin(w2) * wd, ws,
-            r, g, b, a * 0.8);
+        _glyph(
+          '<',
+          chX[i] + math.cos(w1) * wd,
+          chY[i] + math.sin(w1) * wd,
+          ws,
+          r,
+          g,
+          b,
+          a * 0.8,
+        );
+        _glyph(
+          '>',
+          chX[i] + math.cos(w2) * wd,
+          chY[i] + math.sin(w2) * wd,
+          ws,
+          r,
+          g,
+          b,
+          a * 0.8,
+        );
       }
 
       final yb = math.sin(time * 5 + i * 0.35) * 1.5;
@@ -1382,8 +1505,16 @@ class _Game {
     final ex = chX[0] + math.cos(ha + 0.5) * 10,
         ey = chY[0] + math.sin(ha + 0.5) * 10;
     final eye = time % 5 > 4.7 ? '-' : (breathingFire ? '@' : 'O');
-    _glyph(eye, ex, ey, 16, breathingFire ? 1 : 1, breathingFire ? 1 : 0.8,
-        breathingFire ? 1 : 0, 1);
+    _glyph(
+      eye,
+      ex,
+      ey,
+      16,
+      breathingFire ? 1 : 1,
+      breathingFire ? 1 : 0.8,
+      breathingFire ? 1 : 0,
+      1,
+    );
   }
 }
 
@@ -1601,7 +1732,9 @@ class _DragonDemoPageState extends State<DragonDemoPage>
         } else {
           cjkAtlas = null;
         }
-      } catch (_) {/* CJK optional */}
+      } catch (_) {
+        /* CJK optional */
+      }
 
       // ── Twemoji: COLR v0 color emoji, each an N-layer coverage stack ──────
       ColrEmojiAtlas? emojiAtlas;
@@ -1614,7 +1747,9 @@ class _DragonDemoPageState extends State<DragonDemoPage>
         } else {
           emojiAtlas = null;
         }
-      } catch (_) {/* emoji optional */}
+      } catch (_) {
+        /* emoji optional */
+      }
 
       // ── GPU pipeline + one atlas texture set per font ─────────────────────
       final pipeline = await GPUTextPipeline.create();
@@ -1624,7 +1759,11 @@ class _DragonDemoPageState extends State<DragonDemoPage>
         _texCjk = uploadAtlasTextures(ctx, cjkAtlas.curves, cjkAtlas.rows);
       }
       if (emojiAtlas != null) {
-        _texEmoji = uploadAtlasTextures(ctx, emojiAtlas.curves, emojiAtlas.rows);
+        _texEmoji = uploadAtlasTextures(
+          ctx,
+          emojiAtlas.curves,
+          emojiAtlas.rows,
+        );
       }
       if (!mounted) return;
       setState(() => _scene = _GpuScene(pipeline));
@@ -1675,9 +1814,17 @@ class _DragonDemoPageState extends State<DragonDemoPage>
       }
       final texCjk = _texCjk;
       if (texCjk != null && _game.countCjk > 0) {
-        draws.add((tex: texCjk, buf: _game.instancesCjk, count: _game.countCjk));
+        draws.add((
+          tex: texCjk,
+          buf: _game.instancesCjk,
+          count: _game.countCjk,
+        ));
       }
-      draws.add((tex: texLato, buf: _game.instancesLato, count: _game.countLato));
+      draws.add((
+        tex: texLato,
+        buf: _game.instancesLato,
+        count: _game.countLato,
+      ));
       final devW = (_game.w * _game.dpr).round();
       final devH = (_game.h * _game.dpr).round();
       try {
@@ -1768,7 +1915,9 @@ class _DragonDemoPageState extends State<DragonDemoPage>
                       'GPU renderer unavailable:\n$_error',
                       textAlign: TextAlign.center,
                       style: const TextStyle(
-                          color: Color(0x99FF6666), fontSize: 12),
+                        color: Color(0x99FF6666),
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 ),
@@ -1921,50 +2070,128 @@ class _DragonDemoPageState extends State<DragonDemoPage>
                       ],
                     ),
                     const SizedBox(height: 12),
-                    _slider('Segments', _cfg.dragonSegments.toDouble(), 10, 80,
-                        (v) {
-                      _cfg.dragonSegments = v.round();
-                      _game.rebuildDragon();
-                    }, step: 1),
-                    _slider('Dragon speed', _cfg.dragonSpeed, 0.03, 0.4,
-                        (v) => _cfg.dragonSpeed = v),
-                    _slider('Dragon scale', _cfg.dragonScale, 0.4, 2.5,
-                        (v) => _cfg.dragonScale = v),
-                    _slider('Push force', _cfg.pushForce, 0, 30,
-                        (v) => _cfg.pushForce = v),
-                    _slider('Spring', _cfg.springStrength, 0.002, 0.05,
-                        (v) => _cfg.springStrength = v),
-                    _slider('Damping', _cfg.damping, 0.85, 0.99,
-                        (v) => _cfg.damping = v),
-                    _slider('Burn gravity', _cfg.burnGravity, 0, 3,
-                        (v) => _cfg.burnGravity = v),
-                    _slider('Fire radius', _cfg.fireRadius, 40, 220,
-                        (v) => _cfg.fireRadius = v),
-                    _slider('Fire force', _cfg.fireForce, 5, 50,
-                        (v) => _cfg.fireForce = v),
-                    _slider('Enemies', _cfg.enemyCount.toDouble(), 0, 20,
-                        (v) => _cfg.enemyCount = v.round(), step: 1),
-                    _slider('Enemy speed', _cfg.enemySpeed, 0.1, 2,
-                        (v) => _cfg.enemySpeed = v),
-                    _slider('Text opacity', _cfg.textOpacity, 0, 1,
-                        (v) => _cfg.textOpacity = v),
+                    _slider(
+                      'Segments',
+                      _cfg.dragonSegments.toDouble(),
+                      10,
+                      80,
+                      (v) {
+                        _cfg.dragonSegments = v.round();
+                        _game.rebuildDragon();
+                      },
+                      step: 1,
+                    ),
+                    _slider(
+                      'Dragon speed',
+                      _cfg.dragonSpeed,
+                      0.03,
+                      0.4,
+                      (v) => _cfg.dragonSpeed = v,
+                    ),
+                    _slider(
+                      'Dragon scale',
+                      _cfg.dragonScale,
+                      0.4,
+                      2.5,
+                      (v) => _cfg.dragonScale = v,
+                    ),
+                    _slider(
+                      'Push force',
+                      _cfg.pushForce,
+                      0,
+                      30,
+                      (v) => _cfg.pushForce = v,
+                    ),
+                    _slider(
+                      'Spring',
+                      _cfg.springStrength,
+                      0.002,
+                      0.05,
+                      (v) => _cfg.springStrength = v,
+                    ),
+                    _slider(
+                      'Damping',
+                      _cfg.damping,
+                      0.85,
+                      0.99,
+                      (v) => _cfg.damping = v,
+                    ),
+                    _slider(
+                      'Burn gravity',
+                      _cfg.burnGravity,
+                      0,
+                      3,
+                      (v) => _cfg.burnGravity = v,
+                    ),
+                    _slider(
+                      'Fire radius',
+                      _cfg.fireRadius,
+                      40,
+                      220,
+                      (v) => _cfg.fireRadius = v,
+                    ),
+                    _slider(
+                      'Fire force',
+                      _cfg.fireForce,
+                      5,
+                      50,
+                      (v) => _cfg.fireForce = v,
+                    ),
+                    _slider(
+                      'Enemies',
+                      _cfg.enemyCount.toDouble(),
+                      0,
+                      20,
+                      (v) => _cfg.enemyCount = v.round(),
+                      step: 1,
+                    ),
+                    _slider(
+                      'Enemy speed',
+                      _cfg.enemySpeed,
+                      0.1,
+                      2,
+                      (v) => _cfg.enemySpeed = v,
+                    ),
+                    _slider(
+                      'Text opacity',
+                      _cfg.textOpacity,
+                      0,
+                      1,
+                      (v) => _cfg.textOpacity = v,
+                    ),
                     const Divider(color: Color(0xFF262626), height: 20),
-                    _switch('Wings', _cfg.showWings,
-                        (v) => _cfg.showWings = v),
-                    _switch('Spines', _cfg.showSpines,
-                        (v) => _cfg.showSpines = v),
-                    _switch('Enemies', _cfg.showEnemies,
-                        (v) => _cfg.showEnemies = v),
-                    _switch('Screen shake', _cfg.screenShake,
-                        (v) => _cfg.screenShake = v),
-                    _switch('Embers', _cfg.showEmbers,
-                        (v) => _cfg.showEmbers = v),
-                    _switch('Particles', _cfg.showParticles,
-                        (v) => _cfg.showParticles = v),
-                    _switch('Runes', _cfg.showRunes,
-                        (v) => _cfg.showRunes = v),
-                    _switch('Cursor', _cfg.showCursor,
-                        (v) => _cfg.showCursor = v),
+                    _switch('Wings', _cfg.showWings, (v) => _cfg.showWings = v),
+                    _switch(
+                      'Spines',
+                      _cfg.showSpines,
+                      (v) => _cfg.showSpines = v,
+                    ),
+                    _switch(
+                      'Enemies',
+                      _cfg.showEnemies,
+                      (v) => _cfg.showEnemies = v,
+                    ),
+                    _switch(
+                      'Screen shake',
+                      _cfg.screenShake,
+                      (v) => _cfg.screenShake = v,
+                    ),
+                    _switch(
+                      'Embers',
+                      _cfg.showEmbers,
+                      (v) => _cfg.showEmbers = v,
+                    ),
+                    _switch(
+                      'Particles',
+                      _cfg.showParticles,
+                      (v) => _cfg.showParticles = v,
+                    ),
+                    _switch('Runes', _cfg.showRunes, (v) => _cfg.showRunes = v),
+                    _switch(
+                      'Cursor',
+                      _cfg.showCursor,
+                      (v) => _cfg.showCursor = v,
+                    ),
                   ],
                 ),
               ),
@@ -2014,14 +2241,19 @@ class _DragonDemoPageState extends State<DragonDemoPage>
       children: [
         Row(
           children: [
-            Text(label,
-                style: const TextStyle(fontSize: 11, color: Color(0xFFAAAAAA))),
+            Text(
+              label,
+              style: const TextStyle(fontSize: 11, color: Color(0xFFAAAAAA)),
+            ),
             const Spacer(),
-            Text(value.toStringAsFixed(digits),
-                style: const TextStyle(
-                    fontSize: 11,
-                    fontFamily: 'monospace',
-                    color: Color(0xFF777777))),
+            Text(
+              value.toStringAsFixed(digits),
+              style: const TextStyle(
+                fontSize: 11,
+                fontFamily: 'monospace',
+                color: Color(0xFF777777),
+              ),
+            ),
           ],
         ),
         SliderTheme(
@@ -2052,8 +2284,10 @@ class _DragonDemoPageState extends State<DragonDemoPage>
     return Row(
       children: [
         Expanded(
-          child: Text(label,
-              style: const TextStyle(fontSize: 12, color: Color(0xFFAAAAAA))),
+          child: Text(
+            label,
+            style: const TextStyle(fontSize: 12, color: Color(0xFFAAAAAA)),
+          ),
         ),
         Switch(
           value: value,
@@ -2088,14 +2322,21 @@ class _BlitPainter extends CustomPainter {
       );
     } else {
       canvas.drawRect(
-          Offset.zero & size, Paint()..color = const Color(0xFF0A0A0A));
+        Offset.zero & size,
+        Paint()..color = const Color(0xFF0A0A0A),
+      );
     }
 
     if (g.chainN > 0) {
       final glow = Paint();
       for (var i = 0; i < 4 && i < g.chainN; i++) {
         final size2 = 14 * g.segScale(i);
-        glow.color = Color.fromRGBO(255, 102, 0, 0.06 * (g.breathingFire ? 2 : 1));
+        glow.color = Color.fromRGBO(
+          255,
+          102,
+          0,
+          0.06 * (g.breathingFire ? 2 : 1),
+        );
         canvas.drawCircle(Offset(g.chX[i], g.chY[i]), size2 * 1.1, glow);
       }
       final ha = math.atan2(g.mouseY - g.chY[0], g.mouseX - g.chX[0]);
@@ -2119,18 +2360,32 @@ class _BlitPainter extends CustomPainter {
     canvas.save();
     canvas.translate(mx, my);
     canvas.rotate(g.time * 0.4);
-    canvas.drawArc(Rect.fromCircle(center: Offset.zero, radius: 16), 0,
-        math.pi * 0.5, false, stroke);
-    canvas.drawArc(Rect.fromCircle(center: Offset.zero, radius: 16), math.pi,
-        math.pi * 0.5, false, stroke);
+    canvas.drawArc(
+      Rect.fromCircle(center: Offset.zero, radius: 16),
+      0,
+      math.pi * 0.5,
+      false,
+      stroke,
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: Offset.zero, radius: 16),
+      math.pi,
+      math.pi * 0.5,
+      false,
+      stroke,
+    );
     canvas.restore();
 
     canvas.drawCircle(
       Offset(mx, my),
       g.breathingFire ? 3 : 2,
       Paint()
-        ..color = Color.fromRGBO(255, g.breathingFire ? 170 : 136,
-            g.breathingFire ? 51 : 68, g.breathingFire ? 0.8 : 0.5),
+        ..color = Color.fromRGBO(
+          255,
+          g.breathingFire ? 170 : 136,
+          g.breathingFire ? 51 : 68,
+          g.breathingFire ? 0.8 : 0.5,
+        ),
     );
 
     final tick = Paint()

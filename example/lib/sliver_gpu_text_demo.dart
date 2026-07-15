@@ -117,9 +117,7 @@ class _SliverGPUTextDemoPageState extends State<SliverGPUTextDemoPage> {
             ),
             recognizer: _link('§${s + 1}.${p + 1}'),
           ),
-          const TextSpan(
-            text: ', and this run carries a ',
-          ),
+          const TextSpan(text: ', and this run carries a '),
           const TextSpan(
             text: 'painted background',
             style: TextStyle(backgroundColor: Color(0xFFFFF3B0)),

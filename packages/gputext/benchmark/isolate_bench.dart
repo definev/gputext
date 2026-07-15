@@ -169,7 +169,10 @@ int _layoutInline(String text, GPUFont font, TextShaper? shaper) {
     ),
   ];
   final items = buildRunItems(specs, {'lato': font}, shaper);
-  final style = wf.ParagraphStyle(maxWidth: _emitWidth, align: wf.TextAlign.left);
+  final style = wf.ParagraphStyle(
+    maxWidth: _emitWidth,
+    align: wf.TextAlign.left,
+  );
   final prepared = wf.prepareParagraph(items);
   final lines = wf.layoutPreparedLines(prepared, _emitWidth, style);
   final atlas = SharedGlyphAtlas();
@@ -178,7 +181,9 @@ int _layoutInline(String text, GPUFont font, TextShaper? shaper) {
       if (item is wf.LineRun) atlas.ensureShaped(item.shaped);
     }
   }
-  return wf.emitInstances(lines, _emitWidth, wf.TextAlign.left, atlas).glyphCount;
+  return wf
+      .emitInstances(lines, _emitWidth, wf.TextAlign.left, atlas)
+      .glyphCount;
 }
 
 void main() {
@@ -224,14 +229,17 @@ void main() {
     results.add(
       run('split.cold_full', () {
         for (final t in paras) {
-          final layout = GPUTextLayout.compute([mkRun(t)])..reflow(_emitWidth, style);
+          final layout = GPUTextLayout.compute([mkRun(t)])
+            ..reflow(_emitWidth, style);
           sink += layout.emit(atlas).glyphCount;
         }
       }),
     );
 
     // Amortize phase 1 across ops: prepare each paragraph once, reflow per op.
-    final prepared = [for (final t in paras) GPUTextLayout.compute([mkRun(t)])];
+    final prepared = [
+      for (final t in paras) GPUTextLayout.compute([mkRun(t)]),
+    ];
     var wi = 0;
     results.add(
       run('split.reflow_only', () {
@@ -245,7 +253,8 @@ void main() {
 
     // Amortize phases 1 + 2: reflow each once, re-emit per op (recolor case).
     final reflowed = [
-      for (final t in paras) GPUTextLayout.compute([mkRun(t)])..reflow(_emitWidth, style),
+      for (final t in paras)
+        GPUTextLayout.compute([mkRun(t)])..reflow(_emitWidth, style),
     ];
     results.add(
       run('split.reemit_only', () {
@@ -325,7 +334,9 @@ void main() {
           w,
           wf.ParagraphStyle(maxWidth: w),
         );
-        sink += wf.emitInstances(lines, w, wf.TextAlign.left, bigAtlas).glyphCount;
+        sink += wf
+            .emitInstances(lines, w, wf.TextAlign.left, bigAtlas)
+            .glyphCount;
       }),
     );
 
@@ -347,13 +358,44 @@ void main() {
       }),
     );
 
+    // Incremental atlas: pass the held prefix; the reply ships only the tail
+    // (empty here — the atlas stops growing once the doc is prepared). This is
+    // what the views do on EVERY reflow, closing the stale-atlas window that
+    // atlas_skip left open, at atlas_skip cost.
+    var heldCurves = 0, heldRows = 0, heldStructure = 0;
+    rw = 0;
+    results.add(
+      await runAsync('reflow.atlas_delta', () async {
+        final w = _widths[rw++ % _widths.length];
+        final d = await worker.reflowDoc(
+          'bench',
+          w,
+          sinceCurves: heldCurves,
+          sinceRows: heldRows,
+          sinceStructure: heldStructure,
+        );
+        final curves = d.materializeCurves();
+        final rows = d.materializeRows();
+        heldCurves = d.curveBase + curves.length;
+        heldRows = d.rowBase + rows.length;
+        heldStructure = d.atlasStructure;
+        sink += d.materialize().length + curves.length;
+      }),
+    );
+
     worker.dispose();
 
     // --- derived read-out ---
-    final block = results.firstWhere((r) => r.name == 'main.layout_block').median;
-    final wall = results.firstWhere((r) => r.name == 'worker.layout_wall').median;
+    final block = results
+        .firstWhere((r) => r.name == 'main.layout_block')
+        .median;
+    final wall = results
+        .firstWhere((r) => r.name == 'worker.layout_wall')
+        .median;
     final cold = results.firstWhere((r) => r.name == 'split.cold_full').median;
-    final reemit = results.firstWhere((r) => r.name == 'split.reemit_only').median;
+    final reemit = results
+        .firstWhere((r) => r.name == 'split.reemit_only')
+        .median;
     // ignore: avoid_print
     print(
       '\n  split win:  re-emit is ${(cold / reemit).toStringAsFixed(1)}x '
@@ -369,20 +411,22 @@ void main() {
     final inline = results.firstWhere((r) => r.name == 'reflow.inline').min;
     final full = results.firstWhere((r) => r.name == 'reflow.full').min;
     final lite = results.firstWhere((r) => r.name == 'reflow.atlas_skip').min;
+    final delta = results.firstWhere((r) => r.name == 'reflow.atlas_delta').min;
     // ignore: avoid_print
     print(
       '  reflow(min): inline ${inline.toStringAsFixed(2)}ms · '
       'worker atlas-skip ${lite.toStringAsFixed(2)}ms · '
+      'worker atlas-delta ${delta.toStringAsFixed(2)}ms · '
       'worker full-atlas ${full.toStringAsFixed(2)}ms — all the same order; '
       'the layout+emit compute dominates, isolate overhead is small.',
     );
     // ignore: avoid_print
     print(
-      '  transfer:   all buffers already MOVE zero-copy '
-      '(TransferableTypedData) — no payload copy to eliminate. The one extra '
-      'copy was the atlas (Float32List.fromList); atlas-skip removes it after '
-      'the first reflow. Residual isolate cost is per-message scheduling, '
-      'which transferable data cannot change.',
+      '  transfer:   instance buffers MOVE zero-copy (TransferableTypedData); '
+      'the atlas ships as the append-only tail beyond the sinceCurves prefix '
+      '(one copy at TTD construction, usually zero bytes), so atlas-delta '
+      'should track atlas-skip while still carrying every new glyph. Residual '
+      'isolate cost is per-message scheduling.',
     );
 
     // --- report + optional baseline compare ---
@@ -402,8 +446,9 @@ void main() {
 
     final baselinePath = Platform.environment['BENCH_BASELINE'];
     if (baselinePath != null) {
-      final base =
-          jsonDecode(File(baselinePath).readAsStringSync()) as Map<String, dynamic>;
+      final base = jsonDecode(
+        File(baselinePath).readAsStringSync(),
+      ) as Map<String, dynamic>;
       final baseByName = {
         for (final r in base['results'] as List)
           (r as Map<String, dynamic>)['name'] as String: r,

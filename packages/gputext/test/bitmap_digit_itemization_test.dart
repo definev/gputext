@@ -50,41 +50,51 @@ void main() {
       // the coverage-based check this test guards against would have fired.
       final gid = noto.glyphIdForRune(0x30);
       expect(gid, isNotNull);
-      expect(noto.bitmapGlyphForId(gid!, targetPpem: 64), isNotNull,
-          reason: 'test font must map "0" to a bitmap for this to be a real '
-              'regression guard');
+      expect(
+        noto.bitmapGlyphForId(gid!, targetPpem: 64),
+        isNotNull,
+        reason:
+            'test font must map "0" to a bitmap for this to be a real '
+            'regression guard',
+      );
     });
 
     setUp(() => engine.registerEmojiFont(noto));
     tearDown(() => engine.registerEmojiFont(null));
 
     List<wf.InlineItem> flatten(String text) => flattenSpan(
-          TextSpan(
-            style: const TextStyle(fontFamily: 'Lato', fontSize: 20),
-            text: text,
-          ),
-          TextScaler.noScaling,
-          engine,
-        )!;
+      TextSpan(
+        style: const TextStyle(fontFamily: 'Lato', fontSize: 20),
+        text: text,
+      ),
+      TextScaler.noScaling,
+      engine,
+    )!;
 
-    test('digits stay text runs, only the emoji becomes a bitmap EmojiItem', () {
-      final items = flatten('Room 101 — call 0123456789 \u{1F680} now');
+    test(
+      'digits stay text runs, only the emoji becomes a bitmap EmojiItem',
+      () {
+        final items = flatten('Room 101 — call 0123456789 \u{1F680} now');
 
-      final emoji = items.whereType<wf.EmojiItem>().toList();
-      expect(emoji, hasLength(1), reason: 'only the rocket is an emoji');
-      expect(emoji.single.isBitmap, isTrue);
-      expect(emoji.single.sourceText, '\u{1F680}');
+        final emoji = items.whereType<wf.EmojiItem>().toList();
+        expect(emoji, hasLength(1), reason: 'only the rocket is an emoji');
+        expect(emoji.single.isBitmap, isTrue);
+        expect(emoji.single.sourceText, '\u{1F680}');
 
-      // Every digit must live inside a normal (non-emoji) text run.
-      final runText = items
-          .whereType<wf.TextRun>()
-          .map((r) => r.originalText)
-          .join();
-      for (final d in '0123456789'.runes) {
-        expect(runText.contains(String.fromCharCode(d)), isTrue,
-            reason: 'digit ${String.fromCharCode(d)} must be a text run');
-      }
-    });
+        // Every digit must live inside a normal (non-emoji) text run.
+        final runText = items
+            .whereType<wf.TextRun>()
+            .map((r) => r.originalText)
+            .join();
+        for (final d in '0123456789'.runes) {
+          expect(
+            runText.contains(String.fromCharCode(d)),
+            isTrue,
+            reason: 'digit ${String.fromCharCode(d)} must be a text run',
+          );
+        }
+      },
+    );
 
     test('a keycap base with no keycap mark is plain text, not emoji', () {
       // '#' and '*' are also CBDT-covered keycap bases; alone they are text.

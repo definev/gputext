@@ -75,12 +75,8 @@ void main() {
     expect(debugSegmentMetricsLengthFor(flex), greaterThan(0));
     expect(debugSegmentMetricsLengthFor(bold), greaterThan(0));
     if (hb != null) {
-      engine.shaper.shape(
-        ShapeRequest(font: flex, text: 'Hi', fontSizePx: 16),
-      );
-      engine.shaper.shape(
-        ShapeRequest(font: bold, text: 'Hi', fontSizePx: 16),
-      );
+      engine.shaper.shape(ShapeRequest(font: flex, text: 'Hi', fontSizePx: 16));
+      engine.shaper.shape(ShapeRequest(font: bold, text: 'Hi', fontSizePx: 16));
     }
     engine.unregisterFont('LeakTestFlex2');
     expect(debugSegmentMetricsLengthFor(flex), 0);

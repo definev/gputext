@@ -127,10 +127,7 @@ class _SliverBlocksDemoPageState extends State<SliverBlocksDemoPage> {
             ],
           ),
           SliverPadding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 24,
-              vertical: 16,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
             sliver: SliverGPUTextBlocks(
               controller: controller,
               blocks: blocks,

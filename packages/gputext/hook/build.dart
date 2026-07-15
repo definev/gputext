@@ -38,10 +38,7 @@ void main(List<String> args) async {
       // HarfBuzz uses sincosf/atanf/hypotf/tanf. Android's app linker
       // namespace does not resolve those unless libm is a DT_NEEDED.
       libraries: _hbLibraries(os),
-      defines: const {
-        'HB_NO_MT': '1',
-        'HB_NO_PRAGMA_GCC_DIAGNOSTIC': '1',
-      },
+      defines: const {'HB_NO_MT': '1', 'HB_NO_PRAGMA_GCC_DIAGNOSTIC': '1'},
       cppLinkStdLib: _hbCppLinkStdLib(os),
     );
     final logger = Logger('')
@@ -111,11 +108,7 @@ List<String> _hbLibraries(OS os) => switch (os) {
 /// Link flags for the system-font resolver: CoreText/CoreFoundation on Apple,
 /// none elsewhere (Android dlopen's libandroid; other OSes compile a stub).
 List<String> _systemFontFlags(OS os) => switch (os) {
-  OS.iOS || OS.macOS => const [
-    '-framework',
-    'CoreText',
-    '-framework',
-    'CoreFoundation',
-  ],
+  OS.iOS ||
+  OS.macOS => const ['-framework', 'CoreText', '-framework', 'CoreFoundation'],
   _ => const [],
 };

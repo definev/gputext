@@ -19,9 +19,10 @@ import 'package:ffi/ffi.dart';
 
 const _assetId = 'package:gputext/src/native/system_fonts_dylib.dart';
 
-@Native<
-  Pointer<Uint8> Function(Pointer<Utf8>, Int32, Int32, Pointer<Uint32>)
->(assetId: _assetId, symbol: 'gputext_system_font_data')
+@Native<Pointer<Uint8> Function(Pointer<Utf8>, Int32, Int32, Pointer<Uint32>)>(
+  assetId: _assetId,
+  symbol: 'gputext_system_font_data',
+)
 external Pointer<Uint8> _gputext_system_font_data(
   Pointer<Utf8> family,
   int weight,
@@ -46,19 +47,18 @@ external Pointer<Uint8> _gputext_system_default_font_data(
 )
 external void _gputext_system_font_free(Pointer<Uint8> ptr);
 
-typedef _FontDataFn =
-    Pointer<Uint8> Function(Pointer<Utf8>, int, int, Pointer<Uint32>);
-typedef _DefaultFontDataFn =
-    Pointer<Uint8> Function(int, int, Pointer<Uint32>);
+typedef _FontDataFn = Pointer<Uint8> Function(
+  Pointer<Utf8>,
+  int,
+  int,
+  Pointer<Uint32>,
+);
+typedef _DefaultFontDataFn = Pointer<Uint8> Function(int, int, Pointer<Uint32>);
 typedef _FreeFn = void Function(Pointer<Uint8>);
 
 /// Loaded system-font resolver symbols (from `@Native` or DynamicLibrary.open).
 class SystemFontProvider {
-  SystemFontProvider._(
-    this._fontDataFn,
-    this._defaultFontDataFn,
-    this._freeFn,
-  );
+  SystemFontProvider._(this._fontDataFn, this._defaultFontDataFn, this._freeFn);
 
   final _FontDataFn _fontDataFn;
   final _DefaultFontDataFn _defaultFontDataFn;
@@ -114,21 +114,14 @@ class SystemFontProvider {
       loadedViaNative = false;
       lastLoadError = null;
       return _cached = SystemFontProvider._(
-        lib
-            .lookupFunction<
-              Pointer<Uint8> Function(
-                Pointer<Utf8>,
-                Int32,
-                Int32,
-                Pointer<Uint32>,
-              ),
-              _FontDataFn
-            >('gputext_system_font_data'),
-        lib
-            .lookupFunction<
-              Pointer<Uint8> Function(Int32, Int32, Pointer<Uint32>),
-              _DefaultFontDataFn
-            >('gputext_system_default_font_data'),
+        lib.lookupFunction<
+          Pointer<Uint8> Function(Pointer<Utf8>, Int32, Int32, Pointer<Uint32>),
+          _FontDataFn
+        >('gputext_system_font_data'),
+        lib.lookupFunction<
+          Pointer<Uint8> Function(Int32, Int32, Pointer<Uint32>),
+          _DefaultFontDataFn
+        >('gputext_system_default_font_data'),
         lib.lookupFunction<Void Function(Pointer<Uint8>), _FreeFn>(
           'gputext_system_font_free',
         ),
@@ -187,8 +180,7 @@ class SystemFontProvider {
       if (Platform.isMacOS || Platform.isIOS)
         'gputext_system_fonts.framework/gputext_system_fonts',
       if (Platform.isMacOS || Platform.isIOS) 'libgputext_system_fonts.dylib',
-      if (Platform.isLinux || Platform.isAndroid)
-        'libgputext_system_fonts.so',
+      if (Platform.isLinux || Platform.isAndroid) 'libgputext_system_fonts.so',
       if (Platform.isWindows) 'gputext_system_fonts.dll',
     ];
     final openErrors = <String>[];
@@ -200,8 +192,7 @@ class SystemFontProvider {
       }
     }
     if (openErrors.isNotEmpty) {
-      lastLoadError =
-          '${lastLoadError ?? ''}; open: ${openErrors.join('; ')}';
+      lastLoadError = '${lastLoadError ?? ''}; open: ${openErrors.join('; ')}';
     }
     final os = Platform.operatingSystem;
     final dirs = <String>[

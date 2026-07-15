@@ -38,13 +38,14 @@ import 'package:gputext/src/text/shaper.dart' show TextShaper;
   for (final it in items) {
     if (it is wf.TextRun) atlas.ensureShaped(it.shaped);
   }
-  final glyphs = wf.emitInstances(laid, width, wf.TextAlign.left, atlas).glyphCount;
+  final glyphs = wf
+      .emitInstances(laid, width, wf.TextAlign.left, atlas)
+      .glyphCount;
   return (glyphs, laid.lines.length, atlas.curves.length);
 }
 
 void main() {
-  test('worker drawable matches a main-isolate layout with the same shaping',
-      () async {
+  test('worker drawable matches a main-isolate layout with the same shaping', () async {
     // Worker and reference both resolve HarfBuzz the same way (process-global),
     // so this holds whether HB is available (real shaping) or not (per-rune).
     final shaper = loadHarfBuzzShaper();
@@ -80,7 +81,8 @@ void main() {
       expect(d300.width, 300);
       expect(d300.height, greaterThan(0));
       expect(d300.materialize().length, d300.glyphCount * 16);
-      final curves300 = d300.materializeCurves(); // single-use — materialize once
+      final curves300 = d300
+          .materializeCurves(); // single-use — materialize once
       expect(curves300.length, ref300.$3);
       expect(curves300.isNotEmpty, isTrue);
 
@@ -116,7 +118,8 @@ void main() {
         color: [0.04, 0.24, 0.57, 1],
       ),
       GPUTextRunSpec(
-        text: 'and a longer body run that wraps across several lines at this '
+        text:
+            'and a longer body run that wraps across several lines at this '
             'width so line breaking has real work to do.',
         fontId: 'lato',
         fontSizePx: 16,
@@ -140,32 +143,45 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('disposeDoc evicts a prepared document; re-prepare restores it',
-      () async {
-    const runs = [
-      GPUTextRunSpec(text: 'hello lazy world', fontId: 'lato', fontSizePx: 18),
-    ];
-    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    final worker = await GPUTextWorker.spawn();
-    try {
-      await worker.registerFont('lato', bytes);
-      await worker.prepareDoc('block', runs);
-      expect((await worker.reflowDoc('block', 200)).glyphCount, greaterThan(0));
+  test(
+    'disposeDoc evicts a prepared document; re-prepare restores it',
+    () async {
+      const runs = [
+        GPUTextRunSpec(
+          text: 'hello lazy world',
+          fontId: 'lato',
+          fontSizePx: 18,
+        ),
+      ];
+      final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+      final worker = await GPUTextWorker.spawn();
+      try {
+        await worker.registerFont('lato', bytes);
+        await worker.prepareDoc('block', runs);
+        expect(
+          (await worker.reflowDoc('block', 200)).glyphCount,
+          greaterThan(0),
+        );
 
-      // Evict it — reflowing the freed id now fails.
-      await worker.disposeDoc('block');
-      await expectLater(
-        worker.reflowDoc('block', 200),
-        throwsA(isA<StateError>()),
-      );
+        // Evict it — reflowing the freed id now fails.
+        await worker.disposeDoc('block');
+        await expectLater(
+          worker.reflowDoc('block', 200),
+          throwsA(isA<StateError>()),
+        );
 
-      // Re-preparing under the same id brings it back.
-      await worker.prepareDoc('block', runs);
-      expect((await worker.reflowDoc('block', 200)).glyphCount, greaterThan(0));
-    } finally {
-      worker.dispose();
-    }
-  }, timeout: const Timeout(Duration(minutes: 2)));
+        // Re-preparing under the same id brings it back.
+        await worker.prepareDoc('block', runs);
+        expect(
+          (await worker.reflowDoc('block', 200)).glyphCount,
+          greaterThan(0),
+        );
+      } finally {
+        worker.dispose();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
   test('syncDocs prepares + reflows a whole batch in one round trip', () async {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
@@ -202,10 +218,9 @@ void main() {
 
       // Already-prepared ids reflow without runs at a new width; the shared
       // atlas is unchanged (same glyphs), so the payload can be skipped.
-      final second = await worker.syncDocs(
-        [for (final e in entries) GPUTextSyncEntry(id: e.id, style: style)],
-        500,
-      );
+      final second = await worker.syncDocs([
+        for (final e in entries) GPUTextSyncEntry(id: e.id, style: style),
+      ], 500);
       expect(second.results, everyElement(isNotNull));
       expect(second.results.first!.width, 500);
       expect(second.curves, isNull);
@@ -213,18 +228,19 @@ void main() {
 
       // An unknown id without runs degrades to a null slot amid good ones —
       // one bad block must never fail the window.
-      final mixed = await worker.syncDocs(
-        [
-          const GPUTextSyncEntry(id: 'blk-0', style: style),
-          const GPUTextSyncEntry(id: 'never-prepared', style: style),
-        ],
-        300,
-      );
+      final mixed = await worker.syncDocs([
+        const GPUTextSyncEntry(id: 'blk-0', style: style),
+        const GPUTextSyncEntry(id: 'never-prepared', style: style),
+      ], 300);
       expect(mixed.results[0], isNotNull);
       expect(mixed.results[1], isNull);
 
       // Entries-empty call is a cheap atlas-only fetch.
-      final atlasOnly = await worker.syncDocs(const [], 300, includeAtlas: true);
+      final atlasOnly = await worker.syncDocs(
+        const [],
+        300,
+        includeAtlas: true,
+      );
       expect(atlasOnly.results, isEmpty);
       expect(atlasOnly.materializeCurves(), isNotEmpty);
       expect(atlasOnly.atlasGeneration, first.atlasGeneration);
@@ -233,8 +249,7 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('prepared docs share one atlas; generation is stable when glyphs overlap',
-      () async {
+  test('prepared docs share one atlas; generation is stable when glyphs overlap', () async {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
     final worker = await GPUTextWorker.spawn();
     try {
@@ -264,78 +279,178 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('shared atlas grows when a new glyph appears; old instances stay valid',
-      () async {
-    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    final worker = await GPUTextWorker.spawn();
-    try {
-      await worker.registerFont('lato', bytes);
-      await worker.prepareDoc('a', const [
-        GPUTextRunSpec(text: 'aaa', fontId: 'lato', fontSizePx: 18),
-      ]);
-      final first = await worker.reflowDoc('a', 200, includeAtlas: true);
-      final gen1 = first.atlasGeneration;
-      final firstCurveFloats = first.materializeCurves().length;
+  test(
+    'shared atlas grows when a new glyph appears; old instances stay valid',
+    () async {
+      final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+      final worker = await GPUTextWorker.spawn();
+      try {
+        await worker.registerFont('lato', bytes);
+        await worker.prepareDoc('a', const [
+          GPUTextRunSpec(text: 'aaa', fontId: 'lato', fontSizePx: 18),
+        ]);
+        final first = await worker.reflowDoc('a', 200, includeAtlas: true);
+        final gen1 = first.atlasGeneration;
+        final firstCurveFloats = first.materializeCurves().length;
 
-      await worker.prepareDoc('b', const [
-        GPUTextRunSpec(text: 'zzz', fontId: 'lato', fontSizePx: 18),
-      ]);
-      final second = await worker.reflowDoc('b', 200, includeAtlas: true);
-      expect(second.atlasGeneration, greaterThan(gen1));
+        await worker.prepareDoc('b', const [
+          GPUTextRunSpec(text: 'zzz', fontId: 'lato', fontSizePx: 18),
+        ]);
+        final second = await worker.reflowDoc('b', 200, includeAtlas: true);
+        expect(second.atlasGeneration, greaterThan(gen1));
+        expect(
+          second.materializeCurves().length,
+          greaterThan(firstCurveFloats),
+        );
+
+        // Doc A still emits against the grown atlas (append-only rowBases).
+        final again = await worker.reflowDoc('a', 200, includeAtlas: false);
+        expect(again.atlasGeneration, second.atlasGeneration);
+        expect(again.glyphCount, first.glyphCount);
+      } finally {
+        worker.dispose();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'atlas delta ships only the append-only tail beyond a held prefix',
+    () async {
+      final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+      final worker = await GPUTextWorker.spawn();
+      try {
+        await worker.registerFont('lato', bytes);
+        await worker.prepareDoc('a', const [
+          GPUTextRunSpec(text: 'aaa', fontId: 'lato', fontSizePx: 18),
+        ]);
+        // First fetch: no held prefix — a full snapshot from base 0.
+        final full = await worker.reflowDoc('a', 200);
+        expect(full.curveBase, 0);
+        expect(full.rowBase, 0);
+        final heldCurves = full.materializeCurves();
+        final heldRows = full.materializeRows();
+        expect(heldCurves, isNotEmpty);
+
+        // Nothing grew — the tail beyond the held prefix is empty.
+        final unchanged = await worker.reflowDoc(
+          'a',
+          260,
+          sinceCurves: heldCurves.length,
+          sinceRows: heldRows.length,
+          sinceStructure: full.atlasStructure,
+        );
+        expect(unchanged.curveBase, heldCurves.length);
+        expect(unchanged.rowBase, heldRows.length);
+        expect(unchanged.materializeCurves(), isEmpty);
+        expect(unchanged.materializeRows(), isEmpty);
+        expect(unchanged.atlasGeneration, full.atlasGeneration);
+
+        // New glyphs banded — the reply carries exactly the tail: held prefix +
+        // tail must be bit-identical to a fresh full snapshot.
+        await worker.prepareDoc('b', const [
+          GPUTextRunSpec(text: 'zzz', fontId: 'lato', fontSizePx: 18),
+        ]);
+        final delta = await worker.reflowDoc(
+          'b',
+          200,
+          sinceCurves: heldCurves.length,
+          sinceRows: heldRows.length,
+          sinceStructure: full.atlasStructure,
+        );
+        expect(delta.curveBase, heldCurves.length);
+        expect(delta.rowBase, heldRows.length);
+        final tailCurves = delta.materializeCurves();
+        final tailRows = delta.materializeRows();
+        expect(tailCurves, isNotEmpty, reason: "'zzz' bands new glyphs");
+
+        final refetch = await worker.reflowDoc('b', 200);
+        expect(refetch.curveBase, 0);
+        final fullCurves = refetch.materializeCurves();
+        final fullRows = refetch.materializeRows();
+        expect(fullCurves, [...heldCurves, ...tailCurves]);
+        expect(fullRows, [...heldRows, ...tailRows]);
+
+        // A structure mismatch invalidates the held prefix — full snapshot.
+        final resync = await worker.reflowDoc(
+          'b',
+          200,
+          sinceCurves: fullCurves.length,
+          sinceRows: fullRows.length,
+          sinceStructure: full.atlasStructure + 1,
+        );
+        expect(resync.curveBase, 0);
+        expect(resync.materializeCurves().length, fullCurves.length);
+
+        // syncDocs speaks the same delta protocol at the batch level.
+        final sync = await worker.syncDocs(
+          const [],
+          200,
+          includeAtlas: true,
+          sinceCurves: fullCurves.length,
+          sinceRows: fullRows.length,
+          sinceStructure: full.atlasStructure,
+        );
+        expect(sync.curveBase, fullCurves.length);
+        expect(sync.rowBase, fullRows.length);
+        expect(sync.materializeCurves(), isEmpty);
+        expect(sync.atlasGeneration, refetch.atlasGeneration);
+      } finally {
+        worker.dispose();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'worker renders a CFF/OTF font (SourceSans3) via HarfBuzz outlines',
+    () async {
+      final shaper = loadHarfBuzzShaper();
+      if (shaper == null) {
+        markTestSkipped('HarfBuzz unavailable — CFF rendering needs it');
+        return;
+      }
+      // SourceSans3 has CFF (PostScript) outlines and NO glyf table, so the
+      // pure-Dart parser can't touch it — only HarfBuzz extraction works.
+      final bytes = File('../../example/assets/SourceSans3-Regular.otf')
+          .readAsBytesSync();
+      final font = GPUFont.parse(bytes);
+      const specs = [
+        GPUTextRunSpec(
+          text: 'Office fluffier — CFF outlines shaped off the UI thread.',
+          fontId: 'src',
+          fontSizePx: 22,
+          color: [0.1, 0.1, 0.12, 1],
+        ),
+      ];
+
+      final ref = _reference(specs, {'src': font}, 400, shaper);
+      expect(ref.$1, greaterThan(0), reason: 'CFF glyphs should emit');
       expect(
-        second.materializeCurves().length,
-        greaterThan(firstCurveFloats),
+        ref.$3,
+        greaterThan(64),
+        reason: 'CFF outlines must band real curves (would be ~0 without HB)',
       );
 
-      // Doc A still emits against the grown atlas (append-only rowBases).
-      final again = await worker.reflowDoc('a', 200, includeAtlas: false);
-      expect(again.atlasGeneration, second.atlasGeneration);
-      expect(again.glyphCount, first.glyphCount);
-    } finally {
-      worker.dispose();
-    }
-  }, timeout: const Timeout(Duration(minutes: 2)));
-
-  test('worker renders a CFF/OTF font (SourceSans3) via HarfBuzz outlines',
-      () async {
-    final shaper = loadHarfBuzzShaper();
-    if (shaper == null) {
-      markTestSkipped('HarfBuzz unavailable — CFF rendering needs it');
-      return;
-    }
-    // SourceSans3 has CFF (PostScript) outlines and NO glyf table, so the
-    // pure-Dart parser can't touch it — only HarfBuzz extraction works.
-    final bytes =
-        File('../../example/assets/SourceSans3-Regular.otf').readAsBytesSync();
-    final font = GPUFont.parse(bytes);
-    const specs = [
-      GPUTextRunSpec(
-        text: 'Office fluffier — CFF outlines shaped off the UI thread.',
-        fontId: 'src',
-        fontSizePx: 22,
-        color: [0.1, 0.1, 0.12, 1],
-      ),
-    ];
-
-    final ref = _reference(specs, {'src': font}, 400, shaper);
-    expect(ref.$1, greaterThan(0), reason: 'CFF glyphs should emit');
-    expect(ref.$3, greaterThan(64),
-        reason: 'CFF outlines must band real curves (would be ~0 without HB)');
-
-    final worker = await GPUTextWorker.spawn();
-    try {
-      await worker.registerFont('src', bytes);
-      await worker.prepareDoc('cff', specs);
-      final d = await worker.reflowDoc('cff', 400);
-      expect(d.glyphCount, ref.$1);
-      final curves = d.materializeCurves(); // single-use — materialize once
-      expect(curves.length, ref.$3,
-          reason: 'worker must extract the same CFF outlines as main');
-      expect(curves.length, greaterThan(64));
-    } finally {
-      worker.dispose();
-    }
-  }, timeout: const Timeout(Duration(minutes: 2)));
+      final worker = await GPUTextWorker.spawn();
+      try {
+        await worker.registerFont('src', bytes);
+        await worker.prepareDoc('cff', specs);
+        final d = await worker.reflowDoc('cff', 400);
+        expect(d.glyphCount, ref.$1);
+        final curves = d.materializeCurves(); // single-use — materialize once
+        expect(
+          curves.length,
+          ref.$3,
+          reason: 'worker must extract the same CFF outlines as main',
+        );
+        expect(curves.length, greaterThan(64));
+      } finally {
+        worker.dispose();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
   test('flattenInlineSpan extracts fontFeatures per span', () {
     const span = TextSpan(
@@ -385,52 +500,55 @@ void main() {
     expect(noPh.whereType<GPUPlaceholderSpec>(), isEmpty);
   });
 
-  test('worker reserves WidgetSpan placeholders and returns their boxes',
-      () async {
-    final shaper = loadHarfBuzzShaper();
-    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    final specs = <GPUInlineSpec>[
-      const GPUTextRunSpec(
-        text: 'before ',
-        fontId: 'lato',
-        fontSizePx: 18,
-        color: [0, 0, 0, 1],
-      ),
-      const GPUPlaceholderSpec(
-        index: 7,
-        width: 40,
-        height: 24,
-        alignment: wf.InlinePlaceholderAlignment.middle,
-      ),
-      const GPUTextRunSpec(
-        text: ' after, plus more text so the line has real content to wrap.',
-        fontId: 'lato',
-        fontSizePx: 18,
-        color: [0, 0, 0, 1],
-      ),
-    ];
-    // buildRunItems must turn the placeholder spec into a PlaceholderItem.
-    final font = GPUFont.parse(bytes);
-    final items = buildRunItems(specs, {'lato': font}, shaper);
-    expect(items.whereType<wf.PlaceholderItem>(), hasLength(1));
+  test(
+    'worker reserves WidgetSpan placeholders and returns their boxes',
+    () async {
+      final shaper = loadHarfBuzzShaper();
+      final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+      final specs = <GPUInlineSpec>[
+        const GPUTextRunSpec(
+          text: 'before ',
+          fontId: 'lato',
+          fontSizePx: 18,
+          color: [0, 0, 0, 1],
+        ),
+        const GPUPlaceholderSpec(
+          index: 7,
+          width: 40,
+          height: 24,
+          alignment: wf.InlinePlaceholderAlignment.middle,
+        ),
+        const GPUTextRunSpec(
+          text: ' after, plus more text so the line has real content to wrap.',
+          fontId: 'lato',
+          fontSizePx: 18,
+          color: [0, 0, 0, 1],
+        ),
+      ];
+      // buildRunItems must turn the placeholder spec into a PlaceholderItem.
+      final font = GPUFont.parse(bytes);
+      final items = buildRunItems(specs, {'lato': font}, shaper);
+      expect(items.whereType<wf.PlaceholderItem>(), hasLength(1));
 
-    final worker = await GPUTextWorker.spawn();
-    try {
-      await worker.registerFont('lato', bytes);
-      await worker.prepareDoc('ph', specs);
-      final d = await worker.reflowDoc('ph', 320);
-      expect(d.placeholders, hasLength(1));
-      final box = d.placeholders.single;
-      expect(box.index, 7);
-      expect(box.width, 40);
-      expect(box.height, 24);
-      expect(box.left, greaterThan(0), reason: 'sits after "before "');
-      expect(box.top, greaterThanOrEqualTo(0));
-      expect(d.glyphCount, greaterThan(0));
-    } finally {
-      worker.dispose();
-    }
-  }, timeout: const Timeout(Duration(minutes: 2)));
+      final worker = await GPUTextWorker.spawn();
+      try {
+        await worker.registerFont('lato', bytes);
+        await worker.prepareDoc('ph', specs);
+        final d = await worker.reflowDoc('ph', 320);
+        expect(d.placeholders, hasLength(1));
+        final box = d.placeholders.single;
+        expect(box.index, 7);
+        expect(box.width, 40);
+        expect(box.height, 24);
+        expect(box.left, greaterThan(0), reason: 'sits after "before "');
+        expect(box.top, greaterThanOrEqualTo(0));
+        expect(d.glyphCount, greaterThan(0));
+      } finally {
+        worker.dispose();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
   test('buildRunItems falls back to a covering font for uncovered scripts', () {
     final shaper = loadHarfBuzzShaper();
@@ -465,19 +583,29 @@ void main() {
     expect(noFb.every((r) => identical(r.font, lato)), isTrue);
 
     // With fallback: Latin stays Lato, the CJK slice routes to the CJK font.
-    final withFb = buildRunItems(specs, fonts, shaper, fallbackFontIds: ['cjk'])
-        .whereType<wf.TextRun>();
-    expect(withFb.any((r) => identical(r.font, lato)), isTrue,
-        reason: 'Latin slice keeps the primary font');
-    expect(withFb.any((r) => identical(r.font, cjk)), isTrue,
-        reason: 'uncovered CJK slice routes to the fallback');
+    final withFb = buildRunItems(
+      specs,
+      fonts,
+      shaper,
+      fallbackFontIds: ['cjk'],
+    ).whereType<wf.TextRun>();
+    expect(
+      withFb.any((r) => identical(r.font, lato)),
+      isTrue,
+      reason: 'Latin slice keeps the primary font',
+    );
+    expect(
+      withFb.any((r) => identical(r.font, cjk)),
+      isTrue,
+      reason: 'uncovered CJK slice routes to the fallback',
+    );
   });
 
   test('worker renders COLR color emoji as coloured coverage layers', () async {
     final shaper = loadHarfBuzzShaper();
     final latoBytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    final emojiBytes =
-        File('../../example/assets/TwemojiMozilla.ttf').readAsBytesSync();
+    final emojiBytes = File('../../example/assets/TwemojiMozilla.ttf')
+        .readAsBytesSync();
     final emojiFont = GPUFont.parse(emojiBytes);
     if (!emojiFont.hasColorGlyphs) {
       markTestSkipped('emoji font has no COLR table');
@@ -502,8 +630,11 @@ void main() {
     final withEmoji = buildRunItems(specs, fonts, shaper, emojiFontId: 'emoji');
     final emojiItems = withEmoji.whereType<wf.EmojiItem>().toList();
     expect(emojiItems, hasLength(1));
-    expect(emojiItems.single.layers, isNotEmpty,
-        reason: 'COLR glyph must have colour layers');
+    expect(
+      emojiItems.single.layers,
+      isNotEmpty,
+      reason: 'COLR glyph must have colour layers',
+    );
 
     // End-to-end: the drawable includes the emoji's coverage layers.
     final worker = await GPUTextWorker.spawn();
@@ -547,8 +678,11 @@ void main() {
     final withEmoji = buildRunItems(specs, fonts, shaper, emojiFontId: 'emoji');
     final emojiItems = withEmoji.whereType<wf.EmojiItem>().toList();
     expect(emojiItems, hasLength(1));
-    expect(emojiItems.single.isBitmap, isTrue,
-        reason: 'Noto CBDT must resolve as bitmap, not COLR');
+    expect(
+      emojiItems.single.isBitmap,
+      isTrue,
+      reason: 'Noto CBDT must resolve as bitmap, not COLR',
+    );
     expect(emojiItems.single.layers, isEmpty);
 
     // Digits must stay in the text run (Noto covers 0-9 as keycap bases).
@@ -560,8 +694,12 @@ void main() {
         color: [0, 0, 0, 1],
       ),
     ];
-    final digitItems =
-        buildRunItems(digitSpecs, fonts, shaper, emojiFontId: 'emoji');
+    final digitItems = buildRunItems(
+      digitSpecs,
+      fonts,
+      shaper,
+      emojiFontId: 'emoji',
+    );
     expect(digitItems.whereType<wf.EmojiItem>(), hasLength(1));
     final textRuns = digitItems.whereType<wf.TextRun>().toList();
     expect(
@@ -576,15 +714,43 @@ void main() {
       await worker.registerFont('emoji', Uint8List.fromList(emojiBytes));
       await worker.prepareDoc('bm', specs, emojiFontId: 'emoji');
       final d = await worker.reflowDoc('bm', 300, dpr: 2.0);
-      expect(d.colorGlyphStubs, isNotEmpty,
-          reason: 'worker must ship PNG stubs for main-isolate atlas pack');
+      expect(
+        d.colorGlyphStubs,
+        isNotEmpty,
+        reason: 'worker must ship PNG stubs for main-isolate atlas pack',
+      );
       final stub = d.colorGlyphStubs.single;
       expect(stub.cacheKey, contains('emoji:'));
-      expect(stub.materializePng().length, greaterThan(8));
+      final firstPng = stub.materializePng();
+      expect(
+        firstPng,
+        isNotNull,
+        reason: 'first stub for a strike carries the PNG bytes',
+      );
+      expect(firstPng!.length, greaterThan(8));
       expect(stub.fontSizePx, 24);
       // Coverage for A + B only; color quads are built on the main isolate.
       expect(d.glyphCount, greaterThanOrEqualTo(2));
       expect(d.colorGlyphCount, 0);
+
+      // The strike's bytes ship once — later reflows send metrics-only stubs.
+      final d2 = await worker.reflowDoc('bm', 340, dpr: 2.0);
+      final stub2 = d2.colorGlyphStubs.single;
+      expect(stub2.cacheKey, stub.cacheKey);
+      expect(
+        stub2.png,
+        isNull,
+        reason: 'strike already shipped — stub is metrics-only',
+      );
+      expect(stub2.materializePng(), isNull);
+
+      // A receiver that dropped the bytes recovers them by cache key.
+      final recovered = await worker.fetchColorPngs([stub.cacheKey]);
+      expect(recovered[stub.cacheKey], isNotNull);
+      expect(recovered[stub.cacheKey], firstPng);
+      // Unknown keys are simply absent, never errors.
+      final none = await worker.fetchColorPngs(['nope:1:64']);
+      expect(none, isEmpty);
     } finally {
       worker.dispose();
     }
@@ -621,9 +787,7 @@ void main() {
       30,
       'The quick brown fox jumps over the lazy dog.',
     ).join(' ');
-    final specs = [
-      GPUTextRunSpec(text: text, fontId: 'lato', fontSizePx: 18),
-    ];
+    final specs = [GPUTextRunSpec(text: text, fontId: 'lato', fontSizePx: 18)];
 
     final worker = await GPUTextWorker.spawn();
     try {
@@ -658,10 +822,7 @@ void main() {
       final nowrapScroll = await worker.reflowDoc(
         'clip',
         200,
-        style: const GPUTextLayoutStyle(
-          lineHeight: 1.3,
-          softWrap: false,
-        ),
+        style: const GPUTextLayoutStyle(lineHeight: 1.3, softWrap: false),
       );
       expect(nowrapScroll.lineCount, 1);
       expect(nowrapScroll.width, 200);
@@ -671,75 +832,74 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('worker one-shot layout applies align, strut, and per-run height',
-      () async {
-    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
-    final font = GPUFont.parse(bytes);
-    final m = font.verticalMetrics;
-    final fontSize = 20.0;
-    final ascent = m.ascender / font.unitsPerEm * fontSize;
-    final descent = -m.descender / font.unitsPerEm * fontSize;
+  test(
+    'worker one-shot layout applies align, strut, and per-run height',
+    () async {
+      final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+      final font = GPUFont.parse(bytes);
+      final m = font.verticalMetrics;
+      final fontSize = 20.0;
+      final ascent = m.ascender / font.unitsPerEm * fontSize;
+      final descent = -m.descender / font.unitsPerEm * fontSize;
 
-    final worker = await GPUTextWorker.spawn();
-    try {
-      await worker.registerFont('lato', bytes);
+      final worker = await GPUTextWorker.spawn();
+      try {
+        await worker.registerFont('lato', bytes);
 
-      final strutOnly = await worker.layout(
-        GPUTextLayoutRequest(
-          runs: const [
-            GPUTextRunSpec(text: 'x', fontId: 'lato', fontSizePx: 10),
-          ],
-          maxWidth: 200,
-          style: GPUTextLayoutStyle(
-            strut: wf.StrutMetrics(
-              ascent: ascent,
-              descent: descent,
-              force: true,
+        final strutOnly = await worker.layout(
+          GPUTextLayoutRequest(
+            runs: const [
+              GPUTextRunSpec(text: 'x', fontId: 'lato', fontSizePx: 10),
+            ],
+            maxWidth: 200,
+            style: GPUTextLayoutStyle(
+              strut: wf.StrutMetrics(
+                ascent: ascent,
+                descent: descent,
+                force: true,
+              ),
             ),
           ),
-        ),
-      );
-      // Forced strut replaces text metrics → height ≈ ascent+descent.
-      expect(strutOnly.height, closeTo(ascent + descent, 0.5));
+        );
+        // Forced strut replaces text metrics → height ≈ ascent+descent.
+        expect(strutOnly.height, closeTo(ascent + descent, 0.5));
 
-      final tall = await worker.layout(
-        const GPUTextLayoutRequest(
-          runs: [
-            GPUTextRunSpec(
-              text: 'Ag',
-              fontId: 'lato',
-              fontSizePx: 20,
-              height: 2.0,
-            ),
-          ],
-          maxWidth: 200,
-        ),
-      );
-      final normal = await worker.layout(
-        const GPUTextLayoutRequest(
-          runs: [
-            GPUTextRunSpec(text: 'Ag', fontId: 'lato', fontSizePx: 20),
-          ],
-          maxWidth: 200,
-        ),
-      );
-      expect(tall.height, greaterThan(normal.height));
+        final tall = await worker.layout(
+          const GPUTextLayoutRequest(
+            runs: [
+              GPUTextRunSpec(
+                text: 'Ag',
+                fontId: 'lato',
+                fontSizePx: 20,
+                height: 2.0,
+              ),
+            ],
+            maxWidth: 200,
+          ),
+        );
+        final normal = await worker.layout(
+          const GPUTextLayoutRequest(
+            runs: [GPUTextRunSpec(text: 'Ag', fontId: 'lato', fontSizePx: 20)],
+            maxWidth: 200,
+          ),
+        );
+        expect(tall.height, greaterThan(normal.height));
 
-      final centered = await worker.layout(
-        const GPUTextLayoutRequest(
-          runs: [
-            GPUTextRunSpec(text: 'Hi', fontId: 'lato', fontSizePx: 18),
-          ],
-          maxWidth: 300,
-          style: GPUTextLayoutStyle(align: wf.TextAlign.center),
-        ),
-      );
-      expect(centered.width, 300);
-      expect(centered.glyphCount, greaterThan(0));
-    } finally {
-      worker.dispose();
-    }
-  }, timeout: const Timeout(Duration(minutes: 2)));
+        final centered = await worker.layout(
+          const GPUTextLayoutRequest(
+            runs: [GPUTextRunSpec(text: 'Hi', fontId: 'lato', fontSizePx: 18)],
+            maxWidth: 300,
+            style: GPUTextLayoutStyle(align: wf.TextAlign.center),
+          ),
+        );
+        expect(centered.width, 300);
+        expect(centered.glyphCount, greaterThan(0));
+      } finally {
+        worker.dispose();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
   test('worker emits decorations, backgrounds, and hitBoxes', () async {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();

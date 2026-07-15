@@ -78,8 +78,7 @@ void main() {
     await tester.pump(); // apply the post-reflow markNeedsLayout
 
     final sliver =
-        tester.renderObject(find.byType(SliverGPUText))
-            as RenderSliverGPUText;
+        tester.renderObject(find.byType(SliverGPUText)) as RenderSliverGPUText;
     final contentH = metrics.single.size.height;
     expect(contentH, greaterThan(600));
     expect(sliver.geometry!.scrollExtent, contentH);
@@ -211,7 +210,8 @@ void main() {
             ),
           ),
           TextSpan(
-            text: ' after.\n${List.generate(200, (i) => 'Filler line $i.').join('\n')}',
+            text:
+                ' after.\n${List.generate(200, (i) => 'Filler line $i.').join('\n')}',
           ),
         ],
       ),
@@ -352,9 +352,9 @@ void main() {
     );
 
     await tester.pumpWidget(app(blocks));
-    final sliver =
-        tester.renderObject(find.byType(SliverGPUTextBlocks))
-            as RenderSliverGPUTextBlocks;
+    final sliver = tester.renderObject(
+      find.byType(SliverGPUTextBlocks),
+    ) as RenderSliverGPUTextBlocks;
 
     // Extent is available synchronously from the estimates — before the
     // worker or the GPU pipeline have even resolved.
@@ -451,9 +451,9 @@ void main() {
         ),
       ),
     );
-    final sliver =
-        tester.renderObject(find.byType(SliverGPUTextBlocks))
-            as RenderSliverGPUTextBlocks;
+    final sliver = tester.renderObject(
+      find.byType(SliverGPUTextBlocks),
+    ) as RenderSliverGPUTextBlocks;
     // Settle until the strip is complete (every block it covers is live) —
     // only a complete strip is kept across the resize.
     await _pumpUntil(
@@ -480,11 +480,93 @@ void main() {
     );
 
     // Once the visible blocks re-lay out at 640, the fresh strip replaces it.
-    await _pumpUntil(
-      tester,
-      () => laidOut > 0 && !sliver.debugWindowIsStale,
-    );
+    await _pumpUntil(tester, () => laidOut > 0 && !sliver.debugWindowIsStale);
     expect(sliver.debugHasWindow, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('strip renders into the bucketed texture sub-rect '
+      '(viewport-confined, padding untouched)', (tester) async {
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(800, 600);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final controller = await _spawnController(tester);
+    addTearDown(controller.dispose);
+
+    var laidOut = false;
+    final doc = GPUTextDocument.rich(
+      'doc-bucket',
+      TextSpan(
+        text: List.generate(100, (i) => 'Bucket line $i.').join('\n'),
+        style: const TextStyle(fontSize: 16),
+      ),
+      fontIdResolver: (_) => 'lato',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CustomScrollView(
+          slivers: [
+            SliverGPUText(
+              controller: controller,
+              document: doc,
+              onMetrics: (_) => laidOut = true,
+            ),
+          ],
+        ),
+      ),
+    );
+    // skipOffstage: pre-reflow the sliver has zero geometry, which the
+    // viewport reports as offstage — the default finder would miss it.
+    final sliver = tester.renderObject(
+      find.byType(SliverGPUText, skipOffstage: false),
+    ) as RenderSliverGPUText;
+    await _pumpUntil(tester, () => laidOut && sliver.debugHasWindow);
+
+    final img = sliver.debugWindowImage!;
+    final src = sliver.debugWindowSrc;
+    // The backing texture is allocated in 256-px buckets, so it is larger
+    // than the strip; the strip lives in the top-left src sub-rect.
+    expect(img.width % 256, 0);
+    expect(img.height % 256, 0);
+    expect(src.width, 800); // doc width at dpr 1
+    expect(img.width, greaterThan(src.width.toInt()));
+    expect(src.height, lessThanOrEqualTo(img.height.toDouble()));
+
+    final data = (await tester.runAsync(() => img.toByteData()))!;
+    bool inkAt(int x, int y) => data.getUint8((y * img.width + x) * 4 + 3) != 0;
+    // Glyph coverage must land at the TOP-LEFT of the content sub-rect (the
+    // first text line starts at doc-space y≈0 and the strip starts at 0) —
+    // a mis-oriented or mis-scaled viewport would leave this region empty.
+    var contentInk = false;
+    for (var y = 0; y < 64 && !contentInk; y++) {
+      for (var x = 0; x < src.width.toInt() && !contentInk; x += 2) {
+        if (inkAt(x, y)) contentInk = true;
+      }
+    }
+    expect(
+      contentInk,
+      isTrue,
+      reason: 'glyphs must render inside the viewport sub-rect',
+    );
+    // The bucket padding right of the content must be untouched (transparent
+    // clear + clip-space culling keep draws inside the viewport).
+    var paddingInk = false;
+    for (var y = 0; y < img.height && !paddingInk; y += 5) {
+      for (
+        var x = src.width.toInt() + 1;
+        x < img.width && !paddingInk;
+        x += 3
+      ) {
+        if (inkAt(x, y)) paddingInk = true;
+      }
+    }
+    expect(
+      paddingInk,
+      isFalse,
+      reason: 'nothing may render outside the viewport sub-rect',
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -536,9 +618,7 @@ void main() {
     await tester.pump();
     await _pumpUntil(
       tester,
-      () =>
-          metrics.isNotEmpty &&
-          (metrics.last.size.width - 700).abs() < 0.5,
+      () => metrics.isNotEmpty && (metrics.last.size.width - 700).abs() < 0.5,
     );
 
     final sliver =

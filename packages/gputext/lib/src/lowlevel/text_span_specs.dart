@@ -187,16 +187,19 @@ List<GPUInlineSpec> flattenInlineSpan(
   return out;
 }
 
-Map<String, int> _features(List<FontFeature>? fs) =>
-    fs == null || fs.isEmpty ? const {} : {for (final f in fs) f.feature: f.value};
+Map<String, int> _features(List<FontFeature>? fs) => fs == null || fs.isEmpty
+    ? const {}
+    : {for (final f in fs) f.feature: f.value};
 
 List<double> _rgba(Color? c, List<double> fallback) =>
     c == null ? fallback : [c.r, c.g, c.b, c.a];
 
 InlinePlaceholderAlignment _mapAlignment(PlaceholderAlignment a) => switch (a) {
   PlaceholderAlignment.baseline => InlinePlaceholderAlignment.baseline,
-  PlaceholderAlignment.aboveBaseline => InlinePlaceholderAlignment.aboveBaseline,
-  PlaceholderAlignment.belowBaseline => InlinePlaceholderAlignment.belowBaseline,
+  PlaceholderAlignment.aboveBaseline =>
+    InlinePlaceholderAlignment.aboveBaseline,
+  PlaceholderAlignment.belowBaseline =>
+    InlinePlaceholderAlignment.belowBaseline,
   PlaceholderAlignment.top => InlinePlaceholderAlignment.top,
   PlaceholderAlignment.middle => InlinePlaceholderAlignment.middle,
   PlaceholderAlignment.bottom => InlinePlaceholderAlignment.bottom,

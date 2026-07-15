@@ -92,6 +92,17 @@ class Uint32Buf {
     _data[_length++] = v;
   }
 
+  /// Bulk append of `src[start..end)`. `src` must not alias this buffer.
+  void addRange(Uint32List src, int start, int end) {
+    final n = end - start;
+    if (n <= 0) return;
+    while (_length + n > _data.length) {
+      _grow();
+    }
+    _data.setRange(_length, _length + n, src, start);
+    _length += n;
+  }
+
   void _grow() {
     final next = Uint32List(_data.length * 2);
     next.setRange(0, _length, _data);

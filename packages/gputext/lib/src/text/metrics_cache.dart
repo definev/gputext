@@ -157,7 +157,9 @@ void ensureGraphemeMetrics(
         pipelineText: text,
       );
   final rangeStart = shaped == null ? 0 : start;
-  final rangeEnd = shaped == null ? run.pipelineText.length : (end ?? start + text.length);
+  final rangeEnd = shaped == null
+      ? run.pipelineText.length
+      : (end ?? start + text.length);
   final (lo, hi) = shaped == null
       ? (0, run.glyphs.length)
       : run.glyphIndexRange(rangeStart, rangeEnd);

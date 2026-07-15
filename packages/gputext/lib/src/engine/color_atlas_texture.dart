@@ -55,7 +55,13 @@ class ColorAtlasTexture {
   }
 
   /// 2×2 box filter (rounded) of premultiplied RGBA — one level to the next.
-  static void _downsample(Uint8List src, int sw, Uint8List dst, int dw, int dh) {
+  static void _downsample(
+    Uint8List src,
+    int sw,
+    Uint8List dst,
+    int dw,
+    int dh,
+  ) {
     final srcStride = sw * 4;
     var di = 0;
     for (var y = 0; y < dh; y++) {
@@ -67,9 +73,12 @@ class ColorAtlasTexture {
         final c = r1 + x * 8;
         final d = c + 4;
         dst[di] = (src[a] + src[b] + src[c] + src[d] + 2) >> 2;
-        dst[di + 1] = (src[a + 1] + src[b + 1] + src[c + 1] + src[d + 1] + 2) >> 2;
-        dst[di + 2] = (src[a + 2] + src[b + 2] + src[c + 2] + src[d + 2] + 2) >> 2;
-        dst[di + 3] = (src[a + 3] + src[b + 3] + src[c + 3] + src[d + 3] + 2) >> 2;
+        dst[di + 1] =
+            (src[a + 1] + src[b + 1] + src[c + 1] + src[d + 1] + 2) >> 2;
+        dst[di + 2] =
+            (src[a + 2] + src[b + 2] + src[c + 2] + src[d + 2] + 2) >> 2;
+        dst[di + 3] =
+            (src[a + 3] + src[b + 3] + src[c + 3] + src[d + 3] + 2) >> 2;
         di += 4;
       }
     }

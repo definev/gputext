@@ -76,31 +76,59 @@ List<_Group> _groups() => [
       _Sample('regional-indicator flags', '🇯🇵 🇺🇸 🇻🇳'),
       _Sample('keycap', '1️⃣ #️⃣'),
     ],
-    caption: 'GPUText looks up each code point in COLR per-rune, so ZWJ / '
+    caption:
+        'GPUText looks up each code point in COLR per-rune, so ZWJ / '
         'flag / skin-tone sequences are NOT combined into one glyph.',
   ),
   _Group('Mixed bidi (RTL + LTR)', const [
-    _Sample('Arabic + Latin', 'Order 42: مرحبا بالعالم then back.',
-        direction: TextDirection.ltr),
-    _Sample('Hebrew + Latin', 'Price שלום עולם is 100 ₪.',
-        direction: TextDirection.ltr),
-    _Sample('RTL base', 'مرحبا بالعالم — نص عربي',
-        direction: TextDirection.rtl),
+    _Sample(
+      'Arabic + Latin',
+      'Order 42: مرحبا بالعالم then back.',
+      direction: TextDirection.ltr,
+    ),
+    _Sample(
+      'Hebrew + Latin',
+      'Price שלום עולם is 100 ₪.',
+      direction: TextDirection.ltr,
+    ),
+    _Sample(
+      'RTL base',
+      'مرحبا بالعالم — نص عربي',
+      direction: TextDirection.rtl,
+    ),
   ], caption: 'Copied text stays logical source order regardless of visuals.'),
   _Group('Bidi overrides & isolates', [
-    _Sample('RLO override on Latin', '$_rlo' 'reversed?' '$_pdf'),
-    _Sample('nested isolates', '$_lri' 'a' '$_rli' 'שלום' '$_pdi' 'b' '$_pdi'),
+    _Sample(
+      'RLO override on Latin',
+      '$_rlo'
+          'reversed?'
+          '$_pdf',
+    ),
+    _Sample(
+      'nested isolates',
+      '$_lri'
+          'a'
+          '$_rli'
+          'שלום'
+          '$_pdi'
+          'b'
+          '$_pdi',
+    ),
   ]),
   const _Group('Astral plane (> U+FFFF)', [
     _Sample('math bold', '𝐇𝐞𝐥𝐥𝐨 𝟏𝟐𝟑'),
     _Sample('CJK Ext-B', '𠜎 𠜱 𠝹'),
     _Sample('misc symbols', '🀄 𝕏 🄯 🯰'),
   ], caption: 'Surrogate pairs stay intact; uncovered ones become .notdef.'),
-  const _Group('Complex scripts (need wide fallback)', [
-    _Sample('CJK', '你好世界 こんにちは 안녕하세요'),
-    _Sample('Thai (no dictionary break)', 'สวัสดีชาวโลก'),
-    _Sample('Devanagari', 'नमस्ते दुनिया'),
-  ], caption: 'Renders when Arial Unicode fallback is present; else tofu boxes.'),
+  const _Group(
+    'Complex scripts (need wide fallback)',
+    [
+      _Sample('CJK', '你好世界 こんにちは 안녕하세요'),
+      _Sample('Thai (no dictionary break)', 'สวัสดีชาวโลก'),
+      _Sample('Devanagari', 'नमस्ते दुनिया'),
+    ],
+    caption: 'Renders when Arial Unicode fallback is present; else tofu boxes.',
+  ),
   const _Group('Ligatures & zero-width', [
     _Sample('OpenType ligatures', 'office difficult waffle — fi fl ffi'),
     _Sample('precomposed ligatures', 'ﬁ ﬂ'),
@@ -110,7 +138,9 @@ List<_Group> _groups() => [
     _Sample(
       'everything at once',
       'A​b\t${_zalgo('Z', 6)} مرحبا 👨$_zwj👩 '
-          '𝐌 $_rlo' 'xyz' '$_pdf 你好 $_vs16',
+          '𝐌 $_rlo'
+          'xyz'
+          '$_pdf 你好 $_vs16',
       direction: TextDirection.ltr,
     ),
   ]),
@@ -157,14 +187,17 @@ class _CursedDemoPageState extends State<CursedDemoPage> {
     // dart:io file futures don't resolve on their own.
     if (engine.fallbackFamilies.isEmpty) {
       try {
-        final file =
-            File('/System/Library/Fonts/Supplemental/Arial Unicode.ttf');
-        final exists = await file
-            .exists()
-            .timeout(const Duration(seconds: 1), onTimeout: () => false);
+        final file = File(
+          '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+        );
+        final exists = await file.exists().timeout(
+          const Duration(seconds: 1),
+          onTimeout: () => false,
+        );
         if (exists) {
-          final bytes =
-              await file.readAsBytes().timeout(const Duration(seconds: 3));
+          final bytes = await file.readAsBytes().timeout(
+            const Duration(seconds: 3),
+          );
           engine.registerFont('Arial Unicode', GPUFont.parse(bytes));
           engine.setFallbackFamilies(const ['Arial Unicode']);
         }
@@ -213,7 +246,11 @@ class _CursedDemoPageState extends State<CursedDemoPage> {
           : const Center(
               child: Text(
                 'Loading emoji + fallback fonts…',
-                style: TextStyle(fontFamily: 'Lato', fontSize: 14, color: _muted),
+                style: TextStyle(
+                  fontFamily: 'Lato',
+                  fontSize: 14,
+                  color: _muted,
+                ),
               ),
             ),
     );
@@ -238,28 +275,28 @@ class _Legend extends StatelessWidget {
   }
 
   Widget _chip(String tag, Color c, String label) => Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: c,
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Text(
-              tag,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.5,
-              ),
-            ),
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: c,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          tag,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.5,
           ),
-          const SizedBox(width: 6),
-          Text(label, style: const TextStyle(color: _ink, fontSize: 13)),
-        ],
-      );
+        ),
+      ),
+      const SizedBox(width: 6),
+      Text(label, style: const TextStyle(color: _ink, fontSize: 13)),
+    ],
+  );
 }
 
 class _GroupView extends StatelessWidget {
@@ -359,43 +396,39 @@ class _SampleRow extends StatelessWidget {
   }
 
   Widget _gpuLine(TextSpan span, TextDirection dir) => Directionality(
-        textDirection: dir,
-        child: GPURichText(
-          text: span,
-          textDirection: dir,
-          softWrap: true,
-        ),
-      );
+    textDirection: dir,
+    child: GPURichText(text: span, textDirection: dir, softWrap: true),
+  );
 
   Widget _refLine(TextSpan span, TextDirection dir) => Directionality(
-        textDirection: dir,
-        child: Text.rich(span, textDirection: dir),
-      );
+    textDirection: dir,
+    child: Text.rich(span, textDirection: dir),
+  );
 
   Widget _labeledLine(String tag, Color c, Widget child) => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 34,
-            margin: const EdgeInsets.only(top: 4),
-            padding: const EdgeInsets.symmetric(vertical: 2),
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: c.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Text(
-              tag,
-              style: TextStyle(
-                color: c,
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.5,
-              ),
-            ),
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Container(
+        width: 34,
+        margin: const EdgeInsets.only(top: 4),
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: c.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          tag,
+          style: TextStyle(
+            color: c,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.5,
           ),
-          const SizedBox(width: 10),
-          Expanded(child: child),
-        ],
-      );
+        ),
+      ),
+      const SizedBox(width: 10),
+      Expanded(child: child),
+    ],
+  );
 }

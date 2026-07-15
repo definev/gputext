@@ -31,8 +31,7 @@ class _GPUTextBlocksDemoPageState extends State<GPUTextBlocksDemoPage> {
   Future<void> _boot() async {
     try {
       final controller = await GPUTextViewController.spawn();
-      final lato = (await rootBundle.load('assets/Lato-Regular.ttf'))
-          .buffer
+      final lato = (await rootBundle.load('assets/Lato-Regular.ttf')).buffer
           .asUint8List();
       await controller.registerFont('lato', lato);
 
@@ -94,7 +93,10 @@ class _GPUTextBlocksDemoPageState extends State<GPUTextBlocksDemoPage> {
                     child: Text(
                       'laid out $_laidOut / ${blocks.length} · shared atlas + '
                       'LRU · one surface',
-                      style: const TextStyle(fontSize: 12, color: Colors.black54),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                      ),
                     ),
                   ),
                 ),

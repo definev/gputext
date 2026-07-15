@@ -31,13 +31,14 @@ const _cbdtPath =
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('bitmap emoji draws opaque colored pixels via the color pipeline',
-      () async {
+  test('bitmap emoji draws opaque colored pixels via the color pipeline', () async {
     final engine = GPUText.instance;
     await engine.ensureInitialized();
     if (!engine.gpuReady) {
-      markTestSkipped('Flutter GPU unavailable — run with '
-          '--enable-impeller --enable-flutter-gpu');
+      markTestSkipped(
+        'Flutter GPU unavailable — run with '
+        '--enable-impeller --enable-flutter-gpu',
+      );
       return;
     }
 
@@ -111,12 +112,20 @@ void main() {
       }
     }
     final total = dim * dim;
-    debugPrint('color-render: opaque=$opaque/$total lumaLevels=${lumas.length}');
+    debugPrint(
+      'color-render: opaque=$opaque/$total lumaLevels=${lumas.length}',
+    );
     expect(opaque, greaterThan(0), reason: 'emoji quad rendered nothing');
-    expect(opaque, lessThan(total),
-        reason: 'covered the whole surface — texture alpha not applied');
-    expect(lumas.length, greaterThan(1),
-        reason: 'uniform fill — atlas texture was not sampled');
+    expect(
+      opaque,
+      lessThan(total),
+      reason: 'covered the whole surface — texture alpha not applied',
+    );
+    expect(
+      lumas.length,
+      greaterThan(1),
+      reason: 'uniform fill — atlas texture was not sampled',
+    );
 
     engine.registerEmojiFont(null);
   });

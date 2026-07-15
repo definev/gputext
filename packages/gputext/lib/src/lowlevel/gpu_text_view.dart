@@ -34,6 +34,7 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../atlas.dart' show AtlasTextures, uploadAtlasTextures;
+import '../bands.dart' show Float32Buf, Uint32Buf;
 import '../color_bitmap.dart' show BitmapGlyph;
 import '../engine/color_atlas.dart' show SharedColorAtlas, ColorAtlasEntry;
 import '../engine/color_atlas_texture.dart' show ColorAtlasTexture;
@@ -57,6 +58,16 @@ part 'gpu_text_sliver.dart';
 // mobile GPUs lower). We lay out the FULL document in doc space but only ever
 // rasterize a viewport-sized window of it — see [GPUTextView].
 const double _maxDevicePx = 8192;
+
+// Glyph ink can extend past the layout box — italic overhang at the wrap
+// margin, negative bearings ('j', 'f') at line start — and Flutter text
+// PAINTS that ink outside its box rather than clipping it. The composite
+// window is padded by this much logical width on each side so margin ink
+// survives the raster viewport, and [_RenderGpuWindowImage.paint] draws the
+// padded image shifted left by the same amount, letting the overhang show
+// beside the box exactly like ordinary text ink. Vertical edges stay exact:
+// they are scroll-viewport boundaries, where clipping is correct.
+const double _inkPadPx = 16;
 
 /// Laid-out metrics reported after each reflow (see [GPUTextView.onMetrics]).
 @immutable
@@ -225,6 +236,67 @@ class GPUTextDocument {
   }
 }
 
+/// Main-isolate mirror of the worker's append-only shared glyph atlas,
+/// reconstructed from the tails each reply ships (see
+/// [GPUTextWorker.reflowDoc] `sinceCurves`). One per controller, so every view
+/// on the worker shares a single copy: textures upload from here, replies
+/// carry only what this mirror doesn't hold yet (usually nothing), and a view
+/// that (re)attaches gets the atlas without a worker round trip.
+class _AtlasMirror {
+  var _curves = Float32Buf();
+  var _rows = Uint32Buf();
+
+  /// Worker [SharedGlyphAtlas.generation] this mirror is complete up to, or
+  /// -1 before the first payload.
+  int generation = -1;
+
+  /// [SharedGlyphAtlas.structureGeneration] the held data was fetched under.
+  int structure = 0;
+
+  /// Set when a payload couldn't be applied (structure changed mid-flight, or
+  /// a gap); forces the next request to fetch the full snapshot.
+  bool needsFull = false;
+
+  int get curveLen => _curves.length;
+  int get rowLen => _rows.length;
+  Float32List get curves => _curves.view;
+  Uint32List get rows => _rows.view;
+
+  /// Fold one reply's atlas payload in. The prefix below [curveBase]/[rowBase]
+  /// is bit-identical to what we hold (append-only atlas + FIFO replies), so
+  /// only the part beyond our length is appended; overlapping tails from
+  /// concurrent in-flight requests fold in cleanly. Advances [generation] only
+  /// when the mirror really is complete up to [generation] afterwards.
+  void apply({
+    required Float32List curves,
+    required Uint32List rows,
+    required int curveBase,
+    required int rowBase,
+    required int generation,
+    required int structure,
+  }) {
+    if (structure != this.structure || needsFull) {
+      if (curveBase != 0 || rowBase != 0) {
+        // Held prefix is invalid and this payload is only a tail — unusable.
+        needsFull = true;
+        return;
+      }
+      _curves = Float32Buf(math.max(curves.length, 1));
+      _rows = Uint32Buf(math.max(rows.length, 1));
+      this.structure = structure;
+      this.generation = -1;
+      needsFull = false;
+    }
+    if (curveBase > _curves.length || rowBase > _rows.length) {
+      needsFull = true; // a gap we can't bridge (should not happen: FIFO)
+      return;
+    }
+    _curves.addRange(curves, _curves.length - curveBase, curves.length);
+    _rows.addRange(rows, _rows.length - rowBase, rows.length);
+    if (generation > this.generation) this.generation = generation;
+  }
+}
+
 /// Owns the background layout isolate and the fonts registered on it.
 ///
 /// Font bytes are parsed on the worker only — the main isolate never touches
@@ -258,6 +330,67 @@ class GPUTextViewController {
   final SharedColorAtlas colorAtlas = SharedColorAtlas();
   final ColorAtlasTexture _colorAtlasTex = ColorAtlasTexture();
 
+  /// CPU-side copy of the worker's shared glyph atlas, kept current by the
+  /// [_reflowDoc]/[_syncDocs] wrappers. Views upload textures from here (never
+  /// from reply payloads) whenever their uploaded generation falls behind
+  /// [_atlasGeneration].
+  final _AtlasMirror _atlas = _AtlasMirror();
+
+  int get _atlasGeneration => _atlas.generation;
+
+  /// Apply one reply's atlas payload to [_atlas]. Consumes the reply's
+  /// single-use curves/rows transferables.
+  void _applyAtlasPayload({
+    required Float32List? curves,
+    required Uint32List? rows,
+    required int curveBase,
+    required int rowBase,
+    required int generation,
+    required int structure,
+  }) {
+    if (curves == null || rows == null) return;
+    _atlas.apply(
+      curves: curves,
+      rows: rows,
+      curveBase: curveBase,
+      rowBase: rowBase,
+      generation: generation,
+      structure: structure,
+    );
+  }
+
+  /// Reflow [id] on the worker, requesting only the atlas tail this controller
+  /// doesn't hold yet (usually empty) and folding it into [_atlas] before
+  /// returning. The reply's curves/rows are consumed here — read the atlas
+  /// from the mirror, not the returned drawable.
+  Future<GPUTextInstances> _reflowDoc(
+    String id,
+    double width, {
+    required GPUTextLayoutStyle style,
+    required double dpr,
+  }) async {
+    final full = _atlas.needsFull;
+    final d = await _worker.reflowDoc(
+      id,
+      width,
+      style: style,
+      includeAtlas: true,
+      dpr: dpr,
+      sinceCurves: full ? 0 : _atlas.curveLen,
+      sinceRows: full ? 0 : _atlas.rowLen,
+      sinceStructure: full ? -1 : _atlas.structure,
+    );
+    _applyAtlasPayload(
+      curves: d.materializeCurves(),
+      rows: d.materializeRows(),
+      curveBase: d.curveBase,
+      rowBase: d.rowBase,
+      generation: d.atlasGeneration,
+      structure: d.atlasStructure,
+    );
+    return d;
+  }
+
   Future<GPUTextPipeline?> _sharedPipeline() async {
     if (_pipelineTried) return _pipeline;
     _pipelineTried = true;
@@ -278,15 +411,35 @@ class GPUTextViewController {
 
   /// Decode/pack any not-yet-resident stubs. Returns true when the atlas
   /// generation changed (caller should rebuild color instances + re-render).
+  ///
+  /// The worker ships each strike's PNG once; a metrics-only stub whose key is
+  /// not resident (e.g. the byte-carrying reply raced a concurrent view, or a
+  /// future eviction dropped it) recovers the bytes with one batched
+  /// [GPUTextWorker.fetchColorPngs] round trip.
   Future<bool> _ensureColorStubs(List<_ColorStub> stubs) async {
     if (stubs.isEmpty) return false;
     final before = colorAtlas.generation;
+    final missing = <String>{
+      for (final s in stubs)
+        if (s.pngBytes == null && colorAtlas.lookupKey(s.cacheKey) == null)
+          s.cacheKey,
+    };
+    var fetched = const <String, Uint8List>{};
+    if (missing.isNotEmpty && !_disposed) {
+      try {
+        fetched = await _worker.fetchColorPngs(missing.toList());
+      } on StateError {
+        return colorAtlas.generation != before; // worker torn down mid-await
+      }
+    }
     for (final s in stubs) {
       if (colorAtlas.lookupKey(s.cacheKey) != null) continue;
+      final bytes = s.pngBytes ?? fetched[s.cacheKey];
+      if (bytes == null) continue;
       await colorAtlas.ensureBytes(
         s.cacheKey,
         BitmapGlyph(
-          bytes: s.pngBytes,
+          bytes: bytes,
           format: 'png ',
           ppem: s.strikePpem,
           width: 0,
@@ -359,7 +512,6 @@ class GPUTextViewController {
     List<GPUTextDocument> docs,
     double width, {
     required double dpr,
-    bool includeAtlas = false,
     GPUTextLayoutStyle Function(GPUTextDocument doc)? styleOf,
   }) async {
     if (_disposed) return null;
@@ -376,13 +528,28 @@ class GPUTextViewController {
         ),
     ];
     final disposesBefore = _disposeCount;
+    // Always carry the atlas: with the since-prefix it's just the tail the
+    // mirror doesn't hold yet, so a batch that banded new glyphs lands with
+    // the rows its instances reference (no stale-atlas frame).
+    final full = _atlas.needsFull;
     final result = await _worker.syncDocs(
       entries,
       width,
-      includeAtlas: includeAtlas,
+      includeAtlas: true,
       dpr: dpr,
+      sinceCurves: full ? 0 : _atlas.curveLen,
+      sinceRows: full ? 0 : _atlas.rowLen,
+      sinceStructure: full ? -1 : _atlas.structure,
     );
     if (_disposed) return null;
+    _applyAtlasPayload(
+      curves: result.materializeCurves(),
+      rows: result.materializeRows(),
+      curveBase: result.curveBase,
+      rowBase: result.rowBase,
+      generation: result.atlasGeneration,
+      structure: result.atlasStructure,
+    );
     // Non-null ⇒ the doc exists on the worker now (freshly prepared or
     // already warm). Same race as _ensurePrepared: a _disposeDoc issued while
     // we awaited lands on the worker AFTER our batch's prepare, so marking
@@ -448,7 +615,10 @@ class _ColorStub {
   );
 
   final String cacheKey;
-  final Uint8List pngBytes;
+
+  /// Null for a metrics-only stub — the strike's bytes shipped with an
+  /// earlier reply (recoverable via [GPUTextWorker.fetchColorPngs]).
+  final Uint8List? pngBytes;
   final int strikePpem;
   final double bearingX;
   final double bearingY;
@@ -612,7 +782,8 @@ class _GPUTextViewState extends State<GPUTextView> {
   // started every frame, so every arriving result was already "stale").
   int _reflowEpoch = 0;
   int _appliedReflowEpoch = 0;
-  String? _atlasKeyOnGpu; // doc id whose atlas is currently uploaded
+  // Atlas-mirror generation currently uploaded to this surface (-1 = none).
+  int _atlasGenOnGpu = -1;
 
   // Live geometry, logical px.
   double _contentWidth = 0; // wrap width from the last layout pass
@@ -700,8 +871,8 @@ class _GPUTextViewState extends State<GPUTextView> {
     super.initState();
     _scroll = widget.scrollController ?? ScrollController();
     _hScroll = widget.horizontalScrollController ?? ScrollController();
-    _dpr = WidgetsBinding.instance.platformDispatcher.views.first
-        .devicePixelRatio;
+    _dpr =
+        WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
     _init();
   }
 
@@ -728,6 +899,11 @@ class _GPUTextViewState extends State<GPUTextView> {
   @override
   void didUpdateWidget(GPUTextView old) {
     super.didUpdateWidget(old);
+    if (!identical(widget.controller, old.controller)) {
+      // A different controller means a different worker atlas — the uploaded
+      // texture (and its generation numbering) belongs to the old one.
+      _atlasGenOnGpu = -1;
+    }
     if (widget.scrollController != old.scrollController) {
       if (old.scrollController == null) _scroll.dispose();
       _scroll = widget.scrollController ?? ScrollController();
@@ -777,7 +953,8 @@ class _GPUTextViewState extends State<GPUTextView> {
       // an equal layout style means the reflow would be byte-identical — skip
       // the worker round-trip. (placeholderWidgets/hitTargets are read live
       // from widget.document at build/event time; no reflow needed for them.)
-      final equivalent = widget.document.id == old.document.id &&
+      final equivalent =
+          widget.document.id == old.document.id &&
           widget.document.effectiveStyle == old.document.effectiveStyle;
       if (!equivalent) unawaited(_reflow());
     }
@@ -836,8 +1013,7 @@ class _GPUTextViewState extends State<GPUTextView> {
     final h = math.min(slice.height, _maxDevicePx / math.max(_dpr, 0.001));
     final notifier = _paintSlice.value;
     final geometryChanged = slice.top != _paintTop || h != _viewportH;
-    final notifierStale =
-        notifier.top != slice.top || notifier.height != h;
+    final notifierStale = notifier.top != slice.top || notifier.height != h;
     if (!geometryChanged && !notifierStale) return;
     _paintTop = slice.top;
     _viewportH = h;
@@ -955,20 +1131,16 @@ class _GPUTextViewState extends State<GPUTextView> {
         lineBreak: doc.lineBreak,
         language: doc.language,
       );
-      if (!mounted ||
-          widget.controller._disposed ||
-          epoch != _reflowEpoch) {
+      if (!mounted || widget.controller._disposed || epoch != _reflowEpoch) {
         return;
       }
-      // The outline atlas is identical across a doc's reflows, so upload it
-      // only when the doc (id) changed — otherwise ship just the instances.
-      final needAtlas = _atlasKeyOnGpu != doc.id;
       final sw = Stopwatch()..start();
-      final d = await widget.controller._worker.reflowDoc(
+      // The controller wrapper keeps the atlas mirror current (replies carry
+      // only the tail it doesn't hold, usually nothing).
+      final d = await widget.controller._reflowDoc(
         doc.id,
         w,
         style: doc.effectiveStyle,
-        includeAtlas: needAtlas,
         dpr: _dpr,
       );
       sw.stop();
@@ -979,18 +1151,11 @@ class _GPUTextViewState extends State<GPUTextView> {
         return;
       }
       _appliedReflowEpoch = epoch;
-      await _applyDrawable(
-        d,
-        needAtlas,
-        doc.id,
-        sw.elapsedMicroseconds / 1000.0,
-      );
+      await _applyDrawable(d, sw.elapsedMicroseconds / 1000.0);
     } on GPUTextReflowSuperseded {
       // Worker kept a newer same-doc reflow. If we are still the latest epoch
       // the superseding main call may have bailed before sending — re-kick.
-      if (mounted &&
-          !widget.controller._disposed &&
-          epoch == _reflowEpoch) {
+      if (mounted && !widget.controller._disposed && epoch == _reflowEpoch) {
         _requestReflow();
       }
     } on StateError catch (e) {
@@ -999,17 +1164,18 @@ class _GPUTextViewState extends State<GPUTextView> {
     }
   }
 
-  Future<void> _applyDrawable(
-    GPUTextInstances d,
-    bool needAtlas,
-    String atlasKey,
-    double ms,
-  ) async {
+  Future<void> _applyDrawable(GPUTextInstances d, double ms) async {
     final surface = _surface;
     if (surface == null) return;
-    if (needAtlas) {
-      surface.setAtlas(d.materializeCurves(), d.materializeRows());
-      _atlasKeyOnGpu = atlasKey;
+    // Upload from the controller's atlas mirror when this surface's texture
+    // is behind what the fresh instances reference. Sourcing from the mirror
+    // (not the reply) also covers rows banded by OTHER docs' prepares, so the
+    // texture never lags the instance buffer.
+    final ctrl = widget.controller;
+    if (_atlasGenOnGpu < d.atlasGeneration &&
+        ctrl._atlasGeneration >= d.atlasGeneration) {
+      surface.setAtlas(ctrl._atlas.curves, ctrl._atlas.rows);
+      _atlasGenOnGpu = ctrl._atlasGeneration;
     }
     surface.setInstances(d.materialize());
     _glyphCount = d.glyphCount;
@@ -1037,8 +1203,7 @@ class _GPUTextViewState extends State<GPUTextView> {
       unawaited(
         widget.controller._ensureColorStubs(_colorStubs).then((changed) {
           if (!mounted || widget.controller._disposed) return;
-          if (changed ||
-              widget.controller.colorAtlas.generation != genBefore) {
+          if (changed || widget.controller.colorAtlas.generation != genBefore) {
             _uploadColorInstances();
             _rasterEpoch++;
             setState(() {});
@@ -1122,19 +1287,27 @@ class _GPUTextViewState extends State<GPUTextView> {
 
   /// Paint-time raster of the current drawable into [logical] at [camX]/[camY]
   /// (device px). Owned by [_GpuWindowImage] — never call from build/layout.
-  ui.Image? _rasterWindow(Size logical, double camX, double camY) {
+  /// The window is widened by [_inkPadPx] each side (cam shifted to match) so
+  /// margin ink isn't shaved; paint draws it shifted left by the same pad.
+  _GpuWindow? _rasterWindow(Size logical, double camX, double camY) {
     final surface = _surface;
     if (surface == null || logical.isEmpty) return null;
     if (_glyphCount == 0 && _colorGlyphCount == 0) return null;
-    return surface.renderAt(
-      devW: (logical.width * _dpr).round().clamp(1, _maxDevicePx.round()),
+    final padDev = (_inkPadPx * _dpr).round();
+    final image = surface.renderAt(
+      devW: ((logical.width * _dpr).round() + 2 * padDev).clamp(
+        1,
+        _maxDevicePx.round(),
+      ),
       devH: (logical.height * _dpr).round().clamp(1, _maxDevicePx.round()),
       dpr: _dpr,
-      camX: camX,
+      camX: camX + padDev,
       camY: camY,
       clear: _clearColor,
       colorAtlas: widget.controller.colorAtlasTexture(),
     );
+    if (image == null) return null;
+    return (image: image, src: surface.contentRect);
   }
 
   // --- auto-measure (prototype) ---
@@ -1228,10 +1401,7 @@ class _GPUTextViewState extends State<GPUTextView> {
                 paintH = slice.height;
               } else {
                 // First frames / no viewport yet: rasterize one screenful.
-                paintH = math.min(
-                  contentH,
-                  MediaQuery.sizeOf(context).height,
-                );
+                paintH = math.min(contentH, MediaQuery.sizeOf(context).height);
               }
               if (paintH > maxPaintH) paintH = maxPaintH;
               // Quiet-prime the slice during build (notify would assert). Scroll
@@ -1245,7 +1415,8 @@ class _GPUTextViewState extends State<GPUTextView> {
 
             final widthOrDprChanged = w != _contentWidth || dpr != _dpr;
             // Ancestor-slice mode tracks the window via _paintSlice (no setState).
-            final windowChanged = !useAncestorSlice &&
+            final windowChanged =
+                !useAncestorSlice &&
                 (paintH != _viewportH || paintTop != _paintTop);
             if (widthOrDprChanged || windowChanged) {
               _contentWidth = w;
@@ -1276,14 +1447,14 @@ class _GPUTextViewState extends State<GPUTextView> {
             final allow2D = _allow2DScroll;
             final canScrollV = extent > layoutH + 0.5;
             final canScrollH = allow2D && hExtent > w + 0.5;
-            final scrollListenables =
-                allow2D ? Listenable.merge([_scroll, _hScroll]) : _scroll;
+            final scrollListenables = allow2D
+                ? Listenable.merge([_scroll, _hScroll])
+                : _scroll;
             // Default physics: lock axes that have nothing to pan (esp.
             // shrinkWrap when the view already hugs content height).
-            final vPhysics = widget.physics ??
-                (canScrollV
-                    ? null
-                    : const NeverScrollableScrollPhysics());
+            final vPhysics =
+                widget.physics ??
+                (canScrollV ? null : const NeverScrollableScrollPhysics());
             final hPhysics = canScrollH
                 ? (widget.physics ?? const ClampingScrollPhysics())
                 : const NeverScrollableScrollPhysics();
@@ -1324,9 +1495,8 @@ class _GPUTextViewState extends State<GPUTextView> {
             // the GPU image — RawScrollbar is not used (it asserts against
             // TwoDimensionalScrollable; see flutter#122348).
             final body = ScrollConfiguration(
-              behavior: ScrollConfiguration.of(context).copyWith(
-                scrollbars: false,
-              ),
+              behavior: ScrollConfiguration.of(context)
+                  .copyWith(scrollbars: false),
               child: Stack(
                 fit: StackFit.expand,
                 children: [
@@ -1429,11 +1599,11 @@ class _GPUTextViewState extends State<GPUTextView> {
                                   animation: scrollListenables,
                                   builder: (context, _) =>
                                       _placeholderOverlayWindow(
-                                    top + _scrollPixels(_scroll),
-                                    height,
-                                    w,
-                                    allow2D,
-                                  ),
+                                        top + _scrollPixels(_scroll),
+                                        height,
+                                        w,
+                                        allow2D,
+                                      ),
                                 ),
                               ),
                             ),
@@ -1461,13 +1631,13 @@ class _GPUTextViewState extends State<GPUTextView> {
                       ),
                       viewportBuilder:
                           (context, verticalOffset, horizontalOffset) {
-                        return _DocExtentViewport(
-                          verticalOffset: verticalOffset,
-                          horizontalOffset: horizontalOffset,
-                          contentSize: Size(hExtent, extent),
-                          child: _hitLayer(),
-                        );
-                      },
+                            return _DocExtentViewport(
+                              verticalOffset: verticalOffset,
+                              horizontalOffset: horizontalOffset,
+                              contentSize: Size(hExtent, extent),
+                              child: _hitLayer(),
+                            );
+                          },
                     )
                   else
                     SingleChildScrollView(
@@ -1652,10 +1822,7 @@ class _GPUTextViewState extends State<GPUTextView> {
 /// [RawScrollbar], which asserts when paired with 2D scrollables
 /// (flutter#122348).
 class _AxisScrollbar extends StatefulWidget {
-  const _AxisScrollbar({
-    required this.controller,
-    required this.axis,
-  });
+  const _AxisScrollbar({required this.controller, required this.axis});
 
   final ScrollController controller;
   final Axis axis;
@@ -1755,9 +1922,7 @@ class _AxisScrollbarState extends State<_AxisScrollbar> {
                     return;
                   }
                   final delta = d.localPosition.dy - startLocal;
-                  pos.jumpTo(
-                    (startPx + delta / range * max).clamp(0.0, max),
-                  );
+                  pos.jumpTo((startPx + delta / range * max).clamp(0.0, max));
                 }
               : null,
           onHorizontalDragStart: widget.axis == Axis.horizontal
@@ -1774,9 +1939,7 @@ class _AxisScrollbarState extends State<_AxisScrollbar> {
                     return;
                   }
                   final delta = d.localPosition.dx - startLocal;
-                  pos.jumpTo(
-                    (startPx + delta / range * max).clamp(0.0, max),
-                  );
+                  pos.jumpTo((startPx + delta / range * max).clamp(0.0, max));
                 }
               : null,
           onTapDown: (d) => jumpFromLocal(
@@ -1951,14 +2114,12 @@ class _RenderDocExtentViewport extends RenderBox
   void paint(PaintingContext context, Offset offset) {
     final child = this.child;
     if (child == null) return;
-    context.pushClipRect(
-      needsCompositing,
+    context.pushClipRect(needsCompositing, offset, Offset.zero & size, (
+      context,
       offset,
-      Offset.zero & size,
-      (context, offset) {
-        context.paintChild(child, offset + _paintOffset);
-      },
-    );
+    ) {
+      context.paintChild(child, offset + _paintOffset);
+    });
   }
 
   @override
@@ -2046,6 +2207,11 @@ class _SliceNotifier extends ChangeNotifier
   }
 }
 
+/// A rasterized GPU window: [image] is usually LARGER than the rendered
+/// content ([_GpuTextSurface] buckets its backing texture) — paint samples
+/// [src], never the full image.
+typedef _GpuWindow = ({ui.Image image, ui.Rect src});
+
 /// Viewport GPU image that rasters in [paint] — size / cam / epoch changes
 /// coalesce naturally to one blit per frame. No post-frame scheduling.
 class _GpuWindowImage extends LeafRenderObjectWidget {
@@ -2055,13 +2221,20 @@ class _GpuWindowImage extends LeafRenderObjectWidget {
     required this.camX,
     required this.camY,
     required this.rasterize,
+    this.keepStale = false,
   });
 
   final int epoch;
   final double dpr;
   final double camX;
   final double camY;
-  final ui.Image? Function(Size logical, double camX, double camY)? rasterize;
+  final _GpuWindow? Function(Size logical, double camX, double camY)? rasterize;
+
+  /// When true, a null [rasterize] result keeps the previously rendered
+  /// window on screen (at the size it was rendered for, clipped to the box)
+  /// instead of blanking — the owner's signal that fresh content is a worker
+  /// round trip away (width-resize catch-up), not that the view became empty.
+  final bool keepStale;
 
   @override
   RenderBox createRenderObject(BuildContext context) {
@@ -2071,6 +2244,7 @@ class _GpuWindowImage extends LeafRenderObjectWidget {
       camX: camX,
       camY: camY,
       rasterize: rasterize,
+      keepStale: keepStale,
     );
   }
 
@@ -2084,7 +2258,8 @@ class _GpuWindowImage extends LeafRenderObjectWidget {
       ..dpr = dpr
       ..camX = camX
       ..camY = camY
-      ..rasterize = rasterize;
+      ..rasterize = rasterize
+      ..keepStale = keepStale;
   }
 }
 
@@ -2095,20 +2270,37 @@ class _RenderGpuWindowImage extends RenderBox {
     required this._camX,
     required this._camY,
     required this._rasterize,
+    required this._keepStale,
   });
 
   int _epoch;
   double _dpr;
   double _camX;
   double _camY;
-  ui.Image? Function(Size logical, double camX, double camY)? _rasterize;
+  _GpuWindow? Function(Size logical, double camX, double camY)? _rasterize;
+  bool _keepStale;
 
-  ui.Image? _image;
+  /// Test hook: whether a rendered window is currently held (painted).
+  @visibleForTesting
+  bool get debugHasImage => _window != null;
+
+  /// Test hook: logical size the held window was rendered for. While a stale
+  /// window is kept across a resize this stays at the PRE-resize size — paint
+  /// draws it at that natural scale rather than stretching (skewing) it.
+  @visibleForTesting
+  Size get debugWindowLogicalSize => _windowLogical;
+
+  _GpuWindow? _window;
+  // Logical size [_window] was RENDERED for — unlike the [_imageSize]
+  // fingerprint below, this does not advance while a stale window is kept
+  // across a resize, so paint can draw it at its natural scale (no skew).
+  Size _windowLogical = Size.zero;
   int _imageEpoch = -1;
   double _imageCamX = double.nan;
   double _imageCamY = double.nan;
   double _imageDpr = 0;
   Size _imageSize = Size.zero;
+  final Paint _imagePaint = Paint()..filterQuality = FilterQuality.low;
 
   set epoch(int value) {
     if (value == _epoch) return;
@@ -2135,11 +2327,17 @@ class _RenderGpuWindowImage extends RenderBox {
   }
 
   set rasterize(
-    ui.Image? Function(Size logical, double camX, double camY)? value,
+    _GpuWindow? Function(Size logical, double camX, double camY)? value,
   ) {
     if (identical(value, _rasterize)) return;
     _rasterize = value;
     markNeedsPaint();
+  }
+
+  set keepStale(bool value) {
+    // No repaint: the flag only changes how the NEXT rasterization's null
+    // result is treated; it never invalidates what is on screen.
+    _keepStale = value;
   }
 
   @override
@@ -2156,24 +2354,63 @@ class _RenderGpuWindowImage extends RenderBox {
   @override
   void paint(PaintingContext context, Offset offset) {
     _ensureImage();
-    final img = _image;
-    if (img == null) return;
-    paintImage(
-      canvas: context.canvas,
-      rect: offset & size,
-      image: img,
-      fit: BoxFit.fill,
-      filterQuality: FilterQuality.low,
+    final window = _window;
+    if (window == null) return;
+    // Sample only the rendered sub-rect — the backing texture is bucketed,
+    // so the image is usually larger than the content (see _GpuTextSurface).
+    // The rasterizer widened the window by [_inkPadPx] each side so margin
+    // ink isn't shaved; draw it shifted left by the pad, letting the
+    // horizontal overhang paint beside the box like ordinary text ink.
+    if (_windowLogical == size) {
+      context.canvas.drawImageRect(
+        window.image,
+        window.src,
+        Rect.fromLTWH(
+          offset.dx - _inkPadPx,
+          offset.dy,
+          size.width + 2 * _inkPadPx,
+          size.height,
+        ),
+        _imagePaint,
+      );
+      return;
+    }
+    // Stale window kept across a resize: draw it at the size it was RENDERED
+    // for (scaling it would zoom or skew the glyphs), anchored top-left and
+    // clipped to the box (+ ink pad) — shrinking crops the strip at the right
+    // edge, widening leaves a background gap, exactly like the sliver's kept
+    // strip — until the fresh composite replaces it a worker round trip later.
+    final canvas = context.canvas;
+    canvas.save();
+    canvas.clipRect(
+      Rect.fromLTWH(
+        offset.dx - _inkPadPx,
+        offset.dy,
+        size.width + 2 * _inkPadPx,
+        size.height,
+      ),
     );
+    canvas.drawImageRect(
+      window.image,
+      window.src,
+      Rect.fromLTWH(
+        offset.dx - _inkPadPx,
+        offset.dy,
+        _windowLogical.width + 2 * _inkPadPx,
+        _windowLogical.height,
+      ),
+      _imagePaint,
+    );
+    canvas.restore();
   }
 
   void _ensureImage() {
     final rasterize = _rasterize;
     if (rasterize == null || size.isEmpty) {
-      _image = null;
+      _window = null;
       return;
     }
-    if (_image != null &&
+    if (_window != null &&
         _imageEpoch == _epoch &&
         _imageCamX == _camX &&
         _imageCamY == _camY &&
@@ -2182,7 +2419,14 @@ class _RenderGpuWindowImage extends RenderBox {
       return;
     }
     // Surface owns retirement of prior images; we only hold the latest.
-    _image = rasterize(size, _camX, _camY);
+    // Null with [keepStale] means "fresh content is still a worker round
+    // trip away" — keep the previous window (painted at the size it was
+    // rendered for, see paint) instead of blanking.
+    final fresh = rasterize(size, _camX, _camY);
+    if (fresh != null || !_keepStale) {
+      _window = fresh;
+      _windowLogical = size;
+    }
     _imageEpoch = _epoch;
     _imageCamX = _camX;
     _imageCamY = _camY;
@@ -2202,8 +2446,31 @@ class _GpuTextSurface {
   AtlasTextures? _textures;
   int _count = 0;
   int _colorCount = 0;
-  final List<(gpu.GpuImageSurface?, ui.Image, int)> _retired = [];
+  int _contentDevW = 0;
+  int _contentDevH = 0;
+  final List<(ui.Image, int)> _retired = [];
   bool _hooked = false;
+
+  /// Backing-texture dimensions are allocated in steps of this many device
+  /// px. A live resize drag changes the wanted strip size every frame;
+  /// bucketing means the surface only [gpu.GpuImageSurface.resize]s when the
+  /// drag crosses a step, so the texture pool is reused instead of
+  /// reallocated per frame.
+  static const int _dimBucket = 256;
+
+  static int _bucketed(int v) {
+    final b = ((v + _dimBucket - 1) ~/ _dimBucket) * _dimBucket;
+    return math.min(b, _maxDevicePx.round());
+  }
+
+  /// The device-px sub-rect of the image returned by [renderAt] /
+  /// [renderComposite] that actually contains the rendered strip. The
+  /// backing texture is bucketed (see [_dimBucket]), so the image is usually
+  /// LARGER than the strip — callers must sample this rect, never the full
+  /// image. Valid for the most recent render (each render object owns its
+  /// surface and only ever paints the latest image).
+  ui.Rect get contentRect =>
+      ui.Rect.fromLTWH(0, 0, _contentDevW.toDouble(), _contentDevH.toDouble());
 
   static Future<_GpuTextSurface?> tryCreate() async {
     try {
@@ -2228,8 +2495,9 @@ class _GpuTextSurface {
   /// Upload the color-bitmap (emoji) instance buffer.
   void setColorInstances(Float32List instances) {
     _colorCount = instances.length ~/ floatsPerColorInstance;
-    _colorInstanceBuffer =
-        _colorCount == 0 ? null : _pipeline.uploadColorInstances(instances);
+    _colorInstanceBuffer = _colorCount == 0
+        ? null
+        : _pipeline.uploadColorInstances(instances);
   }
 
   /// Rasterize the [devW]×[devH] window of the uploaded drawable, panned by
@@ -2285,24 +2553,46 @@ class _GpuTextSurface {
     required vm.Vector4 clear,
     gpu.Texture? colorAtlas,
     required List<
-        ({
-          AtlasTextures? textures,
-          gpu.DeviceBuffer? instances,
-          int count,
-          double camX,
-          double camY,
-          gpu.DeviceBuffer? colorInstances,
-          int colorCount,
-        })> draws,
+      ({
+        AtlasTextures? textures,
+        gpu.DeviceBuffer? instances,
+        int count,
+        double camX,
+        double camY,
+        gpu.DeviceBuffer? colorInstances,
+        int colorCount,
+      })
+    >
+    draws,
   }) {
     if (devW <= 0 || devH <= 0) return _image;
+    final wantW = devW.clamp(1, _maxDevicePx.round());
+    final wantH = devH.clamp(1, _maxDevicePx.round());
 
+    // ONE surface for this object's lifetime, resized in place. This
+    // flutter_gpu guarantees presented images stay valid across resize and
+    // later acquires (the texture pool never recycles a texture Flutter
+    // still references), so recreating the surface per size change — a full
+    // texture reallocation EVERY FRAME of a resize drag, and the historical
+    // source of dead-image flashes — buys nothing. Bucketed dims + per-axis
+    // grow mean a drag only resizes when it crosses a 256-px step; the
+    // area check shrinks the texture back once the strip settles smaller.
+    final surfW = _bucketed(wantW);
+    final surfH = _bucketed(wantH);
     var surface = _surface;
-    if (surface == null || surface.width != devW || surface.height != devH) {
+    if (surface == null) {
       surface = gpu.gpuContext.createImageSurface(
-        devW.clamp(1, _maxDevicePx.round()),
-        devH.clamp(1, _maxDevicePx.round()),
+        surfW,
+        surfH,
         format: _surfaceFormat(gpu.gpuContext),
+      );
+      _surface = surface;
+    } else if (surface.width * surface.height > 2 * surfW * surfH) {
+      surface.resize(surfW, surfH);
+    } else if (surface.width < surfW || surface.height < surfH) {
+      surface.resize(
+        math.max(surface.width, surfW),
+        math.max(surface.height, surfH),
       );
     }
 
@@ -2317,6 +2607,10 @@ class _GpuTextSurface {
       ),
     );
     final pass = cmd.createRenderPass(target);
+    // The strip occupies only the top-left wantW×wantH of the bucketed
+    // texture: the viewport maps NDC onto that sub-rect (geometry outside it
+    // is clipped in clip space) and [contentRect] tells paint what to sample.
+    pass.setViewport(gpu.Viewport(width: wantW, height: wantH));
     for (final d in draws) {
       if (d.count > 0 && d.instances != null && d.textures != null) {
         _pipeline.renderInstances(
@@ -2331,9 +2625,7 @@ class _GpuTextSurface {
           textures: d.textures!,
         );
       }
-      if (d.colorCount > 0 &&
-          d.colorInstances != null &&
-          colorAtlas != null) {
+      if (d.colorCount > 0 && d.colorInstances != null && colorAtlas != null) {
         _pipeline.renderColorInstances(
           pass: pass,
           frame: FrameUniforms(
@@ -2350,10 +2642,13 @@ class _GpuTextSurface {
     frame.present(cmd);
     cmd.submit();
 
+    // Retire the previous image handle once the frame that last painted it
+    // completes. Disposing the handle promptly matters more now than before:
+    // a live ui.Image PINS its backing texture out of the surface's reuse
+    // pool, so a leaked handle would grow the pool instead of recycling it.
     final prev = _image;
     if (prev != null) {
       _retired.add((
-        identical(_surface, surface) ? null : _surface,
         prev,
         ui.PlatformDispatcher.instance.frameData.frameNumber,
       ));
@@ -2362,7 +2657,8 @@ class _GpuTextSurface {
         SchedulerBinding.instance.addTimingsCallback(_flushRetired);
       }
     }
-    _surface = surface;
+    _contentDevW = wantW;
+    _contentDevH = wantH;
     _image = surface.currentImage;
     return _image;
   }
@@ -2372,8 +2668,8 @@ class _GpuTextSurface {
     for (final t in timings) {
       if (t.frameNumber > latest) latest = t.frameNumber;
     }
-    while (_retired.isNotEmpty && _retired.first.$3 <= latest) {
-      _retired.removeAt(0).$2.dispose();
+    while (_retired.isNotEmpty && _retired.first.$2 <= latest) {
+      _retired.removeAt(0).$1.dispose();
     }
     if (_retired.isEmpty && _hooked) {
       _hooked = false;
@@ -2386,7 +2682,7 @@ class _GpuTextSurface {
       _hooked = false;
       SchedulerBinding.instance.removeTimingsCallback(_flushRetired);
     }
-    for (final (_, img, _) in _retired) {
+    for (final (img, _) in _retired) {
       img.dispose();
     }
     _retired.clear();
@@ -2407,8 +2703,10 @@ gpu.PixelFormat _surfaceFormat(gpu.GpuContext context) {
 
 /// Estimate a block's height before it is laid out, from its text length and
 /// the wrap width — used for the scroll extent until the real height lands.
-typedef GPUBlockHeightEstimator =
-    double Function(GPUTextDocument block, double width);
+typedef GPUBlockHeightEstimator = double Function(
+  GPUTextDocument block,
+  double width,
+);
 
 /// One block's uploaded instance buffer, ready to composite against the view's
 /// shared atlas textures.
@@ -2535,10 +2833,23 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
   // LRU of worker-prepared ids (insertion order = oldest first). Touched on
   // prepare/reflow; trimmed to [maxPreparedDocs] keeping the cache window pinned.
   final LinkedHashMap<String, Null> _preparedLru = LinkedHashMap();
-  // Shared GPU atlas for every live block (mirrors worker shared atlas).
+  // Shared GPU atlas for every live block, uploaded from the controller's
+  // atlas mirror whenever [_atlasGenOnGpu] falls behind a drawable's needs.
   AtlasTextures? _atlasTextures;
   int _atlasGenOnGpu = -1;
-  bool _atlasDirty = true; // true after a fresh prepare that may have grown it
+
+  // A width resize dropped every per-width drawable and the re-sync is still
+  // in flight: keep painting the previously rendered window (old wrap width)
+  // instead of compositing an empty one. Stretched text reads as "resizing";
+  // a blank frame reads as broken. Cleared on the first fresh composite —
+  // and by [_resetCaches], where the content actually changed and a stale
+  // window would lie.
+  bool _keepStaleWindow = false;
+
+  /// Test hook: whether the painter is holding the pre-resize window while
+  /// the width re-sync is still in flight.
+  @visibleForTesting
+  bool get debugKeepStaleWindow => _keepStaleWindow;
 
   // Prefix tops for the current height vector (logical px, content coords).
   List<double> _tops = const [];
@@ -2562,8 +2873,8 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
     super.initState();
     _scroll = widget.scrollController ?? ScrollController();
     _scroll.addListener(_onScroll);
-    _dpr = WidgetsBinding.instance.platformDispatcher.views.first
-        .devicePixelRatio;
+    _dpr =
+        WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
     _initSurface();
   }
 
@@ -2582,6 +2893,13 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
   @override
   void didUpdateWidget(GPUTextBlocksView old) {
     super.didUpdateWidget(old);
+    // A different controller means a different worker: its atlas mirror,
+    // generation numbering, and prepared docs don't carry over.
+    if (!identical(widget.controller, old.controller)) {
+      _resetCaches();
+      _requestSync();
+      return;
+    }
     // Parent rebuilds routinely reconstruct the list with the same content;
     // only a structural change (ids / layout styles) warrants dropping every
     // prepared doc, height, and GPU buffer.
@@ -2675,7 +2993,7 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
     _totalHeight = 0;
     _atlasTextures = null;
     _atlasGenOnGpu = -1;
-    _atlasDirty = true;
+    _keepStaleWindow = false;
   }
 
   /// Width/DPR changed: drop GPU instance buffers + heights (they're per-width)
@@ -2690,6 +3008,28 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
     _totalHeight = 0;
     _rasterEpoch++;
     // Atlas glyphs are unchanged by wrap width; keep the uploaded textures.
+    // Same text, old wrap width: worth keeping on screen while the window
+    // re-syncs (see [_keepStaleWindow]).
+    _keepStaleWindow = true;
+  }
+
+  /// Upload the controller's atlas mirror when this view's texture is behind
+  /// [needGen] (the generation a fresh drawable's instances reference). A
+  /// no-op while the mirror itself is behind — the wrapper that produced the
+  /// drawable has already folded its payload in, so that only happens on a
+  /// mirror reset, and the next reply heals it.
+  void _ensureAtlasFor(int needGen) {
+    final ctrl = widget.controller;
+    if (_atlasTextures != null && _atlasGenOnGpu >= needGen) return;
+    if (ctrl._atlasGeneration < needGen) return;
+    final curves = ctrl._atlas.curves;
+    if (curves.isEmpty) return;
+    _atlasTextures = uploadAtlasTextures(
+      gpu.gpuContext,
+      curves,
+      ctrl._atlas.rows,
+    );
+    _atlasGenOnGpu = ctrl._atlasGeneration;
   }
 
   void _touchPrepared(String id) {
@@ -2830,7 +3170,7 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
             continue;
           }
 
-          final fresh = await widget.controller._ensurePrepared(
+          await widget.controller._ensurePrepared(
             doc.id,
             doc.runs,
             fallbackFontIds: doc.fallbackFontIds,
@@ -2840,35 +3180,23 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
           );
           if (!mounted || gen != _gen || widget.controller._disposed) return;
           if (_pending) break;
-          if (fresh) _atlasDirty = true;
           _touchPrepared(doc.id);
 
-          final needAtlas =
-              _atlasDirty || _atlasTextures == null || _atlasGenOnGpu < 0;
-          final d = await widget.controller._worker.reflowDoc(
+          // The controller wrapper keeps the atlas mirror current: the reply
+          // carries only the tail the mirror doesn't hold (usually nothing).
+          final d = await widget.controller._reflowDoc(
             doc.id,
             width,
             style: doc.effectiveStyle,
-            includeAtlas: needAtlas,
             dpr: dpr,
           );
           if (!mounted || gen != _gen || widget.controller._disposed) return;
           if (_pending) break;
 
-          if (needAtlas) {
-            final curves = d.materializeCurves();
-            final rows = d.materializeRows();
-            if (curves.isNotEmpty) {
-              _atlasTextures =
-                  uploadAtlasTextures(gpu.gpuContext, curves, rows);
-              _atlasGenOnGpu = d.atlasGeneration;
-              _atlasDirty = false;
-            }
-          } else if (d.atlasGeneration > _atlasGenOnGpu) {
-            // Atlas grew (another prepare) but we skipped the payload — fetch
-            // once more with includeAtlas. Rare: only if two prepares raced.
-            _atlasDirty = true;
-          }
+          // Re-upload BEFORE the drawable goes live, so its instances never
+          // reference rows missing from the texture (other live blocks stay
+          // valid: the atlas is append-only).
+          _ensureAtlasFor(d.atlasGeneration);
 
           final instances = d.materialize();
           final count = instances.length ~/ floatsPerInstance;
@@ -2888,10 +3216,7 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
             final top = _tops[i];
             if (top + oldH <= _scroll.offset) {
               final delta = newH - oldH;
-              final next = (_scroll.offset + delta).clamp(
-                0.0,
-                double.infinity,
-              );
+              final next = (_scroll.offset + delta).clamp(0.0, double.infinity);
               _scroll.jumpTo(next);
             }
           }
@@ -2945,9 +3270,7 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
           final colorCount = color.length ~/ floatsPerColorInstance;
 
           _live[doc.id] = _BlockDrawable(
-            instances: count == 0
-                ? null
-                : pipeline.uploadInstances(instances),
+            instances: count == 0 ? null : pipeline.uploadInstances(instances),
             count: count,
             height: newH,
             placeholders: d.placeholders,
@@ -2964,28 +3287,6 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
 
         if (_pending) continue; // restart with latest width/scroll
 
-        // If atlas grew without a payload, one block still needs a fetch.
-        if (_atlasDirty && wantIdx.isNotEmpty && mounted && gen == _gen) {
-          final doc = widget.blocks[wantIdx.first];
-          final d = await widget.controller._worker.reflowDoc(
-            doc.id,
-            width,
-            style: doc.effectiveStyle,
-            includeAtlas: true,
-            dpr: dpr,
-          );
-          if (mounted && gen == _gen && !widget.controller._disposed) {
-            final curves = d.materializeCurves();
-            final rows = d.materializeRows();
-            if (curves.isNotEmpty) {
-              _atlasTextures =
-                  uploadAtlasTextures(gpu.gpuContext, curves, rows);
-              _atlasGenOnGpu = d.atlasGeneration;
-              _atlasDirty = false;
-            }
-          }
-        }
-
         await _trimPrepared(want);
         if (!mounted || gen != _gen || widget.controller._disposed) return;
 
@@ -2999,8 +3300,7 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
 
         // Clamp scroll only when idle — jumpTo ends a fling.
         if (!scrolling && _scroll.hasClients) {
-          final max =
-              (_totalHeight - _viewportH).clamp(0.0, double.infinity);
+          final max = (_totalHeight - _viewportH).clamp(0.0, double.infinity);
           if (_scroll.offset > max) _scroll.jumpTo(max);
         }
 
@@ -3026,7 +3326,7 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
 
   /// Paint-time composite of live blocks into [logical]. Scroll offset is
   /// read live so [_GpuWindowImage] can pass cam as a scroll token.
-  ui.Image? _rasterWindow(Size logical, double camX, double camY) {
+  _GpuWindow? _rasterWindow(Size logical, double camX, double camY) {
     final surface = _surface;
     final textures = _atlasTextures;
     if (surface == null ||
@@ -3047,22 +3347,26 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
     final c = widget.background;
 
     final visible = _indicesInRange(offset, offset + viewportH, width);
-    final draws = <
-        ({
-          AtlasTextures? textures,
-          gpu.DeviceBuffer? instances,
-          int count,
-          double camX,
-          double camY,
-          gpu.DeviceBuffer? colorInstances,
-          int colorCount,
-        })>[];
+    final draws =
+        <
+          ({
+            AtlasTextures? textures,
+            gpu.DeviceBuffer? instances,
+            int count,
+            double camX,
+            double camY,
+            gpu.DeviceBuffer? colorInstances,
+            int colorCount,
+          })
+        >[];
+    // Widen the window by the ink pad (cam shifted to match) so glyph ink at
+    // the column margins isn't shaved; paint draws it shifted left again.
+    final padDev = (_inkPadPx * dpr).round();
     for (final i in visible) {
       final doc = widget.blocks[i];
       final drawable = _live[doc.id];
       if (drawable == null) continue;
-      final hasCoverage =
-          drawable.instances != null && drawable.count > 0;
+      final hasCoverage = drawable.instances != null && drawable.count > 0;
       final hasColor =
           drawable.colorInstances != null && drawable.colorCount > 0;
       if (!hasCoverage && !hasColor) continue;
@@ -3071,21 +3375,31 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
         textures: textures,
         instances: drawable.instances,
         count: hasCoverage ? drawable.count : 0,
-        camX: 0,
+        camX: padDev.toDouble(),
         camY: (top - offset) * dpr,
         colorInstances: drawable.colorInstances,
         colorCount: hasColor ? drawable.colorCount : 0,
       ));
     }
 
-    return surface.renderComposite(
-      devW: (width * dpr).round().clamp(1, _maxDevicePx.round()),
+    // Width-resize catch-up: nothing visible is live yet (the reflow round
+    // trip is still in flight). Compositing now would blank the view — return
+    // null and let [_GpuWindowImage.keepStale] hold the old-width window.
+    if (draws.isEmpty && _keepStaleWindow && visible.isNotEmpty) {
+      return null;
+    }
+    _keepStaleWindow = false;
+
+    final image = surface.renderComposite(
+      devW: ((width * dpr).round() + 2 * padDev).clamp(1, _maxDevicePx.round()),
       devH: (viewportH * dpr).round().clamp(1, _maxDevicePx.round()),
       dpr: dpr,
       clear: vm.Vector4(c.r, c.g, c.b, c.a),
       colorAtlas: widget.controller.colorAtlasTexture(),
       draws: draws,
     );
+    if (image == null) return null;
+    return (image: image, src: surface.contentRect);
   }
 
   Widget? _placeholderWidget(GPUTextDocument doc, int index) =>
@@ -3138,8 +3452,10 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
             // Reserve a strip for the scrollbar thumb so it stays hittable
             // above the GPU image (IgnorePointer alone is not enough on some
             // desktop hit-test paths).
-            final w = (constraints.maxWidth - _scrollbarGutter)
-                .clamp(1.0, double.infinity);
+            final w = (constraints.maxWidth - _scrollbarGutter).clamp(
+              1.0,
+              double.infinity,
+            );
             final vh = constraints.maxHeight;
             final dpr = MediaQuery.devicePixelRatioOf(context);
             if (w != _contentWidth || vh != _viewportH || dpr != _dpr) {
@@ -3170,9 +3486,8 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
             // you get two thumbs).
             return SizedBox.expand(
               child: ScrollConfiguration(
-                behavior: ScrollConfiguration.of(context).copyWith(
-                  scrollbars: false,
-                ),
+                behavior: ScrollConfiguration.of(context)
+                    .copyWith(scrollbars: false),
                 child: RawScrollbar(
                   controller: _scroll,
                   thumbVisibility: true,
@@ -3184,12 +3499,10 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
                     children: [
                       SingleChildScrollView(
                         controller: _scroll,
-                        physics: widget.physics ??
+                        physics:
+                            widget.physics ??
                             const AlwaysScrollableScrollPhysics(),
-                        child: SizedBox(
-                          width: double.infinity,
-                          height: extent,
-                        ),
+                        child: SizedBox(width: double.infinity, height: extent),
                       ),
                       Positioned(
                         left: 0,
@@ -3208,11 +3521,13 @@ class _GPUTextBlocksViewState extends State<GPUTextBlocksView> {
                                   epoch: _rasterEpoch,
                                   dpr: _dpr,
                                   camX: 0,
-                                  camY: -(_scroll.hasClients
+                                  camY:
+                                      -(_scroll.hasClients
                                           ? _scroll.offset
                                           : scrollY) *
                                       _dpr,
                                   rasterize: _rasterWindow,
+                                  keepStale: _keepStaleWindow,
                                 ),
                               ),
                             ),

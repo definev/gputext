@@ -48,9 +48,8 @@ void main() {
     var anyAlpha = false;
     for (var row = 0; row < e.height && !anyAlpha; row++) {
       for (var col = 0; col < e.width; col++) {
-        final a = atlas.pixels[((e.py + row) * colorAtlasWidth + e.px + col) *
-                4 +
-            3];
+        final a =
+            atlas.pixels[((e.py + row) * colorAtlasWidth + e.px + col) * 4 + 3];
         if (a != 0) {
           anyAlpha = true;
           break;
@@ -84,31 +83,36 @@ void main() {
     expect(atlas.generation, 2);
   });
 
-  test('different requested sizes resolving to one strike share an entry',
-      () async {
-    final font = _load(_sbixPath);
-    final atlas = SharedColorAtlas();
-    // 30 and 20 both bucket differently (32 vs 20), but 25 and 30 both → 32.
-    final a = await atlas.ensure(font, 1, 25); // → strike 32
-    final b = await atlas.ensure(font, 1, 30); // → strike 32, already packed
-    expect(a, 32);
-    expect(b, 32);
-    expect(atlas.generation, 1); // packed once
-  });
+  test(
+    'different requested sizes resolving to one strike share an entry',
+    () async {
+      final font = _load(_sbixPath);
+      final atlas = SharedColorAtlas();
+      // 30 and 20 both bucket differently (32 vs 20), but 25 and 30 both → 32.
+      final a = await atlas.ensure(font, 1, 25); // → strike 32
+      final b = await atlas.ensure(font, 1, 30); // → strike 32, already packed
+      expect(a, 32);
+      expect(b, 32);
+      expect(atlas.generation, 1); // packed once
+    },
+  );
 
-  test('ensureBytes packs under a string key without GPUFont identity', () async {
-    final font = _load(_cbdtPath);
-    final glyph = font.bitmapGlyphForId(1, targetPpem: 100);
-    expect(glyph, isNotNull);
-    final atlas = SharedColorAtlas();
-    const key = 'emoji:1:109';
-    final ppem = await atlas.ensureBytes(key, glyph!);
-    expect(ppem, 109);
-    expect(atlas.lookupKey(key), isNotNull);
-    expect(atlas.lookupKey(key)!.width, greaterThan(0));
-    // Idempotent under the same key.
-    final gen = atlas.generation;
-    await atlas.ensureBytes(key, glyph);
-    expect(atlas.generation, gen);
-  });
+  test(
+    'ensureBytes packs under a string key without GPUFont identity',
+    () async {
+      final font = _load(_cbdtPath);
+      final glyph = font.bitmapGlyphForId(1, targetPpem: 100);
+      expect(glyph, isNotNull);
+      final atlas = SharedColorAtlas();
+      const key = 'emoji:1:109';
+      final ppem = await atlas.ensureBytes(key, glyph!);
+      expect(ppem, 109);
+      expect(atlas.lookupKey(key), isNotNull);
+      expect(atlas.lookupKey(key)!.width, greaterThan(0));
+      // Idempotent under the same key.
+      final gen = atlas.generation;
+      await atlas.ensureBytes(key, glyph);
+      expect(atlas.generation, gen);
+    },
+  );
 }

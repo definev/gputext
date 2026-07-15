@@ -64,8 +64,7 @@ void main() {
     );
 
     // The worker gets a size-only placeholder spec...
-    final placeholders =
-        doc.runs.whereType<GPUPlaceholderSpec>().toList();
+    final placeholders = doc.runs.whereType<GPUPlaceholderSpec>().toList();
     expect(placeholders.length, 1);
     expect(placeholders.single.index, 0);
     expect(placeholders.single.width, 40);
@@ -76,32 +75,34 @@ void main() {
     expect(doc.placeholderWidgets[0], same(chip));
   });
 
-  test('sizeless GPUWidgetSpan is flagged auto-sized with a provisional box', () {
-    const chip = SizedBox(width: 40, height: 20);
-    final doc = GPUTextDocument.rich(
-      'auto',
-      const TextSpan(
-        children: [
-          TextSpan(text: 'x '),
-          GPUWidgetSpan(child: chip), // no size -> measured by the view
-          TextSpan(text: ' y'),
-        ],
-      ),
-      fontIdResolver: (_) => 'f',
-    );
+  test(
+    'sizeless GPUWidgetSpan is flagged auto-sized with a provisional box',
+    () {
+      const chip = SizedBox(width: 40, height: 20);
+      final doc = GPUTextDocument.rich(
+        'auto',
+        const TextSpan(
+          children: [
+            TextSpan(text: 'x '),
+            GPUWidgetSpan(child: chip), // no size -> measured by the view
+            TextSpan(text: ' y'),
+          ],
+        ),
+        fontIdResolver: (_) => 'f',
+      );
 
-    // Provisional zero box until the view measures it; index still assigned.
-    final ph = doc.runs.whereType<GPUPlaceholderSpec>().single;
-    expect(ph.index, 0);
-    expect(ph.width, 0);
-    expect(ph.height, 0);
-    // Flagged for measurement, and the child is available to measure + draw.
-    expect(doc.autoSizedPlaceholders, {0});
-    expect(doc.placeholderWidgets[0], same(chip));
-  });
+      // Provisional zero box until the view measures it; index still assigned.
+      final ph = doc.runs.whereType<GPUPlaceholderSpec>().single;
+      expect(ph.index, 0);
+      expect(ph.width, 0);
+      expect(ph.height, 0);
+      // Flagged for measurement, and the child is available to measure + draw.
+      expect(doc.autoSizedPlaceholders, {0});
+      expect(doc.placeholderWidgets[0], same(chip));
+    },
+  );
 
-  test('GPUTextViewController spawns, registers a font, and guards after dispose',
-      () async {
+  test('GPUTextViewController spawns, registers a font, and guards after dispose', () async {
     final controller = await GPUTextViewController.spawn();
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
 

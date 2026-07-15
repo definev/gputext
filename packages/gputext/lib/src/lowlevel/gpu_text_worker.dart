@@ -361,17 +361,35 @@ class GPUTextInstances {
     this.backgrounds = const [],
     this.hitBoxes = const [],
     this.atlasGeneration = 0,
+    this.curveBase = 0,
+    this.rowBase = 0,
+    this.atlasStructure = 0,
     this.colorGlyphStubs = const [],
   }) : contentWidth = contentWidth ?? width;
 
   final TransferableTypedData instances;
   final TransferableTypedData? colorInstances;
 
-  /// Quadratic-outline control points the coverage shader samples.
+  /// Quadratic-outline control points the coverage shader samples. When the
+  /// request carried `sinceCurves`, this is the append-only TAIL of the shared
+  /// atlas starting at [curveBase] — append it to the prefix already held to
+  /// reconstruct the full snapshot. A default request ships the whole atlas
+  /// ([curveBase] 0).
   final TransferableTypedData curves;
 
-  /// Per-glyph band table into [curves].
+  /// Per-glyph band table into [curves] (same delta semantics, from [rowBase]).
   final TransferableTypedData rows;
+
+  /// Float offset of [curves] within the shared atlas (0 = full snapshot).
+  final int curveBase;
+
+  /// Entry offset of [rows] within the shared atlas (0 = full snapshot).
+  final int rowBase;
+
+  /// [SharedGlyphAtlas.structureGeneration] at emit. When it differs from the
+  /// value the held prefix was fetched under, that prefix is invalid — refetch
+  /// the full snapshot (`sinceCurves: 0`).
+  final int atlasStructure;
 
   final int glyphCount;
   final int colorGlyphCount;
@@ -447,7 +465,11 @@ class GPUColorGlyphStub {
   final String cacheKey;
 
   /// Embedded PNG bytes (copied out of the font table for isolate transfer).
-  final TransferableTypedData png;
+  /// The worker ships each strike's bytes ONCE — the first stub that places
+  /// [cacheKey] carries them; later stubs for the same key are metrics-only
+  /// (null here). A receiver that no longer holds a key's bytes can recover
+  /// them with [GPUTextWorker.fetchColorPngs].
+  final TransferableTypedData? png;
 
   final int strikePpem;
   final double bearingX;
@@ -457,7 +479,9 @@ class GPUColorGlyphStub {
   final double fontSizePx;
   final double alpha;
 
-  Uint8List materializePng() => png.materialize().asUint8List();
+  /// Materialize the PNG bytes, or null for a metrics-only stub (bytes were
+  /// shipped with an earlier reply under the same [cacheKey]).
+  Uint8List? materializePng() => png?.materialize().asUint8List();
 }
 
 /// One document in a [GPUTextWorker.syncDocs] batch: prepare it if the worker
@@ -502,6 +526,9 @@ class GPUTextSyncResult {
     required this.atlasGeneration,
     this.curves,
     this.rows,
+    this.curveBase = 0,
+    this.rowBase = 0,
+    this.atlasStructure = 0,
   });
 
   final List<GPUTextInstances?> results;
@@ -512,8 +539,18 @@ class GPUTextSyncResult {
   final int atlasGeneration;
 
   /// Post-batch atlas snapshot when `includeAtlas` was requested, else null.
+  /// Same delta semantics as [GPUTextInstances.curves]: when the request
+  /// carried `sinceCurves`, this is the tail from [curveBase]/[rowBase].
   final TransferableTypedData? curves;
   final TransferableTypedData? rows;
+
+  /// Offsets of the shipped tail within the shared atlas (0 = full snapshot).
+  final int curveBase;
+  final int rowBase;
+
+  /// [SharedGlyphAtlas.structureGeneration] after the batch (see
+  /// [GPUTextInstances.atlasStructure]).
+  final int atlasStructure;
 
   Float32List? materializeCurves() => curves?.materialize().asFloat32List();
   Uint32List? materializeRows() => rows?.materialize().asUint32List();
@@ -624,11 +661,12 @@ class GPUTextWorker {
   /// PHASE 2 + 3, cached: re-break the document prepared under [id] at [width]
   /// and emit a fresh drawable — no re-shaping. Returns null geometry only if
   /// [id] was never prepared.
-  /// The glyph outline atlas ([GPUTextInstances.curves]/[rows]) is IDENTICAL
-  /// across reflows of a doc (only line breaking changes, not the glyph set),
-  /// so pass [includeAtlas] `false` after the first reflow to skip re-sending
-  /// (and re-uploading) it — the receiver reuses the atlas it already has. The
-  /// returned buffers are empty when omitted.
+  /// The glyph outline atlas ([GPUTextInstances.curves]/[rows]) barely changes
+  /// across reflows (only ellipsization can band a new glyph), so callers that
+  /// keep a CPU-side copy should pass [sinceCurves]/[sinceRows] and receive
+  /// just the growth (see below) — that stays correct when OTHER docs' prepares
+  /// grow the shared atlas. [includeAtlas] `false` omits the payload entirely
+  /// (empty buffers); the receiver then reuses whatever it already uploaded.
   ///
   /// Pass [style] for full paragraph policy (align, maxLines, ellipsis, strut,
   /// line breaker, text-height behavior, …). [lineHeight] is kept as a
@@ -642,6 +680,15 @@ class GPUTextWorker {
   /// latest queued args and completes older futures with
   /// [GPUTextReflowSuperseded] (in-flight compute still finishes — Dart cannot
   /// preempt sync layout — but anything still sitting in the mailbox is free).
+  ///
+  /// **Incremental atlas:** the shared atlas is append-only, so a caller that
+  /// already holds a prefix can pass [sinceCurves]/[sinceRows] (the float /
+  /// entry counts it holds) and [sinceStructure] (the
+  /// [GPUTextInstances.atlasStructure] it was fetched under): the reply then
+  /// carries only the tail beyond that prefix (usually empty), with
+  /// [GPUTextInstances.curveBase]/[rowBase] marking where it appends. A
+  /// structure mismatch falls back to a full snapshot (base 0). Defaults ship
+  /// the full snapshot, as before.
   Future<GPUTextInstances> reflowDoc(
     String id,
     double width, {
@@ -649,6 +696,9 @@ class GPUTextWorker {
     GPUTextLayoutStyle style = const GPUTextLayoutStyle(lineHeight: 1.3),
     bool includeAtlas = true,
     double dpr = 1.0,
+    int sinceCurves = 0,
+    int sinceRows = 0,
+    int sinceStructure = 0,
   }) async {
     final effective = lineHeight == null
         ? style
@@ -660,6 +710,9 @@ class GPUTextWorker {
       effective,
       includeAtlas,
       dpr,
+      sinceCurves,
+      sinceRows,
+      sinceStructure,
     ));
     if (identical(reply, _kReflowSuperseded) || reply == _kReflowSuperseded) {
       throw GPUTextReflowSuperseded();
@@ -692,11 +745,17 @@ class GPUTextWorker {
   /// id, or no registered fonts) come back as null slots, never errors.
   /// Batches are not coalesced (unlike [reflowDoc]) — callers should
   /// single-flight and re-issue with fresh geometry, as the sliver views do.
+  /// [sinceCurves]/[sinceRows]/[sinceStructure] request an incremental atlas
+  /// payload exactly as on [reflowDoc]; the tail offsets come back in
+  /// [GPUTextSyncResult.curveBase]/[rowBase].
   Future<GPUTextSyncResult> syncDocs(
     List<GPUTextSyncEntry> entries,
     double width, {
     bool includeAtlas = false,
     double dpr = 1.0,
+    int sinceCurves = 0,
+    int sinceRows = 0,
+    int sinceStructure = 0,
   }) async {
     // Normalize the runtime element type: a `const []` argument would cross
     // the boundary as List<dynamic> and miss the worker's pattern match.
@@ -706,9 +765,28 @@ class GPUTextWorker {
       width,
       includeAtlas,
       dpr,
+      sinceCurves,
+      sinceRows,
+      sinceStructure,
     ));
     if (reply is GPUTextSyncResult) return reply;
     throw StateError('worker syncDocs failed: $reply');
+  }
+
+  /// Re-fetch color-bitmap emoji strike PNGs by [GPUColorGlyphStub.cacheKey].
+  /// The worker ships each strike's bytes only once (with the first stub that
+  /// places it); a receiver that dropped them — e.g. after a future color-atlas
+  /// eviction — recovers the bytes here without re-preparing anything. Keys
+  /// that can't be resolved (unregistered font, no matching strike) are simply
+  /// absent from the result.
+  Future<Map<String, Uint8List>> fetchColorPngs(List<String> keys) async {
+    final reply = await _send(('colorPng', List<String>.of(keys)));
+    if (reply is! Map) throw StateError('worker colorPng failed: $reply');
+    return {
+      for (final MapEntry(:key, :value) in reply.entries)
+        if (key is String && value is TransferableTypedData)
+          key: value.materialize().asUint8List(),
+    };
   }
 
   /// Tear the worker down. Pending requests complete with an error.
@@ -749,6 +827,10 @@ Future<void> _workerEntry(SendPort host) async {
   // never moves existing glyph rowBases (already-emitted instance buffers stay
   // valid). One-shot [layout] still builds a private atlas per request.
   final sharedAtlas = SharedGlyphAtlas();
+  // Color-bitmap strike PNGs already shipped to the host (by cache key) —
+  // later stubs for the same strike go metrics-only. Recoverable on the host
+  // via the 'colorPng' command, so this never needs invalidation.
+  final sentColorPngs = <String>{};
   // Load HarfBuzz once in this isolate (sets GPUFont.outlineProvider). Null on
   // an unsupported platform → the pure-Dart per-rune fallback.
   final shaper = loadHarfBuzzShaper();
@@ -781,6 +863,7 @@ Future<void> _workerEntry(SendPort host) async {
             docs: docs,
             sharedAtlas: sharedAtlas,
             shaper: shaper,
+            sentColorPngs: sentColorPngs,
           );
         } catch (e, st) {
           reply = 'error: $e\n$st';
@@ -812,6 +895,7 @@ Object? _dispatchCommand(
   required Map<String, _Doc> docs,
   required SharedGlyphAtlas sharedAtlas,
   required TextShaper? shaper,
+  required Set<String> sentColorPngs,
 }) {
   switch (command) {
     case ('font', final String id, final TransferableTypedData bytes):
@@ -847,8 +931,23 @@ Object? _dispatchCommand(
       final GPUTextLayoutStyle style,
       final bool includeAtlas,
       final double dpr,
+      final int sinceCurves,
+      final int sinceRows,
+      final int sinceStructure,
     ):
-      return _reflowDoc(id, width, style, includeAtlas, dpr, docs, fonts);
+      return _reflowDoc(
+        id,
+        width,
+        style,
+        includeAtlas,
+        dpr,
+        docs,
+        fonts,
+        sinceCurves: sinceCurves,
+        sinceRows: sinceRows,
+        sinceStructure: sinceStructure,
+        sentColorPngs: sentColorPngs,
+      );
     case ('disposeDoc', final String id):
       docs.remove(id);
       return true;
@@ -858,6 +957,9 @@ Object? _dispatchCommand(
       final double width,
       final bool includeAtlas,
       final double dpr,
+      final int sinceCurves,
+      final int sinceRows,
+      final int sinceStructure,
     ):
       return _syncDocs(
         entries,
@@ -868,10 +970,47 @@ Object? _dispatchCommand(
         shaper,
         docs,
         sharedAtlas,
+        sinceCurves: sinceCurves,
+        sinceRows: sinceRows,
+        sinceStructure: sinceStructure,
+        sentColorPngs: sentColorPngs,
       );
+    case ('colorPng', final List<String> keys):
+      return _extractColorPngs(keys, fonts);
     default:
       return 'unknown command';
   }
+}
+
+/// Resolve color-bitmap strike PNGs for the 'colorPng' command. Keys are
+/// [GPUColorGlyphStub.cacheKey]s (`"<fontId>:<glyphId>:<strikePpem>"`) — the
+/// font id may itself contain ':', so parse from the right. Unresolvable keys
+/// are omitted.
+Map<String, TransferableTypedData> _extractColorPngs(
+  List<String> keys,
+  Map<String, GPUFont> fonts,
+) {
+  final out = <String, TransferableTypedData>{};
+  for (final key in keys) {
+    final ppemSep = key.lastIndexOf(':');
+    if (ppemSep <= 0) continue;
+    final gidSep = key.lastIndexOf(':', ppemSep - 1);
+    if (gidSep <= 0) continue;
+    final ppem = int.tryParse(key.substring(ppemSep + 1));
+    final gid = int.tryParse(key.substring(gidSep + 1, ppemSep));
+    if (ppem == null || gid == null) continue;
+    final glyph = fonts[key.substring(0, gidSep)]?.bitmapGlyphForId(
+      gid,
+      targetPpem: ppem.toDouble(),
+    );
+    // The key pins an exact strike; nearest-match returning another ppem
+    // would pack wrong metrics under this key, so skip it instead.
+    if (glyph == null || !glyph.isPng || glyph.ppem != ppem) continue;
+    out[key] = TransferableTypedData.fromList([
+      Uint8List.fromList(glyph.bytes),
+    ]);
+  }
+  return out;
 }
 
 /// Batch prepare-if-needed + reflow (see [GPUTextWorker.syncDocs]). Entry
@@ -884,8 +1023,12 @@ GPUTextSyncResult _syncDocs(
   Map<String, GPUFont> fonts,
   TextShaper? shaper,
   Map<String, _Doc> docs,
-  SharedGlyphAtlas sharedAtlas,
-) {
+  SharedGlyphAtlas sharedAtlas, {
+  int sinceCurves = 0,
+  int sinceRows = 0,
+  int sinceStructure = 0,
+  Set<String>? sentColorPngs,
+}) {
   final results = <GPUTextInstances?>[];
   for (final e in entries) {
     if (!docs.containsKey(e.id)) {
@@ -909,21 +1052,59 @@ GPUTextSyncResult _syncDocs(
     }
     // Per-entry drawables skip the atlas; the batch-level snapshot below
     // covers every entry at once.
-    results.add(_reflowDoc(e.id, width, e.style, false, dpr, docs, fonts));
+    results.add(
+      _reflowDoc(
+        e.id,
+        width,
+        e.style,
+        false,
+        dpr,
+        docs,
+        fonts,
+        sentColorPngs: sentColorPngs,
+      ),
+    );
   }
+  final (curveBase, rowBase) = _atlasTail(
+    sharedAtlas,
+    sinceCurves,
+    sinceRows,
+    sinceStructure,
+  );
   return GPUTextSyncResult(
     results: results,
     atlasGeneration: sharedAtlas.generation,
     curves: includeAtlas
         ? TransferableTypedData.fromList([
-            Float32List.fromList(sharedAtlas.curves),
+            Float32List.sublistView(sharedAtlas.curves, curveBase),
           ])
         : null,
     rows: includeAtlas
         ? TransferableTypedData.fromList([
-            Uint32List.fromList(sharedAtlas.rows),
+            Uint32List.sublistView(sharedAtlas.rows, rowBase),
           ])
         : null,
+    curveBase: curveBase,
+    rowBase: rowBase,
+    atlasStructure: sharedAtlas.structureGeneration,
+  );
+}
+
+/// Where an atlas payload for a caller holding `since*` starts: the held
+/// prefix carries over only when it was fetched under the current structure
+/// generation and doesn't overrun the atlas — otherwise ship from 0 (full).
+/// TransferableTypedData copies the bytes at construction, so slicing the live
+/// atlas views here is safe (and the only copy the payload pays).
+(int, int) _atlasTail(
+  SharedGlyphAtlas atlas,
+  int sinceCurves,
+  int sinceRows,
+  int sinceStructure,
+) {
+  if (sinceStructure != atlas.structureGeneration) return (0, 0);
+  return (
+    sinceCurves.clamp(0, atlas.curveFloatCount),
+    sinceRows.clamp(0, atlas.rowCount),
   );
 }
 
@@ -936,6 +1117,9 @@ String? _reflowDocId(Object command) {
     final GPUTextLayoutStyle _,
     final bool _,
     final double _,
+    final int _,
+    final int _,
+    final int _,
   )) {
     return id;
   }
@@ -1064,7 +1248,10 @@ List<InlineItem> buildRunItems(
           ),
         );
         if (shaped.bidiLevel != br.level || shaped.direction != br.direction) {
-          shaped = shaped.withBidi(bidiLevel: br.level, direction: br.direction);
+          shaped = shaped.withBidi(
+            bidiLevel: br.level,
+            direction: br.direction,
+          );
         }
         items.add(
           TextRun(
@@ -1330,8 +1517,12 @@ GPUTextInstances _reflowDoc(
   bool includeAtlas,
   double dpr,
   Map<String, _Doc> docs,
-  Map<String, GPUFont> fonts,
-) {
+  Map<String, GPUFont> fonts, {
+  int sinceCurves = 0,
+  int sinceRows = 0,
+  int sinceStructure = 0,
+  Set<String>? sentColorPngs,
+}) {
   final doc = docs[id];
   if (doc == null) throw StateError('doc "$id" was never prepared');
   return _layoutPrepared(
@@ -1343,6 +1534,10 @@ GPUTextInstances _reflowDoc(
     dpr: dpr,
     emojiFontId: doc.emojiFontId,
     fonts: fonts,
+    sinceCurves: sinceCurves,
+    sinceRows: sinceRows,
+    sinceStructure: sinceStructure,
+    sentColorPngs: sentColorPngs,
   );
 }
 
@@ -1357,6 +1552,10 @@ GPUTextInstances _layoutPrepared(
   double dpr = 1.0,
   String? emojiFontId,
   Map<String, GPUFont>? fonts,
+  int sinceCurves = 0,
+  int sinceRows = 0,
+  int sinceStructure = 0,
+  Set<String>? sentColorPngs,
 }) {
   final wrapWidth = style.softWrap && maxWidth.isFinite
       ? maxWidth
@@ -1400,8 +1599,9 @@ GPUTextInstances _layoutPrepared(
     }
   }
   // Overflow extent for horizontal scroll (softWrap:false, long unbreakables).
-  final contentWidth =
-      boxWidth.isFinite ? math.max(boxWidth, longest) : longest;
+  final contentWidth = boxWidth.isFinite
+      ? math.max(boxWidth, longest)
+      : longest;
 
   return _drawable(
     lines,
@@ -1413,18 +1613,25 @@ GPUTextInstances _layoutPrepared(
     dpr: dpr,
     emojiFontId: emojiFontId,
     fonts: fonts,
+    sinceCurves: sinceCurves,
+    sinceRows: sinceRows,
+    sinceStructure: sinceStructure,
+    sentColorPngs: sentColorPngs,
   );
 }
 
 /// Package laid-out [lines] + [atlas] into a self-contained, transfer-ready
 /// drawable. The fresh instance buffer is moved zero-copy; the atlas
-/// ([curves]/[rows]) is copied then moved when [includeAtlas], else empty — it
-/// is identical across a doc's reflows (and shared across prepared docs), so
-/// send it once per generation. (A fresh empty buffer each time:
+/// ([curves]/[rows]) is copied once (by TransferableTypedData construction)
+/// then moved when [includeAtlas], else empty. With `since*` from a caller
+/// that already holds a prefix, only the append-only tail is copied/shipped
+/// (see [_atlasTail]) — usually nothing. (A fresh empty buffer each time:
 /// TransferableTypedData is single-use.)
 ///
 /// Bitmap emoji PNG stubs are collected when [emojiFontId] points at a
-/// registered sbix/CBDT font; [dpr] picks the strike.
+/// registered sbix/CBDT font; [dpr] picks the strike. With [sentColorPngs],
+/// each strike's bytes ship only on its first stub ever (metrics-only after) —
+/// pass null to always embed bytes (self-contained one-shot replies).
 GPUTextInstances _drawable(
   ParagraphLines lines,
   SharedGlyphAtlas atlas,
@@ -1435,10 +1642,15 @@ GPUTextInstances _drawable(
   double dpr = 1.0,
   String? emojiFontId,
   Map<String, GPUFont>? fonts,
+  int sinceCurves = 0,
+  int sinceRows = 0,
+  int sinceStructure = 0,
+  Set<String>? sentColorPngs,
 }) {
   final stubs = <GPUColorGlyphStub>[];
-  final emojiFont =
-      emojiFontId == null || fonts == null ? null : fonts[emojiFontId];
+  final emojiFont = emojiFontId == null || fonts == null
+      ? null
+      : fonts[emojiFontId];
   final emitted = emitInstances(
     lines,
     boxWidth,
@@ -1454,15 +1666,22 @@ GPUTextInstances _drawable(
               targetPpem: item.fontSizePx * dpr,
             );
             if (glyph == null || !glyph.isPng) return;
+            final cacheKey = '$emojiFontId:$gid:${glyph.ppem}';
+            // Ship the strike's bytes only the first time this worker places
+            // it (Set.add is false once seen); the receiver caches by key.
             // Copy PNG out of the font table — TransferableTypedData needs an
             // owned buffer, and the table view would dangle after transfer.
-            final png = Uint8List.fromList(glyph.bytes);
-            final alpha =
-                item.textColor.length > 3 ? item.textColor[3] : 1.0;
+            final sendPng =
+                sentColorPngs == null || sentColorPngs.add(cacheKey);
+            final alpha = item.textColor.length > 3 ? item.textColor[3] : 1.0;
             stubs.add(
               GPUColorGlyphStub(
-                cacheKey: '$emojiFontId:$gid:${glyph.ppem}',
-                png: TransferableTypedData.fromList([png]),
+                cacheKey: cacheKey,
+                png: sendPng
+                    ? TransferableTypedData.fromList([
+                        Uint8List.fromList(glyph.bytes),
+                      ])
+                    : null,
                 strikePpem: glyph.ppem,
                 bearingX: glyph.bearingX,
                 bearingY: glyph.bearingY,
@@ -1475,15 +1694,28 @@ GPUTextInstances _drawable(
           },
   );
   final color = emitted.colorInstances;
+  // Compute the tail AFTER emit — ellipsization above may have banded the
+  // '…' glyph, and the payload must cover everything [atlasGeneration] claims.
+  final (curveBase, rowBase) = _atlasTail(
+    atlas,
+    sinceCurves,
+    sinceRows,
+    sinceStructure,
+  );
   return GPUTextInstances(
     instances: TransferableTypedData.fromList([emitted.instances]),
-    colorInstances:
-        color.isEmpty ? null : TransferableTypedData.fromList([color]),
+    colorInstances: color.isEmpty
+        ? null
+        : TransferableTypedData.fromList([color]),
     curves: includeAtlas
-        ? TransferableTypedData.fromList([Float32List.fromList(atlas.curves)])
+        ? TransferableTypedData.fromList([
+            Float32List.sublistView(atlas.curves, curveBase),
+          ])
         : TransferableTypedData.fromList([Float32List(0)]),
     rows: includeAtlas
-        ? TransferableTypedData.fromList([Uint32List.fromList(atlas.rows)])
+        ? TransferableTypedData.fromList([
+            Uint32List.sublistView(atlas.rows, rowBase),
+          ])
         : TransferableTypedData.fromList([Uint32List(0)]),
     glyphCount: emitted.glyphCount,
     colorGlyphCount: emitted.colorGlyphCount,
@@ -1497,6 +1729,9 @@ GPUTextInstances _drawable(
     backgrounds: emitted.backgrounds,
     hitBoxes: emitted.hitBoxes,
     atlasGeneration: atlas.generation,
+    curveBase: curveBase,
+    rowBase: rowBase,
+    atlasStructure: atlas.structureGeneration,
     colorGlyphStubs: stubs,
   );
 }

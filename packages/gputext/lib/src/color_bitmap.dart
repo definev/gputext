@@ -270,14 +270,16 @@ class CbdtTable implements BitmapGlyphSource {
         final indexFormat = data.getUint16(hdr, Endian.big);
         final imageFormat = data.getUint16(hdr + 2, Endian.big);
         final imageDataOffset = data.getUint32(hdr + 4, Endian.big);
-        subs.add(_CbdtIndexSub(
-          first: first,
-          last: last,
-          indexFormat: indexFormat,
-          imageFormat: imageFormat,
-          imageDataOffset: imageDataOffset,
-          headerOffset: hdr,
-        ));
+        subs.add(
+          _CbdtIndexSub(
+            first: first,
+            last: last,
+            indexFormat: indexFormat,
+            imageFormat: imageFormat,
+            imageDataOffset: imageDataOffset,
+            headerOffset: hdr,
+          ),
+        );
       }
       if (subs.isNotEmpty) strikes.add(_CbdtStrike(ppemX, subs));
     }

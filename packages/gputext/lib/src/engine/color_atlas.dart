@@ -123,11 +123,7 @@ class SharedColorAtlas {
   ///
   /// Idempotent: a glyph already present or mid-decode returns without work.
   /// The boolean side effect callers care about is [generation] changing.
-  Future<int?> ensure(
-    GPUFont font,
-    int glyphId,
-    double targetPpem,
-  ) async {
+  Future<int?> ensure(GPUFont font, int glyphId, double targetPpem) async {
     final glyph = font.bitmapGlyphForId(glyphId, targetPpem: targetPpem);
     if (glyph == null || !glyph.isPng) return null;
     final key = (font, glyphId, glyph.ppem);

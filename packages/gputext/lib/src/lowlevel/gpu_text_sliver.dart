@@ -121,7 +121,8 @@ class SliverGPUText extends MultiChildRenderObjectWidget {
 
 /// Positions one hosted placeholder widget: [index] pairs the element child
 /// with its [PlaceholderBox] in the laid-out document.
-class _SliverPlaceholder extends ParentDataWidget<_SliverPlaceholderParentData> {
+class _SliverPlaceholder
+    extends ParentDataWidget<_SliverPlaceholderParentData> {
   const _SliverPlaceholder({
     super.key,
     required this.index,
@@ -174,7 +175,7 @@ class RenderSliverGPUText extends RenderSliver
   set controller(GPUTextViewController value) {
     if (identical(value, _controller)) return;
     _controller = value;
-    _atlasKeyOnGpu = null; // the new worker's atlas is a different texture
+    _atlasGenOnGpu = -1; // the new worker's atlas is a different texture
     _requestReflow();
   }
 
@@ -194,8 +195,7 @@ class RenderSliverGPUText extends RenderSliver
     // worker round-trip (parents rebuild equivalent documents routinely).
     // Compare the COERCED styles: docs differing only in softWrap lay out
     // identically here.
-    if (value.id == old.id &&
-        _sliverStyle(value) == _sliverStyle(old)) {
+    if (value.id == old.id && _sliverStyle(value) == _sliverStyle(old)) {
       return;
     }
     _requestReflow();
@@ -243,7 +243,8 @@ class RenderSliverGPUText extends RenderSliver
   // paused for a full round trip. Monotone application turns that freeze-
   // then-pop into progressive reflow at worker latency.
   int _appliedReflowEpoch = 0;
-  String? _atlasKeyOnGpu;
+  // Atlas-mirror generation currently uploaded to this surface (-1 = none).
+  int _atlasGenOnGpu = -1;
 
   double _width = 0; // wrap width = cross-axis extent
   double _docWidth = 0;
@@ -273,7 +274,10 @@ class RenderSliverGPUText extends RenderSliver
   // The cached window image and the doc-space strip it covers. [_drawableGen]
   // bumps whenever the uploaded instances change (reflow, color-atlas pack,
   // DPR) so a stale strip re-renders even when the geometry is unchanged.
+  // [_windowSrc] is the device-px sub-rect of [_window] holding the strip —
+  // the surface's backing texture is bucketed, so the image can be larger.
   ui.Image? _window;
+  Rect _windowSrc = Rect.zero;
   double _windowTop = 0;
   double _windowHeight = 0;
   double _windowWidth = 0;
@@ -298,6 +302,14 @@ class RenderSliverGPUText extends RenderSliver
   /// Test hook: the doc-space strip [debugHasWindow] covers (top, height).
   @visibleForTesting
   (double, double) get debugWindowStrip => (_windowTop, _windowHeight);
+
+  /// Test hook: the cached strip image (bucketed backing texture).
+  @visibleForTesting
+  ui.Image? get debugWindowImage => _window;
+
+  /// Test hook: the device-px sub-rect of [debugWindowImage] paint samples.
+  @visibleForTesting
+  Rect get debugWindowSrc => _windowSrc;
 
   // --- lifecycle ---
 
@@ -373,15 +385,13 @@ class RenderSliverGPUText extends RenderSliver
         language: doc.language,
       );
       if (_disposed || _controller._disposed || epoch != _reflowEpoch) return;
-      // The outline atlas is identical across a doc's reflows — upload it
-      // only when the doc (id) changed; otherwise ship just the instances.
-      final needAtlas = _atlasKeyOnGpu != doc.id;
       final sw = Stopwatch()..start();
-      final d = await _controller._worker.reflowDoc(
+      // The controller wrapper keeps the atlas mirror current (replies carry
+      // only the tail it doesn't hold, usually nothing).
+      final d = await _controller._reflowDoc(
         doc.id,
         w,
         style: _sliverStyle(doc),
-        includeAtlas: needAtlas,
         dpr: _dpr,
       );
       sw.stop();
@@ -390,11 +400,9 @@ class RenderSliverGPUText extends RenderSliver
         return;
       }
       _appliedReflowEpoch = epoch;
-      _applyDrawable(d, needAtlas, doc.id, sw.elapsedMicroseconds / 1000.0);
+      _applyDrawable(d, sw.elapsedMicroseconds / 1000.0);
     } on GPUTextReflowSuperseded {
-      if (!_disposed &&
-          !_controller._disposed &&
-          epoch == _reflowEpoch) {
+      if (!_disposed && !_controller._disposed && epoch == _reflowEpoch) {
         _requestReflow();
       }
     } on StateError catch (e) {
@@ -403,17 +411,15 @@ class RenderSliverGPUText extends RenderSliver
     }
   }
 
-  void _applyDrawable(
-    GPUTextInstances d,
-    bool needAtlas,
-    String atlasKey,
-    double ms,
-  ) {
+  void _applyDrawable(GPUTextInstances d, double ms) {
     final surface = _surface;
     if (surface == null) return;
-    if (needAtlas) {
-      surface.setAtlas(d.materializeCurves(), d.materializeRows());
-      _atlasKeyOnGpu = atlasKey;
+    // Upload from the controller's atlas mirror when this surface's texture
+    // is behind what the fresh instances reference (see _GPUTextViewState).
+    if (_atlasGenOnGpu < d.atlasGeneration &&
+        _controller._atlasGeneration >= d.atlasGeneration) {
+      surface.setAtlas(_controller._atlas.curves, _controller._atlas.rows);
+      _atlasGenOnGpu = _controller._atlasGeneration;
     }
     surface.setInstances(d.materialize());
     _glyphCount = d.glyphCount;
@@ -614,6 +620,7 @@ class RenderSliverGPUText extends RenderSliver
       clear: vm.Vector4(0, 0, 0, 0),
       colorAtlas: _controller.colorAtlasTexture(),
     );
+    _windowSrc = surface.contentRect;
   }
 
   // --- paint ---
@@ -652,7 +659,7 @@ class RenderSliverGPUText extends RenderSliver
         if (img != null) {
           canvas.drawImageRect(
             img,
-            Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+            _windowSrc, // strip sub-rect: the backing texture is bucketed
             Rect.fromLTWH(0, _windowTop - scroll, _windowWidth, _windowHeight),
             _imagePaint,
           );
@@ -764,8 +771,9 @@ class RenderSliverGPUText extends RenderSliver
     );
     if (event is PointerDownEvent) {
       _tapDownDoc = doc;
-      (_tap ??= TapGestureRecognizer(debugOwner: this)..onTap = _handleTap)
-          .addPointer(event);
+      (_tap ??= TapGestureRecognizer(
+        debugOwner: this,
+      )..onTap = _handleTap).addPointer(event);
     } else if (event is PointerHoverEvent) {
       _updateHover(doc);
     }
@@ -809,7 +817,8 @@ class RenderSliverGPUText extends RenderSliver
   PointerEnterEventListener? get onEnter => null;
 
   @override
-  PointerExitEventListener? get onExit => (_) => _hoverTag = null;
+  PointerExitEventListener? get onExit =>
+      (_) => _hoverTag = null;
 
   @override
   bool get validForMouseTracker => _validForMouseTracker;
@@ -1110,9 +1119,10 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
   final Map<String, double> _heights = {}; // per-width, by block id
   final Map<String, _BlockDrawable> _live = {};
   final LinkedHashMap<String, Null> _preparedLru = LinkedHashMap();
+  // Shared GPU atlas for every live block, uploaded from the controller's
+  // atlas mirror whenever [_atlasGenOnGpu] falls behind a drawable's needs.
   AtlasTextures? _atlasTextures;
   int _atlasGenOnGpu = -1;
-  bool _atlasDirty = true;
 
   List<double> _tops = const [];
   double _totalHeight = 0;
@@ -1128,8 +1138,10 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
   // the want-window leads in and orders the sync (ahead-of-travel first).
   double _scrollDelta = 0;
 
-  // Cached composite strip (same scheme as RenderSliverGPUText).
+  // Cached composite strip (same scheme as RenderSliverGPUText, including
+  // the bucketed-texture sub-rect in [_windowSrc]).
   ui.Image? _window;
+  Rect _windowSrc = Rect.zero;
   double _windowTop = 0;
   double _windowHeight = 0;
   double _windowWidth = 0;
@@ -1201,7 +1213,6 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     _totalHeight = 0;
     _atlasTextures = null;
     _atlasGenOnGpu = -1;
-    _atlasDirty = true;
     _pendingCorrection = 0;
     _window = null; // content actually changed — a stale strip would lie
     _windowComplete = false;
@@ -1469,17 +1480,17 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
           }
           if (docsToSync.isEmpty) continue;
 
-          final needAtlas =
-              _atlasDirty || _atlasTextures == null || _atlasGenOnGpu < 0;
           final result = await _controller._syncDocs(
             docsToSync,
             width,
             dpr: dpr,
-            includeAtlas: needAtlas,
           );
           if (result == null) return; // controller disposed mid-flight
           if (_disposed || gen != _gen || _controller._disposed) return;
-          _applyAtlas(result);
+          // Upload BEFORE the batch's drawables go live: the controller has
+          // already folded the reply's atlas tail into its mirror, so fresh
+          // instances never rasterize against a texture missing their rows.
+          _ensureAtlasFor(result.atlasGeneration);
           final pipeline = _controller._pipeline;
           if (pipeline == null) return;
 
@@ -1504,22 +1515,6 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
         }
 
         if (_pending) continue; // restart with latest width/scroll
-
-        // The atlas grew past the uploaded generation without a payload (a
-        // prepare raced from another view on this worker) — fetch just the
-        // atlas snapshot; an entries-empty sync carries no layout work.
-        if (_atlasDirty && gen == _gen && !_disposed) {
-          final result = await _controller._syncDocs(
-            const [],
-            width,
-            dpr: dpr,
-            includeAtlas: true,
-          );
-          if (result == null) return;
-          if (_disposed || gen != _gen || _controller._disposed) return;
-          _applyAtlas(result);
-          if (!_atlasDirty) changed = true;
-        }
 
         await _trimPrepared(want);
         if (_disposed || gen != _gen || _controller._disposed) return;
@@ -1572,18 +1567,22 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     ];
   }
 
-  /// Upload a batch's shared-atlas snapshot, or flag a refetch when the
-  /// worker's generation moved past the uploaded one without a payload.
-  void _applyAtlas(GPUTextSyncResult result) {
-    final curves = result.materializeCurves();
-    final rows = result.materializeRows();
-    if (curves != null && rows != null && curves.isNotEmpty) {
-      _atlasTextures = uploadAtlasTextures(gpu.gpuContext, curves, rows);
-      _atlasGenOnGpu = result.atlasGeneration;
-      _atlasDirty = false;
-    } else if (result.atlasGeneration > _atlasGenOnGpu) {
-      _atlasDirty = true;
-    }
+  /// Upload the controller's atlas mirror when this render object's texture
+  /// is behind [needGen] (the generation a fresh batch's instances reference).
+  /// The mirror is kept current by the controller's worker wrappers, so this
+  /// is pure GPU upload — no isolate round trip. A no-op while the mirror is
+  /// behind (only after a mirror reset; the next reply heals it).
+  void _ensureAtlasFor(int needGen) {
+    if (_atlasTextures != null && _atlasGenOnGpu >= needGen) return;
+    if (_controller._atlasGeneration < needGen) return;
+    final curves = _controller._atlas.curves;
+    if (curves.isEmpty) return;
+    _atlasTextures = uploadAtlasTextures(
+      gpu.gpuContext,
+      curves,
+      _controller._atlas.rows,
+    );
+    _atlasGenOnGpu = _controller._atlasGeneration;
   }
 
   /// Upload one block's fresh drawable into [_live] and record its height —
@@ -1738,16 +1737,18 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
 
     final visible = _indicesInRange(top, bottom, _width);
     var complete = true;
-    final draws = <
-        ({
-          AtlasTextures? textures,
-          gpu.DeviceBuffer? instances,
-          int count,
-          double camX,
-          double camY,
-          gpu.DeviceBuffer? colorInstances,
-          int colorCount,
-        })>[];
+    final draws =
+        <
+          ({
+            AtlasTextures? textures,
+            gpu.DeviceBuffer? instances,
+            int count,
+            double camX,
+            double camY,
+            gpu.DeviceBuffer? colorInstances,
+            int colorCount,
+          })
+        >[];
     for (final i in visible) {
       final drawable = _live[_blocks[i].id];
       if (drawable == null) {
@@ -1786,6 +1787,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
       colorAtlas: _controller.colorAtlasTexture(),
       draws: draws,
     );
+    _windowSrc = surface.contentRect;
   }
 
   @override
@@ -1808,7 +1810,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
         if (img != null) {
           canvas.drawImageRect(
             img,
-            Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+            _windowSrc, // strip sub-rect: the backing texture is bucketed
             Rect.fromLTWH(
               offset.dx,
               offset.dy + (_windowTop - c.scrollOffset),

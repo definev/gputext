@@ -51,10 +51,7 @@ void maybeStartLeakTracking() {
     config: LeakTrackingConfig(
       onLeaks: (summary) {
         if (summary.isEmpty) return;
-        developer.log(
-          'gputext leak_tracker: $summary',
-          name: 'leak_tracker',
-        );
+        developer.log('gputext leak_tracker: $summary', name: 'leak_tracker');
       },
       checkPeriod: const Duration(seconds: 3),
     ),

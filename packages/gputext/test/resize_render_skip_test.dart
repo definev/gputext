@@ -37,7 +37,9 @@ void main() {
             alignment: Alignment.topLeft,
             child: SizedBox(
               width: width,
-              child: GPURichText(text: TextSpan(text: text, style: style)),
+              child: GPURichText(
+                text: TextSpan(text: text, style: style),
+              ),
             ),
           ),
         ),
@@ -68,7 +70,8 @@ void main() {
       expect(
         Float32List.fromList(paragraph(tester).debugInstances!),
         first,
-        reason: 'glyph instances must be identical across a stable-break resize',
+        reason:
+            'glyph instances must be identical across a stable-break resize',
       );
     }
     expect(

@@ -24,9 +24,8 @@ void main() {
               body: Center(
                 child: TextButton(
                   onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute<void>(builder: (_) => page),
-                    );
+                    Navigator.of(context)
+                        .push(MaterialPageRoute<void>(builder: (_) => page));
                   },
                   child: const Text('open'),
                 ),
@@ -42,61 +41,43 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets(
-    'WidgetDemoPage mount/unmount is leak-free',
-    (tester) async {
-      await mountAndPop(tester, const WidgetDemoPage());
-    },
-    experimentalLeakTesting: LeakTesting.settings,
-  );
+  testWidgets('WidgetDemoPage mount/unmount is leak-free', (tester) async {
+    await mountAndPop(tester, const WidgetDemoPage());
+  }, experimentalLeakTesting: LeakTesting.settings);
 
-  testWidgets(
-    'RtlDemoPage mount/unmount is leak-free',
-    (tester) async {
-      await mountAndPop(tester, const RtlDemoPage());
-    },
-    experimentalLeakTesting: LeakTesting.settings,
-  );
+  testWidgets('RtlDemoPage mount/unmount is leak-free', (tester) async {
+    await mountAndPop(tester, const RtlDemoPage());
+  }, experimentalLeakTesting: LeakTesting.settings);
 
-  testWidgets(
-    'PretextDemoPage mount/unmount is leak-free',
-    (tester) async {
-      await mountAndPop(tester, const PretextDemoPage());
-    },
-    experimentalLeakTesting: LeakTesting.settings,
-  );
+  testWidgets('PretextDemoPage mount/unmount is leak-free', (tester) async {
+    await mountAndPop(tester, const PretextDemoPage());
+  }, experimentalLeakTesting: LeakTesting.settings);
 
-  testWidgets(
-    'JustificationDemoPage mount/unmount is leak-free',
-    (tester) async {
-      await mountAndPop(tester, const JustificationDemoPage());
-    },
-    experimentalLeakTesting: LeakTesting.settings,
-  );
+  testWidgets('JustificationDemoPage mount/unmount is leak-free', (
+    tester,
+  ) async {
+    await mountAndPop(tester, const JustificationDemoPage());
+  }, experimentalLeakTesting: LeakTesting.settings);
 
-  testWidgets(
-    'GPURichText create/dispose cycle is leak-free',
-    (tester) async {
-      for (var i = 0; i < 5; i++) {
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: Center(
-                child: GPURichText(
-                  text: TextSpan(
-                    text: 'leak probe $i — the quick brown fox',
-                    style: const TextStyle(fontFamily: 'Lato', fontSize: 18),
-                  ),
+  testWidgets('GPURichText create/dispose cycle is leak-free', (tester) async {
+    for (var i = 0; i < 5; i++) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: GPURichText(
+                text: TextSpan(
+                  text: 'leak probe $i — the quick brown fox',
+                  style: const TextStyle(fontFamily: 'Lato', fontSize: 18),
                 ),
               ),
             ),
           ),
-        );
-        await tester.pump();
-        await tester.pumpWidget(const SizedBox.shrink());
-        await tester.pump();
-      }
-    },
-    experimentalLeakTesting: LeakTesting.settings,
-  );
+        ),
+      );
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    }
+  }, experimentalLeakTesting: LeakTesting.settings);
 }

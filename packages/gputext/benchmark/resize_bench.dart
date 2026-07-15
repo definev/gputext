@@ -37,9 +37,8 @@ void main() {
       GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync()),
     );
 
-    final gatsby = File(
-      '../../example/assets/bench/en-gatsby-opening.txt',
-    ).readAsStringSync();
+    final gatsby = File('../../example/assets/bench/en-gatsby-opening.txt')
+        .readAsStringSync();
     // Match the app bench's commentTexts(): sentence-split, 20–400 chars — the
     // exact corpus frame.reflow_width feeds its 20 paragraphs.
     final sentences = <String>[

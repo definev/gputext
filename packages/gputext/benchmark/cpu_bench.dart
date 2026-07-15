@@ -190,8 +190,10 @@ void main() {
 
     final results = <BenchResult>[];
     // ignore: avoid_print
-    print('cpu_bench: ${gatsbyParas.length} paras, ${zhChunks.length} zh '
-        'chunks, ${stress.length} stress lines, ${mixedLines.length} mixed');
+    print(
+      'cpu_bench: ${gatsbyParas.length} paras, ${zhChunks.length} zh '
+      'chunks, ${stress.length} stress lines, ${mixedLines.length} mixed',
+    );
 
     // --- analyze: segment analysis (M2 predicates, M3 pass gating) ---
     results.add(
@@ -321,8 +323,7 @@ void main() {
     );
 
     // --- report ---
-    final out =
-        Platform.environment['BENCH_OUT'] ?? 'benchmark/out/bench.json';
+    final out = Platform.environment['BENCH_OUT'] ?? 'benchmark/out/bench.json';
     File(out)
       ..parent.createSync(recursive: true)
       ..writeAsStringSync(
@@ -337,8 +338,9 @@ void main() {
 
     final baselinePath = Platform.environment['BENCH_BASELINE'];
     if (baselinePath != null) {
-      final base = jsonDecode(File(baselinePath).readAsStringSync())
-          as Map<String, dynamic>;
+      final base = jsonDecode(
+        File(baselinePath).readAsStringSync(),
+      ) as Map<String, dynamic>;
       final baseByName = {
         for (final r in base['results'] as List)
           (r as Map<String, dynamic>)['name'] as String: r,

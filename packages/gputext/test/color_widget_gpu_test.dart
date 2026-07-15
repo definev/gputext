@@ -26,13 +26,16 @@ File _resolve(String path) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('all-emoji GPURichText renders via the color pipeline',
-      (tester) async {
+  testWidgets('all-emoji GPURichText renders via the color pipeline', (
+    tester,
+  ) async {
     final engine = GPUText.instance;
     await engine.ensureInitialized();
     if (!engine.gpuReady) {
-      markTestSkipped('Flutter GPU unavailable — run with '
-          '--enable-impeller --enable-flutter-gpu');
+      markTestSkipped(
+        'Flutter GPU unavailable — run with '
+        '--enable-impeller --enable-flutter-gpu',
+      );
       return;
     }
 
@@ -74,11 +77,17 @@ void main() {
     // The emoji were decoded + packed into the color atlas (only the widget's
     // ensure walk drives this), and a surface was actually rendered — which for
     // an all-emoji paragraph can only be the color pipeline draw.
-    expect(engine.colorAtlas.isEmpty, isFalse,
-        reason: 'no emoji decoded — ensure walk never ran');
+    expect(
+      engine.colorAtlas.isEmpty,
+      isFalse,
+      reason: 'no emoji decoded — ensure walk never ran',
+    );
     expect(engine.colorAtlas.generation, greaterThan(0));
-    expect(RenderGPUParagraph.debugSurfaceRenders, greaterThan(0),
-        reason: 'all-emoji paragraph rendered no surface');
+    expect(
+      RenderGPUParagraph.debugSurfaceRenders,
+      greaterThan(0),
+      reason: 'all-emoji paragraph rendered no surface',
+    );
 
     engine.registerEmojiFont(null);
   });

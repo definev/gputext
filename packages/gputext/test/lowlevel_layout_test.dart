@@ -64,6 +64,10 @@ void main() {
         colorChanged = true;
       }
     }
-    expect(colorChanged, isTrue, reason: 're-emit must update the colour lanes');
+    expect(
+      colorChanged,
+      isTrue,
+      reason: 're-emit must update the colour lanes',
+    );
   });
 }

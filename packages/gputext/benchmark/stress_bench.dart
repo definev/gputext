@@ -67,13 +67,18 @@ double run(String name, void Function() op) {
   }
   final med = _median(samples);
   // ignore: avoid_print
-  print('  ${name.padRight(30)} ${med.toStringAsFixed(3).padLeft(9)} ms/op '
-      '(×$repeats)');
+  print(
+    '  ${name.padRight(30)} ${med.toStringAsFixed(3).padLeft(9)} ms/op '
+    '(×$repeats)',
+  );
   return med;
 }
 
 /// The demo's _feedItemSpan, styles and placeholder structure intact.
-TextSpan feedSpan({TapGestureRecognizer? mention, TapGestureRecognizer? thread}) {
+TextSpan feedSpan({
+  TapGestureRecognizer? mention,
+  TapGestureRecognizer? thread,
+}) {
   const ink = Color(0xFF1A1A1A);
   const blue = Color(0xFF14508C);
   Widget box() => const SizedBox(width: 10, height: 10);
@@ -141,32 +146,45 @@ TextSpan feedSpan({TapGestureRecognizer? mention, TapGestureRecognizer? thread})
 // Realistic placeholder dims (avatar, chips, image box, chips).
 final _dims = <PlaceholderDimensions>[
   const PlaceholderDimensions(
-      size: Size(28, 28), alignment: PlaceholderAlignment.middle),
+    size: Size(28, 28),
+    alignment: PlaceholderAlignment.middle,
+  ),
   const PlaceholderDimensions(
-      size: Size(72, 18),
-      alignment: PlaceholderAlignment.baseline,
-      baseline: TextBaseline.alphabetic,
-      baselineOffset: 14),
+    size: Size(72, 18),
+    alignment: PlaceholderAlignment.baseline,
+    baseline: TextBaseline.alphabetic,
+    baselineOffset: 14,
+  ),
   const PlaceholderDimensions(
-      size: Size(58, 18), alignment: PlaceholderAlignment.middle),
+    size: Size(58, 18),
+    alignment: PlaceholderAlignment.middle,
+  ),
   const PlaceholderDimensions(
-      size: Size(34, 18), alignment: PlaceholderAlignment.middle),
+    size: Size(34, 18),
+    alignment: PlaceholderAlignment.middle,
+  ),
   const PlaceholderDimensions(
-      size: Size(28, 18), alignment: PlaceholderAlignment.middle),
+    size: Size(28, 18),
+    alignment: PlaceholderAlignment.middle,
+  ),
   const PlaceholderDimensions(
-      size: Size(40, 48), alignment: PlaceholderAlignment.middle),
+    size: Size(40, 48),
+    alignment: PlaceholderAlignment.middle,
+  ),
   const PlaceholderDimensions(
-      size: Size(48, 18),
-      alignment: PlaceholderAlignment.baseline,
-      baseline: TextBaseline.alphabetic,
-      baselineOffset: 14),
+    size: Size(48, 18),
+    alignment: PlaceholderAlignment.baseline,
+    baseline: TextBaseline.alphabetic,
+    baselineOffset: 14,
+  ),
 ];
 
 void main() {
   test('stress tab per-frame cost', () {
     final engine = GPUText.instance;
-    final lato =
-        GPUFont.parse(File('assets/Lato-Regular.ttf').readAsBytesSync());
+    final lato = GPUFont.parse(
+      File('assets/Lato-Regular.ttf').readAsBytesSync(),
+    );
     engine.registerFont('Lato', lato);
     // ignore: avoid_print
     print('shaper: ${engine.shaper.runtimeType}');
@@ -218,7 +236,10 @@ void main() {
     // null table (hit boxes + placeholder positions), once at paint time
     // against the atlas.
     final para = wf.layoutPreparedLines(
-        prepared, 320, wf.ParagraphStyle(maxWidth: 320));
+      prepared,
+      320,
+      wf.ParagraphStyle(maxWidth: 320),
+    );
     final atlas = SharedGlyphAtlas();
     for (final line in para.lines) {
       for (final item in line.items) {
@@ -226,8 +247,10 @@ void main() {
       }
     }
     final emitMetrics = run('emit metrics-only (layout)', () {
-      sink +=
-          wf.emitInstances(para, 320, wf.TextAlign.left, null).hitBoxes.length;
+      sink += wf
+          .emitInstances(para, 320, wf.TextAlign.left, null)
+          .hitBoxes
+          .length;
     });
     final emitAtlas = run('emit with atlas (paint)', () {
       sink += wf.emitInstances(para, 320, wf.TextAlign.left, atlas).glyphCount;

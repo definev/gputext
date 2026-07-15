@@ -66,9 +66,8 @@ class _LeakReportPageState extends State<LeakReportPage> {
         : leaks.toYaml(phasesAreTests: false);
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Report copied')),
-    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Report copied')));
   }
 
   @override
@@ -76,9 +75,7 @@ class _LeakReportPageState extends State<LeakReportPage> {
     final leaks = _leaks;
     final yaml = leaks == null
         ? null
-        : (leaks.total == 0
-              ? 'no leaks'
-              : leaks.toYaml(phasesAreTests: false));
+        : (leaks.total == 0 ? 'no leaks' : leaks.toYaml(phasesAreTests: false));
 
     return Scaffold(
       backgroundColor: _paper,
@@ -224,11 +221,11 @@ class _LeakReportPageState extends State<LeakReportPage> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: ok ? _ok.withValues(alpha: 0.12) : _accent.withValues(alpha: 0.1),
+        color: ok
+            ? _ok.withValues(alpha: 0.12)
+            : _accent.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: (ok ? _ok : _accent).withValues(alpha: 0.35),
-        ),
+        border: Border.all(color: (ok ? _ok : _accent).withValues(alpha: 0.35)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -272,7 +269,10 @@ class _LeakReportPageState extends State<LeakReportPage> {
             text: '$count',
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
-          TextSpan(text: ' $label', style: const TextStyle(color: _muted)),
+          TextSpan(
+            text: ' $label',
+            style: const TextStyle(color: _muted),
+          ),
         ],
       ),
     );

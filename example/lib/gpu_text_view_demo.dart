@@ -196,7 +196,7 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
                 'the controls below — align, maxLines/ellipsis, softWrap, '
                 'Knuth–Plass, strut — and it reflows off the UI thread. Inline ',
           ),
-          const GPUWidgetSpan(child: _Chip(), size: Size(70, 40)),
+          const GPUWidgetSpan(child: _Chip(), size: Size(58, 32)),
           const TextSpan(
             text: ' widgets stay composited over the GPU glyphs.\n\n',
           ),
@@ -684,9 +684,11 @@ class _Chip extends StatelessWidget {
         color: const Color(0xFF3355DD),
         borderRadius: BorderRadius.circular(13),
       ),
-      child: const Text(
-        'chips',
-        style: TextStyle(color: Colors.white, fontSize: 13),
+      child: Center(
+        child: const Text(
+          'chips',
+          style: TextStyle(color: Colors.white, fontSize: 13),
+        ),
       ),
     );
   }

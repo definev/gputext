@@ -105,9 +105,9 @@ void main() {
       // Distinct cluster ranges, sorted by start, tile [0, text.length)
       // with no overlap (HB visual order puts RTL clusters descending, which
       // previously made every clusterEnd == text.length).
-      final ranges = {for (final g in run.glyphs) (g.cluster, g.clusterEnd)}
-          .toList()
-        ..sort((a, b) => a.$1 - b.$1);
+      final ranges = {
+        for (final g in run.glyphs) (g.cluster, g.clusterEnd),
+      }.toList()..sort((a, b) => a.$1 - b.$1);
       expect(ranges.first.$1, 0);
       expect(ranges.last.$2, text.length);
       for (var i = 0; i + 1 < ranges.length; i++) {
