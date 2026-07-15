@@ -1040,6 +1040,16 @@ double lineAlignOffset(TextAlign align, double boxWidth, LineMetrics line) =>
   return (0, 0);
 }
 
+/// Called once per color-bitmap [EmojiItem] during [emitInstances], with the
+/// pen at the cluster's origin and [baselineY] of its line. Used by the
+/// isolate worker to collect PNG stubs for the main-isolate color atlas when
+/// [colorLookup] is unavailable off-UI.
+typedef BitmapEmojiVisitor = void Function(
+  EmojiItem item,
+  double penX,
+  double baselineY,
+);
+
 /// Walk the pen across `para`'s lines. With a [table], emits glyph instances;
 /// with `table == null` this is a metrics-only walk that still resolves
 /// placeholder boxes (used at widget-layout time, before any GPU work).
@@ -1051,6 +1061,7 @@ ParagraphInstances emitInstances(
   double x = 0,
   double top = 0,
   ColorGlyphLookup? colorLookup,
+  BitmapEmojiVisitor? onBitmapEmoji,
 }) => GPUTextTimeline.timeSync(
   GPUTextTimeline.emit,
   () => _emitInstances(
@@ -1061,6 +1072,7 @@ ParagraphInstances emitInstances(
     x: x,
     top: top,
     colorLookup: colorLookup,
+    onBitmapEmoji: onBitmapEmoji,
   ),
 );
 
@@ -1072,6 +1084,7 @@ ParagraphInstances _emitInstances(
   double x = 0,
   double top = 0,
   ColorGlyphLookup? colorLookup,
+  BitmapEmojiVisitor? onBitmapEmoji,
 }) {
   // Instances land in a pre-sized typed buffer: a growable List<double>
   // boxes every element (same reason the atlas stores are typed), and this
@@ -1162,6 +1175,10 @@ ParagraphInstances _emitInstances(
             if (yTop < inkMinY) inkMinY = yTop;
             if (yBot > inkMaxY) inkMaxY = yBot;
           }
+          // Isolate path: collect PNG stubs when the color atlas lives on the
+          // main isolate (no colorLookup here). Always fire so pen positions
+          // stay in sync with layout even when lookup will fill later.
+          onBitmapEmoji?.call(e, pen, baselineY);
         } else {
           final scale = e.fontSizePx / e.font.unitsPerEm;
           for (final layer in e.layers) {

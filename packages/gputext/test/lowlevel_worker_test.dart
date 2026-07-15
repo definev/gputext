@@ -6,7 +6,9 @@
 // only HarfBuzz outline extraction makes possible.
 
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -450,4 +452,301 @@ void main() {
       worker.dispose();
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('worker resolves sbix/CBDT bitmap emoji and ships PNG stubs', () async {
+    final shaper = loadHarfBuzzShaper();
+    final latoBytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+    final emojiPath = File('../../example/assets/NotoColorEmoji.ttf');
+    if (!emojiPath.existsSync()) {
+      markTestSkipped('NotoColorEmoji.ttf not present');
+      return;
+    }
+    final emojiBytes = emojiPath.readAsBytesSync();
+    final emojiFont = GPUFont.parse(emojiBytes);
+    if (!emojiFont.hasBitmapGlyphs) {
+      markTestSkipped('emoji font has no sbix/CBDT table');
+      return;
+    }
+
+    final specs = <GPUInlineSpec>[
+      const GPUTextRunSpec(
+        text: 'A😀B',
+        fontId: 'lato',
+        fontSizePx: 24,
+        color: [0, 0, 0, 1],
+      ),
+    ];
+    final fonts = {'lato': GPUFont.parse(latoBytes), 'emoji': emojiFont};
+
+    final withEmoji = buildRunItems(specs, fonts, shaper, emojiFontId: 'emoji');
+    final emojiItems = withEmoji.whereType<wf.EmojiItem>().toList();
+    expect(emojiItems, hasLength(1));
+    expect(emojiItems.single.isBitmap, isTrue,
+        reason: 'Noto CBDT must resolve as bitmap, not COLR');
+    expect(emojiItems.single.layers, isEmpty);
+
+    // Digits must stay in the text run (Noto covers 0-9 as keycap bases).
+    final digitSpecs = <GPUInlineSpec>[
+      const GPUTextRunSpec(
+        text: 'A1😀',
+        fontId: 'lato',
+        fontSizePx: 24,
+        color: [0, 0, 0, 1],
+      ),
+    ];
+    final digitItems =
+        buildRunItems(digitSpecs, fonts, shaper, emojiFontId: 'emoji');
+    expect(digitItems.whereType<wf.EmojiItem>(), hasLength(1));
+    final textRuns = digitItems.whereType<wf.TextRun>().toList();
+    expect(
+      textRuns.any((r) => r.text.contains('1')),
+      isTrue,
+      reason: 'ASCII digit must not be hijacked by the bitmap emoji font',
+    );
+
+    final worker = await GPUTextWorker.spawn();
+    try {
+      await worker.registerFont('lato', Uint8List.fromList(latoBytes));
+      await worker.registerFont('emoji', Uint8List.fromList(emojiBytes));
+      await worker.prepareDoc('bm', specs, emojiFontId: 'emoji');
+      final d = await worker.reflowDoc('bm', 300, dpr: 2.0);
+      expect(d.colorGlyphStubs, isNotEmpty,
+          reason: 'worker must ship PNG stubs for main-isolate atlas pack');
+      final stub = d.colorGlyphStubs.single;
+      expect(stub.cacheKey, contains('emoji:'));
+      expect(stub.materializePng().length, greaterThan(8));
+      expect(stub.fontSizePx, 24);
+      // Coverage for A + B only; color quads are built on the main isolate.
+      expect(d.glyphCount, greaterThanOrEqualTo(2));
+      expect(d.colorGlyphCount, 0);
+    } finally {
+      worker.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('flattenInlineSpan maps height, leading, locale, scaler, direction', () {
+    const span = TextSpan(
+      text: 'Hello',
+      style: TextStyle(
+        fontSize: 20,
+        height: 1.5,
+        leadingDistribution: TextLeadingDistribution.even,
+      ),
+    );
+    final specs = flattenInlineSpan(
+      span,
+      fontIdResolver: (_) => 'x',
+      textScaler: const TextScaler.linear(2),
+      textDirection: TextDirection.rtl,
+      locale: const Locale('en', 'US'),
+    );
+    expect(specs, hasLength(1));
+    final run = specs.single as GPUTextRunSpec;
+    expect(run.fontSizePx, 40);
+    expect(run.height, 1.5);
+    expect(run.evenLeading, isTrue);
+    expect(run.direction, wf.TextDirection.rtl);
+    expect(run.language, 'en-US');
+  });
+
+  test('worker respects maxLines + ellipsis and softWrap:false', () async {
+    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+    final text = List.filled(
+      30,
+      'The quick brown fox jumps over the lazy dog.',
+    ).join(' ');
+    final specs = [
+      GPUTextRunSpec(text: text, fontId: 'lato', fontSizePx: 18),
+    ];
+
+    final worker = await GPUTextWorker.spawn();
+    try {
+      await worker.registerFont('lato', bytes);
+      await worker.prepareDoc('clip', specs);
+
+      final clipped = await worker.reflowDoc(
+        'clip',
+        280,
+        style: const GPUTextLayoutStyle(
+          lineHeight: 1.3,
+          maxLines: 2,
+          addEllipsis: true,
+        ),
+      );
+      expect(clipped.lineCount, 2);
+      expect(clipped.didExceedMaxLines, isTrue);
+
+      final nowrap = await worker.reflowDoc(
+        'clip',
+        200,
+        style: const GPUTextLayoutStyle(
+          lineHeight: 1.3,
+          softWrap: false,
+          addEllipsis: true,
+        ),
+      );
+      expect(nowrap.lineCount, 1);
+      expect(nowrap.width, 200);
+      expect(nowrap.contentWidth, 200);
+
+      final nowrapScroll = await worker.reflowDoc(
+        'clip',
+        200,
+        style: const GPUTextLayoutStyle(
+          lineHeight: 1.3,
+          softWrap: false,
+        ),
+      );
+      expect(nowrapScroll.lineCount, 1);
+      expect(nowrapScroll.width, 200);
+      expect(nowrapScroll.contentWidth, greaterThan(200));
+    } finally {
+      worker.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('worker one-shot layout applies align, strut, and per-run height',
+      () async {
+    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+    final font = GPUFont.parse(bytes);
+    final m = font.verticalMetrics;
+    final fontSize = 20.0;
+    final ascent = m.ascender / font.unitsPerEm * fontSize;
+    final descent = -m.descender / font.unitsPerEm * fontSize;
+
+    final worker = await GPUTextWorker.spawn();
+    try {
+      await worker.registerFont('lato', bytes);
+
+      final strutOnly = await worker.layout(
+        GPUTextLayoutRequest(
+          runs: const [
+            GPUTextRunSpec(text: 'x', fontId: 'lato', fontSizePx: 10),
+          ],
+          maxWidth: 200,
+          style: GPUTextLayoutStyle(
+            strut: wf.StrutMetrics(
+              ascent: ascent,
+              descent: descent,
+              force: true,
+            ),
+          ),
+        ),
+      );
+      // Forced strut replaces text metrics → height ≈ ascent+descent.
+      expect(strutOnly.height, closeTo(ascent + descent, 0.5));
+
+      final tall = await worker.layout(
+        const GPUTextLayoutRequest(
+          runs: [
+            GPUTextRunSpec(
+              text: 'Ag',
+              fontId: 'lato',
+              fontSizePx: 20,
+              height: 2.0,
+            ),
+          ],
+          maxWidth: 200,
+        ),
+      );
+      final normal = await worker.layout(
+        const GPUTextLayoutRequest(
+          runs: [
+            GPUTextRunSpec(text: 'Ag', fontId: 'lato', fontSizePx: 20),
+          ],
+          maxWidth: 200,
+        ),
+      );
+      expect(tall.height, greaterThan(normal.height));
+
+      final centered = await worker.layout(
+        const GPUTextLayoutRequest(
+          runs: [
+            GPUTextRunSpec(text: 'Hi', fontId: 'lato', fontSizePx: 18),
+          ],
+          maxWidth: 300,
+          style: GPUTextLayoutStyle(align: wf.TextAlign.center),
+        ),
+      );
+      expect(centered.width, 300);
+      expect(centered.glyphCount, greaterThan(0));
+    } finally {
+      worker.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('worker emits decorations, backgrounds, and hitBoxes', () async {
+    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+    final specs = [
+      GPUTextRunSpec(
+        text: 'highlight ',
+        fontId: 'lato',
+        fontSizePx: 18,
+        background: const [1, 0.95, 0.7, 1],
+        decoration: const wf.InlineDecoration(
+          underline: true,
+          color: [0.7, 0.3, 0, 1],
+        ),
+      ),
+      const GPUTextRunSpec(
+        text: 'link',
+        fontId: 'lato',
+        fontSizePx: 18,
+        color: [0.1, 0.3, 0.9, 1],
+        decoration: wf.InlineDecoration(
+          underline: true,
+          color: [0.1, 0.3, 0.9, 1],
+        ),
+        hitTag: 'link-1',
+      ),
+    ];
+
+    final worker = await GPUTextWorker.spawn();
+    try {
+      await worker.registerFont('lato', bytes);
+      final d = await worker.layout(
+        GPUTextLayoutRequest(runs: specs, maxWidth: 400),
+      );
+      expect(d.backgrounds, isNotEmpty);
+      expect(d.decorations, isNotEmpty);
+      expect(d.hitBoxes, isNotEmpty);
+      expect(d.hitBoxes.any((b) => b.source == 'link-1'), isTrue);
+      final bg = d.backgrounds.first;
+      expect(bg.width, greaterThan(0));
+      expect(bg.height, greaterThan(0));
+    } finally {
+      worker.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('flattenInlineSpan maps decoration, background, and hit tags', () {
+    final tap = TapGestureRecognizer()..onTap = () {};
+    addTearDown(tap.dispose);
+    final span = TextSpan(
+      children: [
+        const TextSpan(
+          text: 'hi',
+          style: TextStyle(
+            backgroundColor: Color(0xFFFFFF00),
+            decoration: TextDecoration.underline,
+          ),
+        ),
+        TextSpan(text: 'link', recognizer: tap),
+      ],
+    );
+    final hits = <String, TextSpan>{};
+    final specs = flattenInlineSpan(
+      span,
+      fontIdResolver: (_) => 'x',
+      onHitTarget: (tag, s) => hits[tag] = s,
+    );
+    expect(specs, hasLength(2));
+    final a = specs[0] as GPUTextRunSpec;
+    expect(a.background, isNotNull);
+    expect(a.decoration?.underline, isTrue);
+    expect(a.hitTag, isNull);
+    final b = specs[1] as GPUTextRunSpec;
+    expect(b.hitTag, isNotNull);
+    expect(hits[b.hitTag!]?.recognizer, same(tap));
+  });
 }

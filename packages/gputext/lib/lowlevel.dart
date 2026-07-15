@@ -44,10 +44,19 @@ export 'src/paragraph.dart'
         LineRun,
         GlyphTable,
         SingleFontGlyphTable,
+        StrutMetrics,
+        DecorationLine,
+        BackgroundRect,
+        HitSpanBox,
+        InlineDecoration,
+        InlineDecorationStyle,
         prepareParagraph,
         layoutPreparedLines,
         breakLines,
-        emitInstances;
+        emitInstances,
+        LineBreaker,
+        GreedyLineBreaker,
+        KnuthPlassLineBreaker;
 export 'src/engine/shared_atlas.dart' show SharedGlyphAtlas;
 export 'src/font.dart' show GPUFont;
 export 'src/native/system_fonts.dart' show SystemFontProvider;

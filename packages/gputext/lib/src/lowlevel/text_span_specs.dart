@@ -4,8 +4,9 @@
 // Runs on the MAIN isolate (it reads Flutter TextStyles); the results are
 // plain data that cross to a GPUTextWorker. Each leaf TextSpan with text
 // becomes a GPUTextRunSpec carrying its resolved (inherited) style — fontSize,
-// colour, letter/word spacing, and OpenType fontFeatures. A fontId is chosen
-// by [fontIdResolver] (register those fonts on the worker up front).
+// colour, letter/word spacing, height, leading, decoration, background,
+// OpenType fontFeatures, and language. A fontId is chosen by [fontIdResolver]
+// (register those fonts on the worker up front).
 //
 // A widget's size isn't known to the worker, so inline widgets must declare
 // the box to reserve. The ergonomic way is a [GPUWidgetSpan], which carries its
@@ -16,9 +17,13 @@
 // worker reserves the space and returns the laid-out box in
 // GPUTextInstances.placeholders. Placeholders with no available size are dropped.
 
+import 'dart:ui' as ui show TextDirection;
+
 import 'package:flutter/widgets.dart';
 
-import '../text/inline_items.dart' show InlinePlaceholderAlignment;
+import '../text/inline_items.dart'
+    show InlineDecoration, InlineDecorationStyle, InlinePlaceholderAlignment;
+import '../text/shaped_run.dart' as shaped show TextDirection;
 import 'gpu_text_worker.dart'
     show GPUInlineSpec, GPUPlaceholderSpec, GPUTextRunSpec;
 
@@ -48,35 +53,99 @@ class GPUWidgetSpan extends WidgetSpan {
 /// Used for plain WidgetSpans; a [GPUWidgetSpan] supplies its own size instead.
 typedef PlaceholderSizer = Size Function(PlaceholderSpan span, int index);
 
+shaped.TextDirection _mapDirection(ui.TextDirection d) => switch (d) {
+  ui.TextDirection.rtl => shaped.TextDirection.rtl,
+  ui.TextDirection.ltr => shaped.TextDirection.ltr,
+};
+
+bool _isInteractive(TextSpan s) =>
+    s.recognizer != null ||
+    s.onEnter != null ||
+    s.onExit != null ||
+    s.mouseCursor != MouseCursor.defer;
+
+InlineDecoration? _mapDecoration(TextStyle style) {
+  final deco = style.decoration;
+  if (deco == null || deco == TextDecoration.none) return null;
+  final dc = style.decorationColor;
+  return InlineDecoration(
+    underline: deco.contains(TextDecoration.underline),
+    overline: deco.contains(TextDecoration.overline),
+    lineThrough: deco.contains(TextDecoration.lineThrough),
+    color: dc == null ? null : [dc.r, dc.g, dc.b, dc.a],
+    style: switch (style.decorationStyle) {
+      TextDecorationStyle.double => InlineDecorationStyle.doubleLine,
+      TextDecorationStyle.dotted => InlineDecorationStyle.dotted,
+      TextDecorationStyle.dashed => InlineDecorationStyle.dashed,
+      TextDecorationStyle.wavy => InlineDecorationStyle.wavy,
+      TextDecorationStyle.solid || null => InlineDecorationStyle.solid,
+    },
+    thickness: style.decorationThickness ?? 1,
+  );
+}
+
 /// Flatten [span] (with styles inherited from [baseStyle]) into text runs and,
 /// when [placeholderSize] is given, widget placeholders — one entry per styled
 /// leaf, in reading order.
+///
+/// [textScaler] scales each leaf's fontSize (default: no scaling).
+/// [textDirection] sets the bidi base direction on every run.
+/// [locale] becomes the OpenType language tag on every run (overridable later
+/// per-spec); pass null to leave language unset.
+///
+/// Interactive spans (recognizer / hover) get an auto [GPUTextRunSpec.hitTag];
+/// [onHitTarget] receives `(tag, span)` so the main isolate can map taps back.
 List<GPUInlineSpec> flattenInlineSpan(
   InlineSpan span, {
   TextStyle? baseStyle,
   required String Function(TextStyle style) fontIdResolver,
   double defaultFontSizePx = 16,
   List<double> defaultColor = const [0, 0, 0, 1],
+  TextScaler textScaler = TextScaler.noScaling,
+  ui.TextDirection textDirection = ui.TextDirection.ltr,
+  Locale? locale,
   PlaceholderSizer? placeholderSize,
   void Function(int index, Widget child, Size? explicitSize)? onWidget,
+  void Function(String hitTag, TextSpan span)? onHitTarget,
 }) {
   final out = <GPUInlineSpec>[];
   var placeholderIndex = 0;
+  var hitIndex = 0;
+  final language = locale?.toLanguageTag();
+  final direction = _mapDirection(textDirection);
 
   void visit(InlineSpan s, TextStyle inherited) {
     final style = s.style == null ? inherited : inherited.merge(s.style);
     if (s is TextSpan) {
       final text = s.text;
       if (text != null && text.isNotEmpty) {
+        final evenLeading = switch (style.leadingDistribution) {
+          TextLeadingDistribution.even => true,
+          TextLeadingDistribution.proportional => false,
+          null => null,
+        };
+        final bg = style.backgroundColor ?? style.background?.color;
+        String? hitTag;
+        if (_isInteractive(s)) {
+          hitTag = 'h${hitIndex++}';
+          onHitTarget?.call(hitTag, s);
+        }
         out.add(
           GPUTextRunSpec(
             text: text,
             fontId: fontIdResolver(style),
-            fontSizePx: style.fontSize ?? defaultFontSizePx,
+            fontSizePx: textScaler.scale(style.fontSize ?? defaultFontSizePx),
             color: _rgba(style.color, defaultColor),
             letterSpacingPx: style.letterSpacing ?? 0,
             wordSpacingPx: style.wordSpacing ?? 0,
+            height: style.height,
+            evenLeading: evenLeading,
+            direction: direction,
+            language: language,
             features: _features(style.fontFeatures),
+            decoration: _mapDecoration(style),
+            background: bg == null ? null : [bg.r, bg.g, bg.b, bg.a],
+            hitTag: hitTag,
           ),
         );
       }

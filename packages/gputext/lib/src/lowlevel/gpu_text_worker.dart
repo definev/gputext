@@ -9,7 +9,9 @@
 // Decoupling: the worker depends only on Layer-0 (prepare/layout/emit), font
 // parsing, and the CPU-side SharedGlyphAtlas. It never imports flutter_gpu,
 // dart:ui, the widgets, or the GPUText engine singleton — none of which exist
-// in a spawned isolate anyway.
+// in a spawned isolate anyway. Color-bitmap (sbix/CBDT) emoji therefore ship
+// as PNG stubs in [GPUTextInstances.colorGlyphStubs] for the main isolate to
+// decode into a SharedColorAtlas; prefer a COLR emoji font when available.
 //
 // Shaping note: the worker loads HarfBuzz in its own isolate (FFI native
 // symbols are process-global, so `HarfBuzzBindings.tryLoad()` works off the
@@ -22,6 +24,7 @@
 
 import 'dart:async';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../engine/shared_atlas.dart';
@@ -40,6 +43,114 @@ sealed class GPUInlineSpec {
   const GPUInlineSpec();
 }
 
+/// How the laid-out paragraph width is chosen (mirror of Flutter's
+/// [TextWidthBasis], plus a column-fill default suited to the worker API).
+enum GPUTextWidthBasis {
+  /// Alignment / reported width = the constraint [maxWidth] when finite.
+  /// Matches the historical worker/reflow behaviour (layout in a column).
+  parent,
+
+  /// Hug the longest laid-out line (Flutter [TextWidthBasis.longestLine]).
+  longestLine,
+
+  /// Clamp max-intrinsic (unwrapped) width to the box — Flutter
+  /// [TextWidthBasis.parent] / TextPainter shrink-wrap.
+  intrinsic,
+}
+
+/// Sendable paragraph layout knobs — everything [ParagraphStyle] needs plus
+/// soft-wrap / width-basis policy that [GPURichText] applies around it.
+class GPUTextLayoutStyle {
+  const GPUTextLayoutStyle({
+    this.align = TextAlign.left,
+    this.lineHeight = 1.0,
+    this.maxLines,
+    this.softWrap = true,
+    this.addEllipsis = false,
+    this.lineBreaker = LineBreaker.greedy,
+    this.strut,
+    this.applyHeightToFirstAscent = true,
+    this.applyHeightToLastDescent = true,
+    this.evenLeading = false,
+    this.textWidthBasis = GPUTextWidthBasis.parent,
+  });
+
+  final TextAlign align;
+  final double lineHeight;
+  final int? maxLines;
+
+  /// When false, wrap width is infinite (single long line); pair with
+  /// [addEllipsis] to truncate at the box edge like `softWrap: false` +
+  /// `overflow: ellipsis` on [GPURichText].
+  final bool softWrap;
+
+  /// Append '…' when [maxLines] is exceeded, or (with [softWrap] false)
+  /// truncate each overlong line at the box width.
+  final bool addEllipsis;
+
+  /// Line-break strategy (greedy by default; [LineBreaker.knuthPlass] for
+  /// TeX-style optimal justified paragraphs).
+  final LineBreaker lineBreaker;
+
+  /// Minimum (or with [StrutMetrics.force], exact) line metrics.
+  final StrutMetrics? strut;
+
+  /// When false, first-line ascent ignores run height multipliers.
+  final bool applyHeightToFirstAscent;
+
+  /// When false, last-line descent ignores run height multipliers.
+  final bool applyHeightToLastDescent;
+
+  /// Paragraph default for [TextRun.evenLeading].
+  final bool evenLeading;
+
+  final GPUTextWidthBasis textWidthBasis;
+
+  GPUTextLayoutStyle copyWith({
+    TextAlign? align,
+    double? lineHeight,
+    int? maxLines,
+    bool clearMaxLines = false,
+    bool? softWrap,
+    bool? addEllipsis,
+    LineBreaker? lineBreaker,
+    StrutMetrics? strut,
+    bool clearStrut = false,
+    bool? applyHeightToFirstAscent,
+    bool? applyHeightToLastDescent,
+    bool? evenLeading,
+    GPUTextWidthBasis? textWidthBasis,
+  }) => GPUTextLayoutStyle(
+    align: align ?? this.align,
+    lineHeight: lineHeight ?? this.lineHeight,
+    maxLines: clearMaxLines ? null : (maxLines ?? this.maxLines),
+    softWrap: softWrap ?? this.softWrap,
+    addEllipsis: addEllipsis ?? this.addEllipsis,
+    lineBreaker: lineBreaker ?? this.lineBreaker,
+    strut: clearStrut ? null : (strut ?? this.strut),
+    applyHeightToFirstAscent:
+        applyHeightToFirstAscent ?? this.applyHeightToFirstAscent,
+    applyHeightToLastDescent:
+        applyHeightToLastDescent ?? this.applyHeightToLastDescent,
+    evenLeading: evenLeading ?? this.evenLeading,
+    textWidthBasis: textWidthBasis ?? this.textWidthBasis,
+  );
+
+  /// Build the Layer-0 [ParagraphStyle] for a given wrap width.
+  ParagraphStyle toParagraphStyle(double wrapWidth) => ParagraphStyle(
+    maxWidth: wrapWidth,
+    align: align,
+    lineHeight: lineHeight,
+    maxLines: maxLines,
+    addEllipsis: addEllipsis,
+    lineBreaker: lineBreaker,
+    strut: strut,
+    applyHeightToFirstAscent: applyHeightToFirstAscent,
+    applyHeightToLastDescent: applyHeightToLastDescent,
+    evenLeading: evenLeading,
+  );
+}
+
 /// Sendable description of one styled text run. Carries no [GPUFont] — it
 /// references a font registered on the worker by [fontId], so font bytes cross
 /// the isolate boundary once (via [GPUTextWorker.registerFont]) rather than on
@@ -52,8 +163,14 @@ class GPUTextRunSpec extends GPUInlineSpec {
     this.color = const [0, 0, 0, 1],
     this.letterSpacingPx = 0,
     this.wordSpacingPx = 0,
+    this.height,
+    this.evenLeading,
     this.direction = TextDirection.ltr,
+    this.language,
     this.features = const {},
+    this.decoration,
+    this.background,
+    this.hitTag,
   });
 
   final String text;
@@ -64,11 +181,34 @@ class GPUTextRunSpec extends GPUInlineSpec {
   final List<double> color;
   final double letterSpacingPx;
   final double wordSpacingPx;
+
+  /// Per-run [TextStyle.height] multiplier; null → font natural metrics only
+  /// (paragraph [GPUTextLayoutStyle.lineHeight] still applies as leading).
+  final double? height;
+
+  /// Height-multiplier leading: true → split evenly; null → paragraph default.
+  final bool? evenLeading;
+
   final TextDirection direction;
+
+  /// BCP-47 / OpenType language tag for HarfBuzz (e.g. from
+  /// [Locale.toLanguageTag]); null → shaper default.
+  final String? language;
 
   /// OpenType feature tags → values, e.g. `{'smcp': 1, 'tnum': 1, 'liga': 0}`.
   /// Applied by HarfBuzz when a shaper is available.
   final Map<String, int> features;
+
+  /// Underline / overline / line-through (mirrors [TextStyle.decoration]).
+  final InlineDecoration? decoration;
+
+  /// Highlight behind the run (mirrors [TextStyle.backgroundColor]), RGBA 0..1.
+  final List<double>? background;
+
+  /// Sendable hit-test tag returned in [GPUTextInstances.hitBoxes]. Use a
+  /// stable string (e.g. from [flattenInlineSpan]) and map it back to a
+  /// [TextSpan] / callback on the main isolate.
+  final String? hitTag;
 }
 
 /// Sendable placeholder reserving inline space for a widget (a flattened
@@ -97,26 +237,63 @@ class GPUTextLayoutRequest {
   const GPUTextLayoutRequest({
     required this.runs,
     this.maxWidth = double.infinity,
-    this.align = TextAlign.left,
-    this.lineHeight = 1.0,
-    this.maxLines,
+    this.style = const GPUTextLayoutStyle(),
+    this.lineBreak,
+    this.language,
     this.fallbackFontIds = const [],
     this.emojiFontId,
   });
 
+  /// Convenience that fills [style] from the common shorthand fields.
+  factory GPUTextLayoutRequest.basic({
+    required List<GPUInlineSpec> runs,
+    double maxWidth = double.infinity,
+    TextAlign align = TextAlign.left,
+    double lineHeight = 1.0,
+    int? maxLines,
+    LineBreakConfig? lineBreak,
+    String? language,
+    List<String> fallbackFontIds = const [],
+    String? emojiFontId,
+  }) => GPUTextLayoutRequest(
+    runs: runs,
+    maxWidth: maxWidth,
+    style: GPUTextLayoutStyle(
+      align: align,
+      lineHeight: lineHeight,
+      maxLines: maxLines,
+    ),
+    lineBreak: lineBreak,
+    language: language,
+    fallbackFontIds: fallbackFontIds,
+    emojiFontId: emojiFontId,
+  );
+
   final List<GPUInlineSpec> runs;
   final double maxWidth;
-  final TextAlign align;
-  final double lineHeight;
-  final int? maxLines;
+  final GPUTextLayoutStyle style;
+
+  /// Opt-in hyphenation / SA-script segmentation; applied at prepare time.
+  final LineBreakConfig? lineBreak;
+
+  /// Default OpenType language for runs that omit [GPUTextRunSpec.language].
+  final String? language;
 
   /// Ordered fallback font ids for characters the run's font doesn't cover
   /// (e.g. CJK, Arabic). Must be registered via [GPUTextWorker.registerFont].
   final List<String> fallbackFontIds;
 
-  /// Font id of a COLR (layered-vector) color-emoji font, or null. Emoji
-  /// clusters resolve to it and render as coloured coverage layers.
+  /// Font id of a COLR (layered-vector) or color-bitmap (sbix/CBDT) emoji
+  /// font, or null. Prefer a COLR face (e.g. Twemoji) when available — bitmap
+  /// fonts work too, but PNG decode/pack happens on the main isolate after
+  /// reflow. Platform [Text] emoji fallback is not part of this path; use
+  /// [GPURichText] for hybrid platform delegation.
   final String? emojiFontId;
+
+  TextAlign get align => style.align;
+  double get lineHeight => style.lineHeight;
+  int? get maxLines => style.maxLines;
+  GPUTextLayoutStyle get effectiveStyle => style;
 }
 
 /// A complete, self-contained drawable shipped back from the worker: the
@@ -124,7 +301,13 @@ class GPUTextLayoutRequest {
 /// it. Everything is transferred zero-copy — on the main isolate, feed
 /// ([materializeCurves], [materializeRows], [materialize]) straight into
 /// `GPUTextRenderer.create(...)` (or `uploadAtlasTextures` +
-/// `GPUTextPipeline.renderInstances`) and draw. Nothing else is required.
+/// `GPUTextPipeline.renderInstances`) and draw. Nothing else is required for
+/// coverage glyphs.
+///
+/// Color-bitmap (sbix/CBDT) emoji arrive as [colorGlyphStubs]: the worker
+/// cannot decode PNGs (`dart:ui`), so the main isolate packs them into a
+/// [SharedColorAtlas], builds the color instance buffer, and draws a second
+/// pass with [GPUTextPipeline.renderColorInstances].
 class GPUTextInstances {
   GPUTextInstances({
     required this.instances,
@@ -137,9 +320,14 @@ class GPUTextInstances {
     required this.width,
     required this.height,
     required this.didExceedMaxLines,
+    double? contentWidth,
     this.placeholders = const [],
+    this.decorations = const [],
+    this.backgrounds = const [],
+    this.hitBoxes = const [],
     this.atlasGeneration = 0,
-  });
+    this.colorGlyphStubs = const [],
+  }) : contentWidth = contentWidth ?? width;
 
   final TransferableTypedData instances;
   final TransferableTypedData? colorInstances;
@@ -154,8 +342,15 @@ class GPUTextInstances {
   final int colorGlyphCount;
   final int lineCount;
 
-  /// Laid-out extent, logical px. [width] is the wrap width used.
+  /// Alignment / wrap box width, logical px (the constraint used for layout
+  /// when soft-wrapping). The GPU viewport is this wide.
   final double width;
+
+  /// Horizontal scroll extent: max of [width] and the longest laid-out line.
+  /// Wider than [width] when `softWrap: false` (without ellipsis) or an
+  /// unbreakable run overflows — callers should allow horizontal pan.
+  final double contentWidth;
+
   final double height;
   final bool didExceedMaxLines;
 
@@ -164,15 +359,30 @@ class GPUTextInstances {
   /// [GPUPlaceholderSpec.index] you sent). Empty when there are no placeholders.
   final List<PlaceholderBox> placeholders;
 
+  /// Underline / overline / line-through strokes in document-layout space.
+  final List<DecorationLine> decorations;
+
+  /// Highlight rects painted under the glyphs, in document-layout space.
+  final List<BackgroundRect> backgrounds;
+
+  /// Per-run hit rects tagged with [GPUTextRunSpec.hitTag] (as [HitSpanBox.source]).
+  final List<HitSpanBox> hitBoxes;
+
   /// [SharedGlyphAtlas.generation] at emit time. Prepared docs share one
   /// atlas on the worker (append-only); when this rises, re-upload curves/rows.
   /// Returned even when [curves]/[rows] were omitted (`includeAtlas: false`).
   final int atlasGeneration;
 
+  /// Color-bitmap emoji PNG stubs for the main isolate to decode/pack. Empty
+  /// when the doc has no sbix/CBDT emoji (COLR emoji use coverage layers).
+  final List<GPUColorGlyphStub> colorGlyphStubs;
+
   /// Materialize the coverage-glyph instance buffer on the receiving isolate.
   Float32List materialize() => instances.materialize().asFloat32List();
 
   /// Materialize the color-bitmap (emoji) instance buffer, or null if none.
+  /// Worker reflows leave this empty — pack [colorGlyphStubs] on the main
+  /// isolate instead.
   Float32List? materializeColor() =>
       colorInstances?.materialize().asFloat32List();
 
@@ -180,6 +390,39 @@ class GPUTextInstances {
   /// to `uploadAtlasTextures` / `GPUTextRenderer.create`.
   Float32List materializeCurves() => curves.materialize().asFloat32List();
   Uint32List materializeRows() => rows.materialize().asUint32List();
+}
+
+/// One color-bitmap emoji placed by the worker: PNG bytes + layout position.
+/// The main isolate packs [png] into a [SharedColorAtlas] under [cacheKey],
+/// then builds a 12-float color instance from the atlas UV + these metrics.
+class GPUColorGlyphStub {
+  GPUColorGlyphStub({
+    required this.cacheKey,
+    required this.png,
+    required this.strikePpem,
+    required this.bearingX,
+    required this.bearingY,
+    required this.penX,
+    required this.baselineY,
+    required this.fontSizePx,
+    required this.alpha,
+  });
+
+  /// Atlas key, typically `"$fontId:$glyphId:$strikePpem"`.
+  final String cacheKey;
+
+  /// Embedded PNG bytes (copied out of the font table for isolate transfer).
+  final TransferableTypedData png;
+
+  final int strikePpem;
+  final double bearingX;
+  final double bearingY;
+  final double penX;
+  final double baselineY;
+  final double fontSizePx;
+  final double alpha;
+
+  Uint8List materializePng() => png.materialize().asUint8List();
 }
 
 /// A warm isolate that registers fonts once and answers layout requests. Spawn
@@ -243,13 +486,27 @@ class GPUTextWorker {
   /// at any width. Fonts referenced by [runs] must already be registered (see
   /// [registerFont]); flatten a Flutter `TextSpan` into [runs] with
   /// `flattenInlineSpan`. A single-style document is just a one-element list.
+  ///
+  /// [lineBreak] is baked into the prepared paragraph (hyphenation / SA-script
+  /// segmentation); change it ⇒ re-prepare under a new id. [language] is the
+  /// default OpenType language for runs that omit [GPUTextRunSpec.language].
   Future<void> prepareDoc(
     String id,
     List<GPUInlineSpec> runs, {
     List<String> fallbackFontIds = const [],
     String? emojiFontId,
+    LineBreakConfig? lineBreak,
+    String? language,
   }) async {
-    final ok = await _send(('doc', id, runs, fallbackFontIds, emojiFontId));
+    final ok = await _send((
+      'doc',
+      id,
+      runs,
+      fallbackFontIds,
+      emojiFontId,
+      lineBreak,
+      language,
+    ));
     if (ok != true) throw StateError('prepareDoc failed: $ok');
   }
 
@@ -261,13 +518,33 @@ class GPUTextWorker {
   /// so pass [includeAtlas] `false` after the first reflow to skip re-sending
   /// (and re-uploading) it — the receiver reuses the atlas it already has. The
   /// returned buffers are empty when omitted.
+  ///
+  /// Pass [style] for full paragraph policy (align, maxLines, ellipsis, strut,
+  /// line breaker, text-height behavior, …). [lineHeight] is kept as a
+  /// shorthand that overrides [GPUTextLayoutStyle.lineHeight] when set.
+  ///
+  /// [dpr] selects the color-bitmap strike (device pixels) for sbix/CBDT emoji
+  /// stubs — match the view's device pixel ratio so Retina gets a crisper
+  /// strike. Ignored for COLR-only / no-emoji docs.
   Future<GPUTextInstances> reflowDoc(
     String id,
     double width, {
-    double lineHeight = 1.3,
+    double? lineHeight,
+    GPUTextLayoutStyle style = const GPUTextLayoutStyle(lineHeight: 1.3),
     bool includeAtlas = true,
+    double dpr = 1.0,
   }) async {
-    final reply = await _send(('reflow', id, width, lineHeight, includeAtlas));
+    final effective = lineHeight == null
+        ? style
+        : style.copyWith(lineHeight: lineHeight);
+    final reply = await _send((
+      'reflow',
+      id,
+      width,
+      effective,
+      includeAtlas,
+      dpr,
+    ));
     if (reply is GPUTextInstances) return reply;
     throw StateError('reflowDoc failed: $reply');
   }
@@ -303,9 +580,12 @@ class GPUTextWorker {
 /// A document prepared once (phase 1) and kept warm for cheap re-breaks.
 /// [atlas] is the worker's shared glyph atlas (not private to this doc).
 class _Doc {
-  _Doc(this.prepared, this.atlas);
+  _Doc(this.prepared, this.atlas, {this.emojiFontId});
   final PreparedParagraph prepared;
   final SharedGlyphAtlas atlas;
+
+  /// Registered font id used for color emoji (COLR or bitmap), if any.
+  final String? emojiFontId;
 }
 
 Future<void> _workerEntry(SendPort host) async {
@@ -340,12 +620,16 @@ Future<void> _workerEntry(SendPort host) async {
           final List<GPUInlineSpec> runs,
           final List<String> fallbackFontIds,
           final String? emojiFontId,
+          final LineBreakConfig? lineBreak,
+          final String? language,
         ):
           reply = _prepareDoc(
             id,
             runs,
             fallbackFontIds,
             emojiFontId,
+            lineBreak,
+            language,
             fonts,
             shaper,
             docs,
@@ -355,10 +639,11 @@ Future<void> _workerEntry(SendPort host) async {
           'reflow',
           final String id,
           final double width,
-          final double lh,
+          final GPUTextLayoutStyle style,
           final bool includeAtlas,
+          final double dpr,
         ):
-          reply = _reflowDoc(id, width, lh, includeAtlas, docs);
+          reply = _reflowDoc(id, width, style, includeAtlas, dpr, docs, fonts);
         case ('disposeDoc', final String id):
           docs.remove(id);
           reply = true;
@@ -401,12 +686,16 @@ TextShaper? loadHarfBuzzShaper({bool setOutlineProvider = true}) {
 /// RTL. Without one, each run gets the pure-Dart per-rune fallback (glyf only,
 /// no shaping). Exposed so a caller can produce the SAME items the worker does
 /// (e.g. a UI-thread reference, or a `GPUTextLayout` on the main isolate).
+///
+/// [language] is the default OpenType language for runs that omit
+/// [GPUTextRunSpec.language].
 List<InlineItem> buildRunItems(
   List<GPUInlineSpec> runs,
   Map<String, GPUFont> fonts,
   TextShaper? shaper, {
   List<String> fallbackFontIds = const [],
   String? emojiFontId,
+  String? language,
 }) {
   final fallbacks = [
     for (final id in fallbackFontIds)
@@ -419,6 +708,8 @@ List<InlineItem> buildRunItems(
   // bidi-itemize + shape each slice — the plain-text path.
   void emitText(String text, GPUTextRunSpec run, GPUFont primary) {
     if (text.isEmpty) return;
+    final lang = run.language ?? language;
+    final bg = run.background == null ? null : List<double>.of(run.background!);
     for (final (font, sliceText) in _coverageSlices(text, primary, fallbacks)) {
       if (shaper == null) {
         items.add(
@@ -429,6 +720,11 @@ List<InlineItem> buildRunItems(
             color: List<double>.of(run.color),
             letterSpacingPx: run.letterSpacingPx,
             wordSpacingPx: run.wordSpacingPx,
+            height: run.height,
+            evenLeading: run.evenLeading,
+            decoration: run.decoration,
+            background: bg,
+            source: run.hitTag,
           ),
         );
         continue;
@@ -448,6 +744,7 @@ List<InlineItem> buildRunItems(
             direction: br.direction,
             bidiLevel: br.level,
             script: scriptTagForRun(slice),
+            language: lang,
           ),
         );
         if (shaped.bidiLevel != br.level || shaped.direction != br.direction) {
@@ -461,6 +758,11 @@ List<InlineItem> buildRunItems(
             color: List<double>.of(run.color),
             letterSpacingPx: run.letterSpacingPx,
             wordSpacingPx: run.wordSpacingPx,
+            height: run.height,
+            evenLeading: run.evenLeading,
+            decoration: run.decoration,
+            background: bg == null ? null : List<double>.of(bg),
+            source: run.hitTag,
             shaped: shaped,
           ),
         );
@@ -486,27 +788,31 @@ List<InlineItem> buildRunItems(
     final primary = fonts[run.fontId];
     if (primary == null) continue;
 
-    // No color emoji font → plain text (emoji tofu on the primary).
-    if (emojiFont == null || !emojiFont.hasColorGlyphs) {
+    // No color emoji font (COLR or sbix/CBDT) → plain text (emoji tofu).
+    if (emojiFont == null ||
+        !(emojiFont.hasColorGlyphs || emojiFont.hasBitmapGlyphs)) {
       emitText(run.text, run, primary);
       continue;
     }
 
     // Emoji-itemize FIRST (mirrors the widget path): pull out emoji clusters
     // (VS16 / skin-tone / ZWJ / flags / keycaps) that the emoji font resolves
-    // to a single COLR glyph; everything else goes through the text path.
+    // to a single COLR or bitmap glyph; everything else goes through the text
+    // path.
     final cps = run.text.runes.toList();
     final pending = StringBuffer();
     var i = 0;
     while (i < cps.length) {
       final end = emojiClusterEnd(cps, i);
       final emoji = end > i
-          ? _resolveColrEmoji(
+          ? _resolveColorEmoji(
               String.fromCharCodes(cps.sublist(i, end)),
               emojiFont,
               shaper,
               run.fontSizePx,
               run.color,
+              background: run.background,
+              source: run.hitTag,
             )
           : null;
       if (emoji != null) {
@@ -526,18 +832,20 @@ List<InlineItem> buildRunItems(
   return items;
 }
 
-/// Resolve one emoji [cluster] to a COLR (layered-vector) glyph via the emoji
-/// font: shape it (HarfBuzz collapses ZWJ/skin-tone sequences to one glyph),
-/// then read its COLR layers. Returns null for a non-color/bitmap glyph, a
-/// sequence the font doesn't ligate, or when no shaper is available for a
-/// multi-codepoint cluster (bitmap emoji are a separate, un-wired path).
-EmojiItem? _resolveColrEmoji(
+/// Resolve one emoji [cluster] to a COLR (layered-vector) or color-bitmap
+/// (sbix/CBDT) glyph via the emoji font: shape it (HarfBuzz collapses
+/// ZWJ/skin-tone sequences to one glyph), then read COLR layers or confirm a
+/// bitmap strike. Returns null for an unsupported sequence, .notdef, or when
+/// no shaper is available for a multi-codepoint cluster.
+EmojiItem? _resolveColorEmoji(
   String cluster,
   GPUFont emojiFont,
   TextShaper? shaper,
   double fontSizePx,
-  List<double> textColor,
-) {
+  List<double> textColor, {
+  List<double>? background,
+  Object? source,
+}) {
   int gid;
   if (shaper != null) {
     // Glyph-id resolution is ppem-independent; shape at a nominal size.
@@ -557,15 +865,37 @@ EmojiItem? _resolveColrEmoji(
     gid = emojiFont.glyphIdForRune(cps.first) ?? 0;
   }
   if (gid == 0) return null; // .notdef
+  final advance = emojiFont.advanceOfGlyphId(gid);
+  final bg = background == null ? null : List<double>.of(background);
+  final color = List<double>.of(textColor);
   final layers = emojiFont.colrForGlyphId(gid);
-  if (layers == null || layers.isEmpty) return null; // bitmap / no color
-  return EmojiItem(
-    font: emojiFont,
-    fontSizePx: fontSizePx,
-    advanceUnits: emojiFont.advanceOfGlyphId(gid),
-    layers: layers,
-    textColor: List<double>.of(textColor),
-  );
+  if (layers != null && layers.isNotEmpty) {
+    return EmojiItem(
+      font: emojiFont,
+      fontSizePx: fontSizePx,
+      advanceUnits: advance,
+      layers: layers,
+      textColor: color,
+      background: bg,
+      source: source,
+    );
+  }
+  // Color-bitmap (sbix / CBDT): coverage check at a nominal ppem; the worker
+  // picks the DPR-aware strike later when collecting PNG stubs for the main
+  // isolate's color atlas.
+  if (emojiFont.hasBitmapGlyphs &&
+      emojiFont.bitmapGlyphForId(gid, targetPpem: 64) != null) {
+    return EmojiItem(
+      font: emojiFont,
+      fontSizePx: fontSizePx,
+      advanceUnits: advance,
+      bitmapGlyphId: gid,
+      textColor: color,
+      background: bg,
+      source: source,
+    );
+  }
+  return null;
 }
 
 /// Band the outlines every item in [items] needs into [atlas]: shaped glyphs
@@ -632,22 +962,19 @@ GPUTextInstances _runLayout(
     shaper,
     fallbackFontIds: req.fallbackFontIds,
     emojiFontId: req.emojiFontId,
+    language: req.language,
   );
-  final style = ParagraphStyle(
-    maxWidth: req.maxWidth,
-    align: req.align,
-    lineHeight: req.lineHeight,
-    maxLines: req.maxLines,
-  );
-
-  // PHASE 1 + 2 (VM-pure).
-  final prepared = prepareParagraph(items);
-  final lines = layoutPreparedLines(prepared, req.maxWidth, style);
-
-  // PHASE 3 — band outlines (incl. COLR emoji layers) and emit.
+  final prepared = prepareParagraph(items, lineBreak: req.lineBreak);
   final atlas = SharedGlyphAtlas();
   bandRunItems(atlas, items);
-  return _drawable(lines, atlas, req.maxWidth, req.align);
+  return _layoutPrepared(
+    prepared,
+    atlas,
+    req.maxWidth,
+    req.effectiveStyle,
+    emojiFontId: req.emojiFontId,
+    fonts: fonts,
+  );
 }
 
 bool _prepareDoc(
@@ -655,6 +982,8 @@ bool _prepareDoc(
   List<GPUInlineSpec> runs,
   List<String> fallbackFontIds,
   String? emojiFontId,
+  LineBreakConfig? lineBreak,
+  String? language,
   Map<String, GPUFont> fonts,
   TextShaper? shaper,
   Map<String, _Doc> docs,
@@ -666,34 +995,108 @@ bool _prepareDoc(
     shaper,
     fallbackFontIds: fallbackFontIds,
     emojiFontId: emojiFontId,
+    language: language,
   );
   if (items.isEmpty) return false;
-  final prepared = prepareParagraph(items);
+  final prepared = prepareParagraph(items, lineBreak: lineBreak);
   // Band into the worker-shared atlas. Append-only: new glyphs extend
   // curves/rows; existing rowBases never move, so other docs' instance buffers
   // stay valid. Duplicate glyphs across paragraphs are stored once.
   bandRunItems(sharedAtlas, items);
-  docs[id] = _Doc(prepared, sharedAtlas);
+  docs[id] = _Doc(prepared, sharedAtlas, emojiFontId: emojiFontId);
   return true;
 }
 
 GPUTextInstances _reflowDoc(
   String id,
   double width,
-  double lineHeight,
+  GPUTextLayoutStyle style,
   bool includeAtlas,
+  double dpr,
   Map<String, _Doc> docs,
+  Map<String, GPUFont> fonts,
 ) {
   final doc = docs[id];
   if (doc == null) throw StateError('doc "$id" was never prepared');
-  final style = ParagraphStyle(maxWidth: width, lineHeight: lineHeight);
-  final lines = layoutPreparedLines(doc.prepared, width, style);
-  return _drawable(
-    lines,
+  return _layoutPrepared(
+    doc.prepared,
     doc.atlas,
     width,
-    TextAlign.left,
+    style,
     includeAtlas: includeAtlas,
+    dpr: dpr,
+    emojiFontId: doc.emojiFontId,
+    fonts: fonts,
+  );
+}
+
+/// Apply soft-wrap / ellipsis / width-basis policy around [layoutPreparedLines]
+/// the same way [RenderGPUParagraph] does, then emit a transferable drawable.
+GPUTextInstances _layoutPrepared(
+  PreparedParagraph prepared,
+  SharedGlyphAtlas atlas,
+  double maxWidth,
+  GPUTextLayoutStyle style, {
+  bool includeAtlas = true,
+  double dpr = 1.0,
+  String? emojiFontId,
+  Map<String, GPUFont>? fonts,
+}) {
+  final wrapWidth = style.softWrap && maxWidth.isFinite
+      ? maxWidth
+      : double.infinity;
+  final lines = layoutPreparedLines(
+    prepared,
+    wrapWidth,
+    style.toParagraphStyle(wrapWidth),
+  );
+
+  // softWrap:false + ellipsis truncates each overlong line at the box edge.
+  if (style.addEllipsis && !style.softWrap && maxWidth.isFinite) {
+    for (final line in lines.lines) {
+      final lastRun = line.items.isEmpty ? null : line.items.last;
+      final last = lastRun is LineRun ? lastRun.text : null;
+      if (line.width > maxWidth && last != '…' && last != '...') {
+        ellipsizeLine(line, maxWidth);
+        // Ellipsis is synthesized after prepare — band it into the atlas.
+        final ell = line.items.isEmpty ? null : line.items.last;
+        if (ell is LineRun) atlas.ensureGlyphs(ell.font, ell.text);
+      }
+    }
+  }
+
+  // Alignment / reported width.
+  var longest = 0.0;
+  for (final l in lines.lines) {
+    if (l.width > longest) longest = l.width;
+  }
+  final double boxWidth;
+  if (!maxWidth.isFinite) {
+    boxWidth = lines.maxIntrinsicWidth;
+  } else {
+    switch (style.textWidthBasis) {
+      case GPUTextWidthBasis.parent:
+        boxWidth = maxWidth;
+      case GPUTextWidthBasis.longestLine:
+        boxWidth = longest.clamp(0.0, maxWidth);
+      case GPUTextWidthBasis.intrinsic:
+        boxWidth = lines.maxIntrinsicWidth.clamp(0.0, maxWidth);
+    }
+  }
+  // Overflow extent for horizontal scroll (softWrap:false, long unbreakables).
+  final contentWidth =
+      boxWidth.isFinite ? math.max(boxWidth, longest) : longest;
+
+  return _drawable(
+    lines,
+    atlas,
+    boxWidth,
+    style.align,
+    contentWidth: contentWidth,
+    includeAtlas: includeAtlas,
+    dpr: dpr,
+    emojiFontId: emojiFontId,
+    fonts: fonts,
   );
 }
 
@@ -703,14 +1106,58 @@ GPUTextInstances _reflowDoc(
 /// is identical across a doc's reflows (and shared across prepared docs), so
 /// send it once per generation. (A fresh empty buffer each time:
 /// TransferableTypedData is single-use.)
+///
+/// Bitmap emoji PNG stubs are collected when [emojiFontId] points at a
+/// registered sbix/CBDT font; [dpr] picks the strike.
 GPUTextInstances _drawable(
   ParagraphLines lines,
   SharedGlyphAtlas atlas,
   double boxWidth,
   TextAlign align, {
+  double? contentWidth,
   bool includeAtlas = true,
+  double dpr = 1.0,
+  String? emojiFontId,
+  Map<String, GPUFont>? fonts,
 }) {
-  final emitted = emitInstances(lines, boxWidth, align, atlas);
+  final stubs = <GPUColorGlyphStub>[];
+  final emojiFont =
+      emojiFontId == null || fonts == null ? null : fonts[emojiFontId];
+  final emitted = emitInstances(
+    lines,
+    boxWidth,
+    align,
+    atlas,
+    onBitmapEmoji: emojiFont == null || !emojiFont.hasBitmapGlyphs
+        ? null
+        : (item, penX, baselineY) {
+            final gid = item.bitmapGlyphId;
+            if (gid == null) return;
+            final glyph = item.font.bitmapGlyphForId(
+              gid,
+              targetPpem: item.fontSizePx * dpr,
+            );
+            if (glyph == null || !glyph.isPng) return;
+            // Copy PNG out of the font table — TransferableTypedData needs an
+            // owned buffer, and the table view would dangle after transfer.
+            final png = Uint8List.fromList(glyph.bytes);
+            final alpha =
+                item.textColor.length > 3 ? item.textColor[3] : 1.0;
+            stubs.add(
+              GPUColorGlyphStub(
+                cacheKey: '$emojiFontId:$gid:${glyph.ppem}',
+                png: TransferableTypedData.fromList([png]),
+                strikePpem: glyph.ppem,
+                bearingX: glyph.bearingX,
+                bearingY: glyph.bearingY,
+                penX: penX,
+                baselineY: baselineY,
+                fontSizePx: item.fontSizePx,
+                alpha: alpha,
+              ),
+            );
+          },
+  );
   final color = emitted.colorInstances;
   return GPUTextInstances(
     instances: TransferableTypedData.fromList([emitted.instances]),
@@ -725,10 +1172,15 @@ GPUTextInstances _drawable(
     glyphCount: emitted.glyphCount,
     colorGlyphCount: emitted.colorGlyphCount,
     lineCount: lines.lines.length,
-    width: boxWidth.isFinite ? boxWidth : lines.maxIntrinsicWidth,
+    width: boxWidth,
+    contentWidth: contentWidth ?? boxWidth,
     height: lines.height,
     didExceedMaxLines: lines.didExceedMaxLines,
     placeholders: emitted.placeholders,
+    decorations: emitted.decorations,
+    backgrounds: emitted.backgrounds,
+    hitBoxes: emitted.hitBoxes,
     atlasGeneration: atlas.generation,
+    colorGlyphStubs: stubs,
   );
 }

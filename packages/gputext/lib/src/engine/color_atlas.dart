@@ -8,6 +8,8 @@
 //   * Keyed by (font, glyphId, strikePpem) — every requested font size that
 //     resolves to the same strike shares one decoded entry, so a paragraph
 //     that shows 😀 at 14/18/24px decodes it once.
+//   * String keys via [ensureBytes]/[lookupKey] support the isolate path, where
+//     the main isolate packs PNGs without a local GPUFont.
 //   * Fixed-size page (colorAtlasWidth × colorAtlasHeight) so normalized UVs
 //     never shift as the atlas fills — emitted instances bake UVs in, and a
 //     growing page would invalidate them. Overflow falls back to platform
@@ -78,9 +80,12 @@ class ColorAtlasEntry {
 class SharedColorAtlas {
   final Uint8List _pixels = Uint8List(colorAtlasWidth * colorAtlasHeight * 4);
   final _entries = <(GPUFont, int, int), ColorAtlasEntry>{};
+  // Isolate / stub path: keyed by opaque string (e.g. "emoji:123:109").
+  final _keyEntries = <String, ColorAtlasEntry>{};
   // In-flight decodes, so two paragraphs asking for the same glyph in one
   // frame don't both decode and double-pack it.
   final _pending = <(GPUFont, int, int)>{};
+  final _keyPending = <String>{};
 
   // Shelf packer cursor.
   int _shelfX = 0;
@@ -93,7 +98,7 @@ class SharedColorAtlas {
   /// and paragraphs re-emit/re-render when they see it change.
   int get generation => _generation;
 
-  bool get isEmpty => _entries.isEmpty;
+  bool get isEmpty => _entries.isEmpty && _keyEntries.isEmpty;
 
   /// Straight-RGBA page bytes for the texture uploader (do not mutate).
   Uint8List get pixels => _pixels;
@@ -103,6 +108,9 @@ class SharedColorAtlas {
 
   ColorAtlasEntry? lookup(GPUFont font, int glyphId, int strikePpem) =>
       _entries[(font, glyphId, strikePpem)];
+
+  /// Lookup a glyph packed via [ensureBytes] (isolate / stub path).
+  ColorAtlasEntry? lookupKey(String key) => _keyEntries[key];
 
   /// The strike [ensure]/[lookup] resolve for [targetPpem] on [font]; null when
   /// the font has no bitmap glyph source. Callers use it to build the same key.
@@ -140,6 +148,31 @@ class SharedColorAtlas {
       return glyph.ppem;
     } finally {
       _pending.remove(key);
+    }
+  }
+
+  /// Decode and pack a [glyph] under an opaque string [key] (no [GPUFont]
+  /// required). Used by [GPUTextView] after a worker reflow ships PNG stubs.
+  /// Same idempotency / [generation] contract as [ensure].
+  Future<int?> ensureBytes(String key, BitmapGlyph glyph) async {
+    if (!glyph.isPng) return null;
+    if (_keyEntries.containsKey(key)) return glyph.ppem;
+    if (_full || _keyPending.contains(key)) return null;
+    _keyPending.add(key);
+    try {
+      final decoded = await _decode(glyph.bytes);
+      if (decoded == null) return null;
+      if (_keyEntries.containsKey(key)) return glyph.ppem;
+      final entry = _pack(decoded.$1, decoded.$2, decoded.$3, glyph);
+      if (entry == null) {
+        _full = true;
+        return null;
+      }
+      _keyEntries[key] = entry;
+      _generation++;
+      return glyph.ppem;
+    } finally {
+      _keyPending.remove(key);
     }
   }
 

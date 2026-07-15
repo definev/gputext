@@ -45,7 +45,6 @@ class _GPUTextBlocksDemoPageState extends State<GPUTextBlocksDemoPage> {
         blocks.add(
           GPUTextDocument(
             id: 'p$i',
-            lineHeight: 1.5,
             runs: [
               GPUTextRunSpec(
                 text: '§${i + 1}  $para',
