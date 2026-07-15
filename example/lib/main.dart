@@ -20,6 +20,8 @@ import 'features_demo.dart';
 import 'google_sans_flex_demo.dart';
 import 'gpu_text_blocks_demo.dart';
 import 'gpu_text_view_demo.dart';
+import 'sliver_blocks_demo.dart';
+import 'sliver_gpu_text_demo.dart';
 import 'justification_demo.dart';
 import 'lowlevel_demo.dart';
 import 'leak_report_page.dart';
@@ -85,6 +87,8 @@ class GPUTextApp extends StatelessWidget {
         'justify' => const JustificationDemoPage(),
         'lowlevel' => const LowLevelDemoPage(),
         'view' => const GPUTextViewDemoPage(),
+        'sliver' => const SliverGPUTextDemoPage(),
+        'sliverblocks' => const SliverBlocksDemoPage(),
         'blocks' => const GPUTextBlocksDemoPage(),
         'gsf' => const GoogleSansFlexDemoPage(),
         'vars' => const VariableFontDemoPage(),
@@ -542,6 +546,14 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                               _demoButton(
                                 'Lazy blocks',
                                 const GPUTextBlocksDemoPage(),
+                              ),
+                              _demoButton(
+                                'SliverGPUText',
+                                const SliverGPUTextDemoPage(),
+                              ),
+                              _demoButton(
+                                'SliverBlocks',
+                                const SliverBlocksDemoPage(),
                               ),
                               _demoButton(
                                 'Bitmap emoji',

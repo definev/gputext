@@ -20,6 +20,8 @@ export 'src/lowlevel/gpu_text_view.dart'
     show
         GPUTextView,
         GPUTextBlocksView,
+        SliverGPUText,
+        SliverGPUTextBlocks,
         GPUBlockHeightEstimator,
         GPUTextViewController,
         GPUTextDocument,

@@ -1,6 +1,6 @@
 // Real usage of GPUTextView with the layout-parity knobs (align, maxLines,
-// ellipsis, softWrap, Knuth–Plass, strut, per-run height, locale) plus
-// decorations, backgrounds, hit-testing, and color emoji (COLR Twemoji,
+// ellipsis, softWrap, Knuth–Plass, strut, per-run height, locale, wrap width)
+// plus decorations, backgrounds, hit-testing, and color emoji (COLR Twemoji,
 // Apple Color Emoji sbix, or Noto CBDT via the isolate bitmap path). Swap the
 // document to reflow; same id keeps the prepare cache warm. Dev hook:
 // GPUTEXT_DEMO=view.
@@ -52,6 +52,7 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
   // without re-shaping.
   TextAlign _align = TextAlign.left;
   double _lineHeight = 1.5;
+  double _width = 560;
   int? _maxLines;
   bool _ellipsis = false;
   bool _softWrap = true;
@@ -333,6 +334,7 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
                 _Controls(
                   align: _align,
                   lineHeight: _lineHeight,
+                  width: _width,
                   maxLines: _maxLines,
                   ellipsis: _ellipsis,
                   softWrap: _softWrap,
@@ -346,6 +348,7 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
                   hasNoto: _hasNoto,
                   onAlign: (v) => _applyKnobs(() => _align = v),
                   onLineHeight: (v) => _applyKnobs(() => _lineHeight = v),
+                  onWidth: (v) => setState(() => _width = v),
                   onMaxLines: (v) => _applyKnobs(() => _maxLines = v),
                   onEllipsis: (v) => _applyKnobs(() => _ellipsis = v),
                   onSoftWrap: (v) => _applyKnobs(() {
@@ -383,7 +386,7 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
                                   child: Align(
                                     alignment: Alignment.topCenter,
                                     child: SizedBox(
-                                      width: 560,
+                                      width: _width,
                                       child: Material(
                                         elevation: 2,
                                         color: Colors.white,
@@ -442,7 +445,7 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
                             elevation: 2,
                             color: Colors.white,
                             child: SizedBox(
-                              width: 560,
+                              width: _width,
                               child: GPUTextView(
                                 controller: controller,
                                 document: doc,
@@ -482,6 +485,7 @@ class _Controls extends StatelessWidget {
   const _Controls({
     required this.align,
     required this.lineHeight,
+    required this.width,
     required this.maxLines,
     required this.ellipsis,
     required this.softWrap,
@@ -495,6 +499,7 @@ class _Controls extends StatelessWidget {
     required this.hasNoto,
     required this.onAlign,
     required this.onLineHeight,
+    required this.onWidth,
     required this.onMaxLines,
     required this.onEllipsis,
     required this.onSoftWrap,
@@ -507,6 +512,7 @@ class _Controls extends StatelessWidget {
 
   final TextAlign align;
   final double lineHeight;
+  final double width;
   final int? maxLines;
   final bool ellipsis;
   final bool softWrap;
@@ -520,6 +526,7 @@ class _Controls extends StatelessWidget {
   final bool hasNoto;
   final ValueChanged<TextAlign> onAlign;
   final ValueChanged<double> onLineHeight;
+  final ValueChanged<double> onWidth;
   final ValueChanged<int?> onMaxLines;
   final ValueChanged<bool> onEllipsis;
   final ValueChanged<bool> onSoftWrap;
@@ -631,6 +638,27 @@ class _Controls extends StatelessWidget {
                       divisions: 14,
                       label: lineHeight.toStringAsFixed(1),
                       onChanged: onLineHeight,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              width: 220,
+              child: Row(
+                children: [
+                  Text(
+                    'w ${width.round()}',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      value: width,
+                      min: 200,
+                      max: 900,
+                      divisions: 70,
+                      label: '${width.round()} px',
+                      onChanged: onWidth,
                     ),
                   ),
                 ],

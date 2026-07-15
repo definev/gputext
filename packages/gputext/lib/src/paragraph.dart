@@ -113,6 +113,18 @@ class StrutMetrics {
   /// Extra leading, split half above / half below the strut.
   final double leading;
   final bool force;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is StrutMetrics &&
+          other.ascent == ascent &&
+          other.descent == descent &&
+          other.leading == leading &&
+          other.force == force;
+
+  @override
+  int get hashCode => Object.hash(ascent, descent, leading, force);
 }
 
 class ParagraphStyle {

@@ -106,6 +106,41 @@ class GPUTextLayoutStyle {
 
   final GPUTextWidthBasis textWidthBasis;
 
+  /// Field-wise equality so views can skip a worker round-trip when a parent
+  /// rebuild reconstructs an identical style. [lineBreaker] falls back to
+  /// identity for non-const custom breakers — that direction is safe (an
+  /// unnecessary reflow, never a skipped one).
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GPUTextLayoutStyle &&
+          other.align == align &&
+          other.lineHeight == lineHeight &&
+          other.maxLines == maxLines &&
+          other.softWrap == softWrap &&
+          other.addEllipsis == addEllipsis &&
+          other.lineBreaker == lineBreaker &&
+          other.strut == strut &&
+          other.applyHeightToFirstAscent == applyHeightToFirstAscent &&
+          other.applyHeightToLastDescent == applyHeightToLastDescent &&
+          other.evenLeading == evenLeading &&
+          other.textWidthBasis == textWidthBasis;
+
+  @override
+  int get hashCode => Object.hash(
+    align,
+    lineHeight,
+    maxLines,
+    softWrap,
+    addEllipsis,
+    lineBreaker,
+    strut,
+    applyHeightToFirstAscent,
+    applyHeightToLastDescent,
+    evenLeading,
+    textWidthBasis,
+  );
+
   GPUTextLayoutStyle copyWith({
     TextAlign? align,
     double? lineHeight,
@@ -425,8 +460,84 @@ class GPUColorGlyphStub {
   Uint8List materializePng() => png.materialize().asUint8List();
 }
 
+/// One document in a [GPUTextWorker.syncDocs] batch: prepare it if the worker
+/// doesn't hold it yet (when [runs] is provided), then reflow it at the batch
+/// width with [style]. All fields are sendable.
+class GPUTextSyncEntry {
+  const GPUTextSyncEntry({
+    required this.id,
+    required this.style,
+    this.runs,
+    this.fallbackFontIds = const [],
+    this.emojiFontId,
+    this.lineBreak,
+    this.language,
+  });
+
+  final String id;
+
+  /// Layout policy for this entry's reflow (per-doc: entries in one batch may
+  /// differ).
+  final GPUTextLayoutStyle style;
+
+  /// Content to prepare when [id] is not already prepared on the worker. Null
+  /// means "must already be prepared" — an unknown id then yields a null slot
+  /// in [GPUTextSyncResult.results] instead of an error.
+  final List<GPUInlineSpec>? runs;
+
+  final List<String> fallbackFontIds;
+  final String? emojiFontId;
+  final LineBreakConfig? lineBreak;
+  final String? language;
+}
+
+/// Reply to a [GPUTextWorker.syncDocs] batch. [results] aligns with the
+/// request's entries (null where an entry couldn't be prepared); per-entry
+/// drawables never carry the atlas — [curves]/[rows] hold ONE shared-atlas
+/// snapshot taken after every prepare in the batch ran, so a single upload
+/// covers all of them.
+class GPUTextSyncResult {
+  GPUTextSyncResult({
+    required this.results,
+    required this.atlasGeneration,
+    this.curves,
+    this.rows,
+  });
+
+  final List<GPUTextInstances?> results;
+
+  /// [SharedGlyphAtlas.generation] after the batch. When it exceeds the
+  /// generation already uploaded and [curves] is null, fetch the atlas (e.g.
+  /// an entries-empty `syncDocs(includeAtlas: true)`).
+  final int atlasGeneration;
+
+  /// Post-batch atlas snapshot when `includeAtlas` was requested, else null.
+  final TransferableTypedData? curves;
+  final TransferableTypedData? rows;
+
+  Float32List? materializeCurves() => curves?.materialize().asFloat32List();
+  Uint32List? materializeRows() => rows?.materialize().asUint32List();
+}
+
+/// A [reflowDoc] call that was dropped because a newer reflow for the same
+/// document id was already queued on the worker (sampling coalesce). Callers
+/// that fire overlapping reflows should treat this as "ignore — newer result
+/// is coming", not as a hard failure.
+class GPUTextReflowSuperseded implements Exception {
+  @override
+  String toString() => 'GPUTextReflowSuperseded';
+}
+
+/// Sentinel the worker sends when a queued reflow is collapsed by a newer one.
+const Object _kReflowSuperseded = 'superseded';
+
 /// A warm isolate that registers fonts once and answers layout requests. Spawn
 /// one per app (or per heavy surface), keep it alive, stream requests at it.
+///
+/// **Reflow sampling:** overlapping [reflowDoc] calls for the same document id
+/// collapse on the worker — only the latest queued args run; older futures
+/// complete with [GPUTextReflowSuperseded]. That frees isolate bandwidth for
+/// the width the UI actually settled on (e.g. during a resize drag).
 class GPUTextWorker {
   GPUTextWorker._(this._isolate, this._toWorker, this._rx, this._pending);
 
@@ -526,6 +637,11 @@ class GPUTextWorker {
   /// [dpr] selects the color-bitmap strike (device pixels) for sbix/CBDT emoji
   /// stubs — match the view's device pixel ratio so Retina gets a crisper
   /// strike. Ignored for COLR-only / no-emoji docs.
+  ///
+  /// Overlapping calls for the same [id] are sampled: the worker keeps only the
+  /// latest queued args and completes older futures with
+  /// [GPUTextReflowSuperseded] (in-flight compute still finishes — Dart cannot
+  /// preempt sync layout — but anything still sitting in the mailbox is free).
   Future<GPUTextInstances> reflowDoc(
     String id,
     double width, {
@@ -545,6 +661,9 @@ class GPUTextWorker {
       includeAtlas,
       dpr,
     ));
+    if (identical(reply, _kReflowSuperseded) || reply == _kReflowSuperseded) {
+      throw GPUTextReflowSuperseded();
+    }
     if (reply is GPUTextInstances) return reply;
     throw StateError('reflowDoc failed: $reply');
   }
@@ -557,6 +676,39 @@ class GPUTextWorker {
   /// if unknown.
   Future<void> disposeDoc(String id) async {
     await _send(('disposeDoc', id));
+  }
+
+  /// Prepare-if-needed + reflow every entry at [width] in ONE isolate round
+  /// trip. This is the fling/resize catch-up path for block views: a window of
+  /// N blocks costs one message each way instead of up to 2·N, so the first
+  /// glyphs land a whole batch sooner.
+  ///
+  /// Per-entry drawables never include the atlas. When [includeAtlas] is true
+  /// the reply carries ONE shared-atlas snapshot taken after every prepare in
+  /// the batch, valid for all entries (and all previously prepared docs). An
+  /// entries-empty call with [includeAtlas] is a cheap atlas-only fetch.
+  ///
+  /// Entries that cannot be prepared (no [GPUTextSyncEntry.runs] and unknown
+  /// id, or no registered fonts) come back as null slots, never errors.
+  /// Batches are not coalesced (unlike [reflowDoc]) — callers should
+  /// single-flight and re-issue with fresh geometry, as the sliver views do.
+  Future<GPUTextSyncResult> syncDocs(
+    List<GPUTextSyncEntry> entries,
+    double width, {
+    bool includeAtlas = false,
+    double dpr = 1.0,
+  }) async {
+    // Normalize the runtime element type: a `const []` argument would cross
+    // the boundary as List<dynamic> and miss the worker's pattern match.
+    final reply = await _send((
+      'syncDocs',
+      List<GPUTextSyncEntry>.of(entries),
+      width,
+      includeAtlas,
+      dpr,
+    ));
+    if (reply is GPUTextSyncResult) return reply;
+    throw StateError('worker syncDocs failed: $reply');
   }
 
   /// Tear the worker down. Pending requests complete with an error.
@@ -600,61 +752,225 @@ Future<void> _workerEntry(SendPort host) async {
   // Load HarfBuzz once in this isolate (sets GPUFont.outlineProvider). Null on
   // an unsupported platform → the pure-Dart per-rune fallback.
   final shaper = loadHarfBuzzShaper();
-  await for (final msg in rx) {
-    final (int seq, Object command) = msg as (int, Object);
-    if (command == 'stop') {
-      rx.close();
-      break;
-    }
-    Object? reply;
+
+  // Inbox + pump (instead of bare `await for`): while a sync reflow runs,
+  // later messages sit in the isolate port queue. After each job we yield so
+  // [listen] drains them, then [_coalesceQueuedReflows] drops stale reflows
+  // for the same doc id before we spend more CPU on them.
+  final inbox = <(int, Object)>[];
+  var pumping = false;
+
+  Future<void> pump() async {
+    if (pumping) return;
+    pumping = true;
     try {
-      switch (command) {
-        case ('font', final String id, final TransferableTypedData bytes):
-          fonts[id] = GPUFont.parse(bytes.materialize().asUint8List());
-          reply = true;
-        case ('layout', final GPUTextLayoutRequest req):
-          reply = _runLayout(req, fonts, shaper);
-        case (
-          'doc',
-          final String id,
-          final List<GPUInlineSpec> runs,
-          final List<String> fallbackFontIds,
-          final String? emojiFontId,
-          final LineBreakConfig? lineBreak,
-          final String? language,
-        ):
-          reply = _prepareDoc(
-            id,
+      while (inbox.isNotEmpty) {
+        _coalesceQueuedReflows(inbox, host);
+        if (inbox.isEmpty) break;
+        final (seq, command) = inbox.removeAt(0);
+        if (command == 'stop') {
+          rx.close();
+          inbox.clear();
+          break;
+        }
+        Object? reply;
+        try {
+          reply = _dispatchCommand(
+            command,
+            fonts: fonts,
+            docs: docs,
+            sharedAtlas: sharedAtlas,
+            shaper: shaper,
+          );
+        } catch (e, st) {
+          reply = 'error: $e\n$st';
+        }
+        host.send((seq, reply));
+        // Let [listen] pull any messages that arrived during sync work.
+        await Future<void>.delayed(Duration.zero);
+      }
+    } finally {
+      pumping = false;
+      if (inbox.isNotEmpty) {
+        unawaited(pump());
+      }
+    }
+  }
+
+  rx.listen((msg) {
+    final (int seq, Object command) = msg as (int, Object);
+    inbox.add((seq, command));
+    unawaited(pump());
+  });
+}
+
+/// Run one worker command. Kept separate from the pump so coalesce / stop
+/// handling stay easy to read.
+Object? _dispatchCommand(
+  Object command, {
+  required Map<String, GPUFont> fonts,
+  required Map<String, _Doc> docs,
+  required SharedGlyphAtlas sharedAtlas,
+  required TextShaper? shaper,
+}) {
+  switch (command) {
+    case ('font', final String id, final TransferableTypedData bytes):
+      fonts[id] = GPUFont.parse(bytes.materialize().asUint8List());
+      return true;
+    case ('layout', final GPUTextLayoutRequest req):
+      return _runLayout(req, fonts, shaper);
+    case (
+      'doc',
+      final String id,
+      final List<GPUInlineSpec> runs,
+      final List<String> fallbackFontIds,
+      final String? emojiFontId,
+      final LineBreakConfig? lineBreak,
+      final String? language,
+    ):
+      return _prepareDoc(
+        id,
+        runs,
+        fallbackFontIds,
+        emojiFontId,
+        lineBreak,
+        language,
+        fonts,
+        shaper,
+        docs,
+        sharedAtlas,
+      );
+    case (
+      'reflow',
+      final String id,
+      final double width,
+      final GPUTextLayoutStyle style,
+      final bool includeAtlas,
+      final double dpr,
+    ):
+      return _reflowDoc(id, width, style, includeAtlas, dpr, docs, fonts);
+    case ('disposeDoc', final String id):
+      docs.remove(id);
+      return true;
+    case (
+      'syncDocs',
+      final List<GPUTextSyncEntry> entries,
+      final double width,
+      final bool includeAtlas,
+      final double dpr,
+    ):
+      return _syncDocs(
+        entries,
+        width,
+        includeAtlas,
+        dpr,
+        fonts,
+        shaper,
+        docs,
+        sharedAtlas,
+      );
+    default:
+      return 'unknown command';
+  }
+}
+
+/// Batch prepare-if-needed + reflow (see [GPUTextWorker.syncDocs]). Entry
+/// failures degrade to null slots so one bad block never fails the window.
+GPUTextSyncResult _syncDocs(
+  List<GPUTextSyncEntry> entries,
+  double width,
+  bool includeAtlas,
+  double dpr,
+  Map<String, GPUFont> fonts,
+  TextShaper? shaper,
+  Map<String, _Doc> docs,
+  SharedGlyphAtlas sharedAtlas,
+) {
+  final results = <GPUTextInstances?>[];
+  for (final e in entries) {
+    if (!docs.containsKey(e.id)) {
+      final runs = e.runs;
+      if (runs == null ||
+          !_prepareDoc(
+            e.id,
             runs,
-            fallbackFontIds,
-            emojiFontId,
-            lineBreak,
-            language,
+            e.fallbackFontIds,
+            e.emojiFontId,
+            e.lineBreak,
+            e.language,
             fonts,
             shaper,
             docs,
             sharedAtlas,
-          );
-        case (
-          'reflow',
-          final String id,
-          final double width,
-          final GPUTextLayoutStyle style,
-          final bool includeAtlas,
-          final double dpr,
-        ):
-          reply = _reflowDoc(id, width, style, includeAtlas, dpr, docs, fonts);
-        case ('disposeDoc', final String id):
-          docs.remove(id);
-          reply = true;
-        default:
-          reply = 'unknown command';
+          )) {
+        results.add(null);
+        continue;
       }
-    } catch (e, st) {
-      reply = 'error: $e\n$st';
     }
-    host.send((seq, reply));
+    // Per-entry drawables skip the atlas; the batch-level snapshot below
+    // covers every entry at once.
+    results.add(_reflowDoc(e.id, width, e.style, false, dpr, docs, fonts));
   }
+  return GPUTextSyncResult(
+    results: results,
+    atlasGeneration: sharedAtlas.generation,
+    curves: includeAtlas
+        ? TransferableTypedData.fromList([
+            Float32List.fromList(sharedAtlas.curves),
+          ])
+        : null,
+    rows: includeAtlas
+        ? TransferableTypedData.fromList([
+            Uint32List.fromList(sharedAtlas.rows),
+          ])
+        : null,
+  );
+}
+
+/// Doc id of a reflow command, or null for any other command.
+String? _reflowDocId(Object command) {
+  if (command case (
+    'reflow',
+    final String id,
+    final double _,
+    final GPUTextLayoutStyle _,
+    final bool _,
+    final double _,
+  )) {
+    return id;
+  }
+  return null;
+}
+
+/// Collapse queued reflows: for each document id keep only the last entry in
+/// [inbox] and reply [_kReflowSuperseded] for the ones we drop. Non-reflow
+/// commands are left alone (ordering with prepare/dispose stays intact).
+void _coalesceQueuedReflows(List<(int, Object)> inbox, SendPort host) {
+  final lastByDoc = <String, int>{};
+  for (var i = 0; i < inbox.length; i++) {
+    final id = _reflowDocId(inbox[i].$2);
+    if (id != null) lastByDoc[id] = i;
+  }
+  if (lastByDoc.isEmpty) return;
+
+  final drop = <int>{};
+  for (var i = 0; i < inbox.length; i++) {
+    final id = _reflowDocId(inbox[i].$2);
+    if (id != null && lastByDoc[id] != i) drop.add(i);
+  }
+  if (drop.isEmpty) return;
+
+  final kept = <(int, Object)>[];
+  for (var i = 0; i < inbox.length; i++) {
+    if (drop.contains(i)) {
+      host.send((inbox[i].$1, _kReflowSuperseded));
+    } else {
+      kept.add(inbox[i]);
+    }
+  }
+  inbox
+    ..clear()
+    ..addAll(kept);
 }
 
 /// Load HarfBuzz for the current isolate (returns null on a platform where it

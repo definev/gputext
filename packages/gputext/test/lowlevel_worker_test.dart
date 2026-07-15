@@ -167,6 +167,72 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
+  test('syncDocs prepares + reflows a whole batch in one round trip', () async {
+    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+    final worker = await GPUTextWorker.spawn();
+    try {
+      await worker.registerFont('lato', bytes);
+      const style = GPUTextLayoutStyle(lineHeight: 1.3);
+      final entries = [
+        for (var i = 0; i < 6; i++)
+          GPUTextSyncEntry(
+            id: 'blk-$i',
+            style: style,
+            runs: [
+              GPUTextRunSpec(
+                text: 'Block $i — the quick brown fox jumps over the lazy dog.',
+                fontId: 'lato',
+                fontSizePx: 16,
+              ),
+            ],
+          ),
+      ];
+      final first = await worker.syncDocs(entries, 300, includeAtlas: true);
+      expect(first.results, hasLength(6));
+      for (final d in first.results) {
+        expect(d, isNotNull);
+        expect(d!.glyphCount, greaterThan(0));
+        expect(d.width, 300);
+        // Per-entry drawables never carry the atlas payload…
+        expect(d.materializeCurves(), isEmpty);
+      }
+      // …ONE post-batch snapshot covers every entry.
+      expect(first.materializeCurves(), isNotEmpty);
+      expect(first.materializeRows(), isNotEmpty);
+
+      // Already-prepared ids reflow without runs at a new width; the shared
+      // atlas is unchanged (same glyphs), so the payload can be skipped.
+      final second = await worker.syncDocs(
+        [for (final e in entries) GPUTextSyncEntry(id: e.id, style: style)],
+        500,
+      );
+      expect(second.results, everyElement(isNotNull));
+      expect(second.results.first!.width, 500);
+      expect(second.curves, isNull);
+      expect(second.atlasGeneration, first.atlasGeneration);
+
+      // An unknown id without runs degrades to a null slot amid good ones —
+      // one bad block must never fail the window.
+      final mixed = await worker.syncDocs(
+        [
+          const GPUTextSyncEntry(id: 'blk-0', style: style),
+          const GPUTextSyncEntry(id: 'never-prepared', style: style),
+        ],
+        300,
+      );
+      expect(mixed.results[0], isNotNull);
+      expect(mixed.results[1], isNull);
+
+      // Entries-empty call is a cheap atlas-only fetch.
+      final atlasOnly = await worker.syncDocs(const [], 300, includeAtlas: true);
+      expect(atlasOnly.results, isEmpty);
+      expect(atlasOnly.materializeCurves(), isNotEmpty);
+      expect(atlasOnly.atlasGeneration, first.atlasGeneration);
+    } finally {
+      worker.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
   test('prepared docs share one atlas; generation is stable when glyphs overlap',
       () async {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
@@ -714,6 +780,60 @@ void main() {
       final bg = d.backgrounds.first;
       expect(bg.width, greaterThan(0));
       expect(bg.height, greaterThan(0));
+    } finally {
+      worker.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('overlapping reflowDoc calls sample to the latest width', () async {
+    final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+    final text = List.filled(
+      80,
+      'The quick brown fox jumps over the lazy dog.',
+    ).join(' ');
+    final specs = [
+      GPUTextRunSpec(
+        text: text,
+        fontId: 'lato',
+        fontSizePx: 18,
+        color: const [0.11, 0.12, 0.16, 1],
+      ),
+    ];
+
+    final worker = await GPUTextWorker.spawn();
+    try {
+      await worker.registerFont('lato', bytes);
+      await worker.prepareDoc('doc', specs);
+
+      // Fire many widths without awaiting so they pile up on the worker.
+      // Coalesce keeps only the last queued reflow per doc id.
+      const widths = [120.0, 180.0, 240.0, 300.0, 360.0, 420.0];
+      final futures = <Future<Object>>[
+        for (final w in widths)
+          worker
+              .reflowDoc('doc', w, includeAtlas: false)
+              .then<Object>((d) => d)
+              .catchError((Object e) => e),
+      ];
+      final outcomes = await Future.wait(futures);
+
+      final superseded = outcomes.whereType<GPUTextReflowSuperseded>().length;
+      final drawables = outcomes.whereType<GPUTextInstances>().toList();
+      expect(
+        drawables,
+        isNotEmpty,
+        reason: 'at least the latest reflow must complete',
+      );
+      expect(
+        superseded + drawables.length,
+        widths.length,
+        reason: 'every call resolves as drawable or superseded',
+      );
+      // Latest width always wins; earlier ones are free to be dropped.
+      expect(drawables.last.width, widths.last);
+      for (final d in drawables) {
+        expect(widths.contains(d.width), isTrue);
+      }
     } finally {
       worker.dispose();
     }
