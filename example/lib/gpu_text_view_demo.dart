@@ -1,5 +1,5 @@
 // Real usage of GPUTextView with the layout-parity knobs (align, maxLines,
-// ellipsis, softWrap, Knuth–Plass, strut, per-run height, locale, wrap width)
+// ellipsis, Knuth–Plass, strut, per-run height, locale, wrap width)
 // plus decorations, backgrounds, hit-testing, and color emoji (COLR Twemoji,
 // Apple Color Emoji sbix, or Noto CBDT via the isolate bitmap path). Swap the
 // document to reflow; same id keeps the prepare cache warm. Dev hook:
@@ -40,7 +40,6 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
   String? _error;
   final ValueNotifier<GPUTextMetrics?> _metrics = ValueNotifier(null);
   final ValueNotifier<String> _tapLog = ValueNotifier('');
-  final ScrollController _shrinkScroll = ScrollController();
   int _linkTaps = 0;
   late final TapGestureRecognizer _linkTap = TapGestureRecognizer()
     ..onTap = () {
@@ -55,11 +54,9 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
   double _width = 560;
   int? _maxLines;
   bool _ellipsis = false;
-  bool _softWrap = true;
   bool _knuthPlass = false;
   bool _forceStrut = false;
   GPUTextWidthBasis _widthBasis = GPUTextWidthBasis.parent;
-  bool _shrinkWrap = false;
   _EmojiMode _emojiMode = _EmojiMode.none;
   bool _hasColr = false;
   bool _hasApple = false;
@@ -193,7 +190,7 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
           const TextSpan(
             text:
                 'GPUTextView lays this out on a background isolate. Toggle '
-                'the controls below — align, maxLines/ellipsis, softWrap, '
+                'the controls below — align, maxLines/ellipsis, '
                 'Knuth–Plass, strut — and it reflows off the UI thread. Inline ',
           ),
           const GPUWidgetSpan(child: _Chip(), size: Size(58, 32)),
@@ -266,7 +263,6 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
         align: _mapAlign(_align),
         lineHeight: _lineHeight,
         maxLines: _maxLines,
-        softWrap: _softWrap,
         addEllipsis: _ellipsis,
         lineBreaker: _knuthPlass ? LineBreaker.knuthPlass : LineBreaker.greedy,
         strut: strut,
@@ -287,7 +283,6 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
     _linkTap.dispose();
     _metrics.dispose();
     _tapLog.dispose();
-    _shrinkScroll.dispose();
     _controller?.dispose();
     super.dispose();
   }
@@ -298,7 +293,14 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
     final doc = _doc;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('GPUTextView — layout + emoji'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          spacing: 8,
+          children: [
+            const Text('GPUTextView — layout + emoji'),
+            // CircularProgressIndicator.adaptive(),
+          ],
+        ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(24),
           child: Align(
@@ -330,6 +332,7 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
           : controller == null || doc == null
           ? const Center(child: CircularProgressIndicator())
           : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _Controls(
                   align: _align,
@@ -337,11 +340,9 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
                   width: _width,
                   maxLines: _maxLines,
                   ellipsis: _ellipsis,
-                  softWrap: _softWrap,
                   knuthPlass: _knuthPlass,
                   forceStrut: _forceStrut,
                   widthBasis: _widthBasis,
-                  shrinkWrap: _shrinkWrap,
                   emojiMode: _emojiMode,
                   hasColr: _hasColr,
                   hasApple: _hasApple,
@@ -351,128 +352,94 @@ class _GPUTextViewDemoPageState extends State<GPUTextViewDemoPage> {
                   onWidth: (v) => setState(() => _width = v),
                   onMaxLines: (v) => _applyKnobs(() => _maxLines = v),
                   onEllipsis: (v) => _applyKnobs(() => _ellipsis = v),
-                  onSoftWrap: (v) => _applyKnobs(() {
-                    _softWrap = v;
-                    // softWrap:false + ellipsis truncates; turn ellipsis
-                    // off so overflow can scroll horizontally instead.
-                    if (!v) _ellipsis = false;
-                  }),
                   onKnuthPlass: (v) => _applyKnobs(() {
                     _knuthPlass = v;
                     if (v) _align = TextAlign.justify;
                   }),
                   onForceStrut: (v) => _applyKnobs(() => _forceStrut = v),
                   onWidthBasis: (v) => _applyKnobs(() => _widthBasis = v),
-                  onShrinkWrap: (v) => setState(() => _shrinkWrap = v),
                   onEmojiMode: (v) => _applyKnobs(() => _emojiMode = v),
                 ),
                 Expanded(
-                  child: Container(
-                    color: const Color(0xFFF3F1EC),
-                    alignment: Alignment.topCenter,
-                    child: _shrinkWrap
-                        ? CustomScrollView(
-                            controller: _shrinkScroll,
-                            // One tall SliverToBoxAdapter — not ListView +
-                            // Center. Nested Center/ListView around a
-                            // multi-hundred-thousand-px child fights the
-                            // platform scrollbar and desyncs the GPU window.
-                            slivers: [
-                              SliverPadding(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 24,
-                                ),
-                                sliver: SliverToBoxAdapter(
-                                  child: Align(
-                                    alignment: Alignment.topCenter,
-                                    child: SizedBox(
-                                      width: _width,
-                                      child: Material(
-                                        elevation: 2,
-                                        color: Colors.white,
-                                        child: GPUTextView(
-                                          controller: controller,
-                                          document: doc,
-                                          shrinkWrap: true,
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 28,
-                                            vertical: 24,
+                  // Selection: mouse-drag / long-press selects, touch-drag
+                  // scrolls (worker ships geometry only while this
+                  // SelectionArea is attached). GPUTextView is a pure widget
+                  // sized to its content — this outer scroll view scrolls it.
+                  child: SelectionArea(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        spacing: 16,
+                        children: [
+                          Container(
+                            color: const Color(0xFFF3F1EC),
+                            alignment: Alignment.topCenter,
+                            padding: EdgeInsets.all(30),
+                            child: Material(
+                              elevation: 2,
+                              color: Colors.white,
+                              child: Padding(
+                                padding: EdgeInsets.all(8),
+                                child: SizedBox(
+                                  width: _width,
+                                  child: GPUTextView(
+                                    controller: controller,
+                                    document: doc,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 28,
+                                      vertical: 24,
+                                    ),
+                                    onMetrics: (m) {
+                                      _metrics.value = m;
+                                    },
+                                    onSpanTap: (tag, span) {
+                                      // Recognizer taps already update _tapLog.
+                                      if (span?.recognizer != null) return;
+                                      _tapLog.value = 'onSpanTap($tag)';
+                                    },
+                                    fallbackBuilder: (context) => const Center(
+                                      child: Padding(
+                                        padding: EdgeInsets.all(24),
+                                        child: Text(
+                                          'GPU rendering needs Impeller + flutter_gpu.',
+                                          style: TextStyle(
+                                            color: Colors.black54,
                                           ),
-                                          onMetrics: (m) {
-                                            _metrics.value = m;
-                                          },
-                                          onSpanTap: (tag, span) {
-                                            if (span?.recognizer != null) {
-                                              return;
-                                            }
-                                            _tapLog.value = 'onSpanTap($tag)';
-                                          },
-                                          fallbackBuilder: (context) =>
-                                              const Center(
-                                                child: Padding(
-                                                  padding: EdgeInsets.all(24),
-                                                  child: Text(
-                                                    'GPU rendering needs Impeller + flutter_gpu.',
-                                                    style: TextStyle(
-                                                      color: Colors.black54,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ),
                                         ),
                                       ),
                                     ),
                                   ),
                                 ),
                               ),
-                              const SliverToBoxAdapter(
-                                child: Padding(
-                                  padding: EdgeInsets.only(bottom: 24),
-                                  child: Center(
-                                    child: Text(
-                                      '↑ shrinkWrap · card hugs content height',
-                                      style: TextStyle(
-                                        color: Colors.black45,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          )
-                        : Material(
-                            elevation: 2,
-                            color: Colors.white,
-                            child: SizedBox(
-                              width: _width,
-                              child: GPUTextView(
-                                controller: controller,
-                                document: doc,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 28,
-                                  vertical: 24,
-                                ),
-                                onMetrics: (m) {
-                                  _metrics.value = m;
-                                },
-                                onSpanTap: (tag, span) {
-                                  // Recognizer taps already update _tapLog.
-                                  if (span?.recognizer != null) return;
-                                  _tapLog.value = 'onSpanTap($tag)';
-                                },
-                                fallbackBuilder: (context) => const Center(
-                                  child: Padding(
-                                    padding: EdgeInsets.all(24),
-                                    child: Text(
-                                      'GPU rendering needs Impeller + flutter_gpu.',
-                                      style: TextStyle(color: Colors.black54),
-                                    ),
-                                  ),
+                            ),
+                          ),
+                          GPUTextView(
+                            controller: controller,
+                            document: doc,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 28,
+                              vertical: 24,
+                            ),
+                            onMetrics: (m) {
+                              _metrics.value = m;
+                            },
+                            onSpanTap: (tag, span) {
+                              // Recognizer taps already update _tapLog.
+                              if (span?.recognizer != null) return;
+                              _tapLog.value = 'onSpanTap($tag)';
+                            },
+                            fallbackBuilder: (context) => const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(24),
+                                child: Text(
+                                  'GPU rendering needs Impeller + flutter_gpu.',
+                                  style: TextStyle(color: Colors.black54),
                                 ),
                               ),
                             ),
                           ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -488,11 +455,9 @@ class _Controls extends StatelessWidget {
     required this.width,
     required this.maxLines,
     required this.ellipsis,
-    required this.softWrap,
     required this.knuthPlass,
     required this.forceStrut,
     required this.widthBasis,
-    required this.shrinkWrap,
     required this.emojiMode,
     required this.hasColr,
     required this.hasApple,
@@ -502,11 +467,9 @@ class _Controls extends StatelessWidget {
     required this.onWidth,
     required this.onMaxLines,
     required this.onEllipsis,
-    required this.onSoftWrap,
     required this.onKnuthPlass,
     required this.onForceStrut,
     required this.onWidthBasis,
-    required this.onShrinkWrap,
     required this.onEmojiMode,
   });
 
@@ -515,11 +478,9 @@ class _Controls extends StatelessWidget {
   final double width;
   final int? maxLines;
   final bool ellipsis;
-  final bool softWrap;
   final bool knuthPlass;
   final bool forceStrut;
   final GPUTextWidthBasis widthBasis;
-  final bool shrinkWrap;
   final _EmojiMode emojiMode;
   final bool hasColr;
   final bool hasApple;
@@ -529,11 +490,9 @@ class _Controls extends StatelessWidget {
   final ValueChanged<double> onWidth;
   final ValueChanged<int?> onMaxLines;
   final ValueChanged<bool> onEllipsis;
-  final ValueChanged<bool> onSoftWrap;
   final ValueChanged<bool> onKnuthPlass;
   final ValueChanged<bool> onForceStrut;
   final ValueChanged<GPUTextWidthBasis> onWidthBasis;
-  final ValueChanged<bool> onShrinkWrap;
   final ValueChanged<_EmojiMode> onEmojiMode;
 
   @override
@@ -572,16 +531,6 @@ class _Controls extends StatelessWidget {
                 selected: {emojiMode},
                 onSelectionChanged: (s) => onEmojiMode(s.first),
               ),
-            FilterChip(
-              label: const Text('softWrap'),
-              selected: softWrap,
-              onSelected: onSoftWrap,
-            ),
-            FilterChip(
-              label: const Text('shrinkWrap'),
-              selected: shrinkWrap,
-              onSelected: onShrinkWrap,
-            ),
             FilterChip(
               label: const Text('ellipsis'),
               selected: ellipsis,
@@ -701,7 +650,7 @@ const _lineSeed =
 /// ~20k hard-broken lines for virtualization / scroll stress. Built once so
 /// knob rebuilds do not re-allocate the string.
 final String _largeBody = () {
-  const lineCount = 20000;
+  const lineCount = 200;
   final buf = StringBuffer();
   buf.writeln(
     '--- $lineCount-line stress body (GPUTextView virtualizes the viewport) ---\n',

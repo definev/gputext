@@ -24,6 +24,8 @@ export 'src/lowlevel/gpu_text_view.dart'
         SliverGPUTextBlocks,
         GPUBlockHeightEstimator,
         GPUTextViewController,
+        GPUBlock,
+        GPUWidgetBlock,
         GPUTextDocument,
         GPUTextMetrics;
 export 'src/lowlevel/text_span_specs.dart'
@@ -58,7 +60,18 @@ export 'src/paragraph.dart'
         emitInstances,
         LineBreaker,
         GreedyLineBreaker,
-        KnuthPlassLineBreaker;
+        KnuthPlassLineBreaker,
+        // Selection geometry: what GPUTextInstances.materializeGeometry()
+        // decodes, and the queries it answers.
+        ParagraphGeometryBase,
+        SnapshotParagraphGeometry,
+        encodeGeometrySnapshot,
+        ParagraphGeometry,
+        PlacedLineGeometry,
+        CaretMetrics,
+        SelectionRect,
+        SourcePosition,
+        wordRangeIn;
 export 'src/engine/shared_atlas.dart' show SharedGlyphAtlas;
 export 'src/font.dart' show GPUFont;
 export 'src/native/system_fonts.dart' show SystemFontProvider;

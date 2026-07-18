@@ -781,7 +781,7 @@ void main() {
     expect(run.language, 'en-US');
   });
 
-  test('worker respects maxLines + ellipsis and softWrap:false', () async {
+  test('worker respects maxLines + ellipsis', () async {
     final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
     final text = List.filled(
       30,
@@ -805,28 +805,6 @@ void main() {
       );
       expect(clipped.lineCount, 2);
       expect(clipped.didExceedMaxLines, isTrue);
-
-      final nowrap = await worker.reflowDoc(
-        'clip',
-        200,
-        style: const GPUTextLayoutStyle(
-          lineHeight: 1.3,
-          softWrap: false,
-          addEllipsis: true,
-        ),
-      );
-      expect(nowrap.lineCount, 1);
-      expect(nowrap.width, 200);
-      expect(nowrap.contentWidth, 200);
-
-      final nowrapScroll = await worker.reflowDoc(
-        'clip',
-        200,
-        style: const GPUTextLayoutStyle(lineHeight: 1.3, softWrap: false),
-      );
-      expect(nowrapScroll.lineCount, 1);
-      expect(nowrapScroll.width, 200);
-      expect(nowrapScroll.contentWidth, greaterThan(200));
     } finally {
       worker.dispose();
     }
@@ -1028,5 +1006,401 @@ void main() {
     final b = specs[1] as GPUTextRunSpec;
     expect(b.hitTag, isNotNull);
     expect(hits[b.hitTag!]?.recognizer, same(tap));
+  });
+
+  group('selection geometry over the wire', () {
+    const style = GPUTextLayoutStyle(); // lineHeight 1.0 = reference default
+
+    /// Main-isolate reference geometry with the worker's shaping + layout.
+    wf.ParagraphGeometry referenceGeometry(
+      List<GPUInlineSpec> specs,
+      Map<String, GPUFont> fonts,
+      double width,
+      TextShaper? shaper,
+    ) {
+      final items = buildRunItems(specs, fonts, shaper);
+      final prepared = wf.prepareParagraph(items);
+      final laid = wf.layoutPreparedLines(
+        prepared,
+        width,
+        wf.ParagraphStyle(maxWidth: width),
+      );
+      return wf.ParagraphGeometry(
+        items: items,
+        para: laid,
+        boxWidth: width,
+        align: wf.TextAlign.left,
+      );
+    }
+
+    void expectGeometryMatches(
+      wf.SnapshotParagraphGeometry snap,
+      wf.ParagraphGeometry ref,
+    ) {
+      expect(snap.plainText, ref.plainText);
+      expect(snap.lineCount, ref.lineCount);
+      for (var o = 0; o <= ref.length; o++) {
+        for (final upstream in [false, true]) {
+          final a = ref.caretAt(o, upstream: upstream);
+          final b = snap.caretAt(o, upstream: upstream);
+          expect(b.x, a.x, reason: 'caret x @$o');
+          expect(b.top, a.top, reason: 'caret top @$o');
+          expect(b.line, a.line, reason: 'caret line @$o');
+        }
+      }
+      final aBoxes = ref.boxesForRange(0, ref.length);
+      final bBoxes = snap.boxesForRange(0, ref.length);
+      expect(bBoxes.length, aBoxes.length);
+      for (var k = 0; k < aBoxes.length; k++) {
+        expect(bBoxes[k].left, aBoxes[k].left);
+        expect(bBoxes[k].top, aBoxes[k].top);
+        expect(bBoxes[k].right, aBoxes[k].right);
+        expect(bBoxes[k].bottom, aBoxes[k].bottom);
+      }
+    }
+
+    test('reflowDoc ships a snapshot matching main-isolate geometry', () async {
+      final shaper = loadHarfBuzzShaper();
+      final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+      final font = GPUFont.parse(bytes);
+      const specs = [
+        GPUTextRunSpec(
+          text:
+              'The quick brown fox jumps over the lazy dog and keeps '
+              'running until the line wraps a few times.',
+          fontId: 'lato',
+          fontSizePx: 16,
+          color: [0.1, 0.1, 0.1, 1],
+        ),
+      ];
+      final ref = referenceGeometry(specs, {'lato': font}, 220, shaper);
+      expect(ref.lineCount, greaterThan(1));
+
+      final worker = await GPUTextWorker.spawn();
+      try {
+        await worker.registerFont('lato', bytes);
+        await worker.prepareDoc('doc', specs);
+
+        // Default: no geometry payload.
+        final plain = await worker.reflowDoc('doc', 220, style: style);
+        expect(plain.geometry, isNull);
+        expect(plain.materializeGeometry(), isNull);
+
+        final d = await worker.reflowDoc(
+          'doc',
+          220,
+          style: style,
+          includeGeometry: true,
+        );
+        final snap = d.materializeGeometry();
+        expect(snap, isNotNull);
+        expectGeometryMatches(snap!, ref);
+      } finally {
+        worker.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('syncDocs honors includeGeometry per entry', () async {
+      final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+      const specA = [
+        GPUTextRunSpec(
+          text: 'selectable block',
+          fontId: 'lato',
+          fontSizePx: 16,
+          color: [0, 0, 0, 1],
+        ),
+      ];
+      const specB = [
+        GPUTextRunSpec(
+          text: 'plain block',
+          fontId: 'lato',
+          fontSizePx: 16,
+          color: [0, 0, 0, 1],
+        ),
+      ];
+      final worker = await GPUTextWorker.spawn();
+      try {
+        await worker.registerFont('lato', bytes);
+        final result = await worker.syncDocs(const [
+          GPUTextSyncEntry(
+            id: 'a',
+            style: style,
+            runs: specA,
+            includeGeometry: true,
+          ),
+          GPUTextSyncEntry(id: 'b', style: style, runs: specB),
+        ], 300);
+        final a = result.results[0]!;
+        final b = result.results[1]!;
+        final snap = a.materializeGeometry();
+        expect(snap, isNotNull);
+        expect(snap!.plainText, 'selectable block');
+        expect(b.geometry, isNull);
+      } finally {
+        worker.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('reflow coalescing still supersedes with the geometry flag', () async {
+      final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+      final text = List.filled(
+        120,
+        'The quick brown fox jumps over the lazy dog.',
+      ).join(' ');
+      final specs = [
+        GPUTextRunSpec(
+          text: text,
+          fontId: 'lato',
+          fontSizePx: 18,
+          color: const [0.11, 0.12, 0.16, 1],
+        ),
+      ];
+      final worker = await GPUTextWorker.spawn();
+      try {
+        await worker.registerFont('lato', bytes);
+        await worker.prepareDoc('doc', specs);
+        // Flood the worker so queued reflows pile up behind the running one;
+        // coalescing must drop stale ones even with the widened tuple.
+        final widths = [for (var i = 0; i < 24; i++) 120.0 + i * 10];
+        final futures = <Future<Object>>[
+          for (final w in widths)
+            worker
+                .reflowDoc(
+                  'doc',
+                  w,
+                  style: style,
+                  includeAtlas: false,
+                  includeGeometry: true,
+                )
+                .then<Object>((d) => d)
+                .catchError((Object e) => e),
+        ];
+        final outcomes = await Future.wait(futures);
+        final superseded = outcomes.whereType<GPUTextReflowSuperseded>().length;
+        final drawables = outcomes.whereType<GPUTextInstances>().toList();
+        expect(superseded, greaterThan(0), reason: 'coalescing must drop');
+        expect(superseded + drawables.length, widths.length);
+        expect(drawables.last.width, widths.last);
+        expect(drawables.last.materializeGeometry(), isNotNull);
+      } finally {
+        worker.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test(
+      'full snapshot (block path) still declines above its budget',
+      () async {
+        final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+        // ~315k chars: over the ~250k budget — the FULL snapshot is
+        // O(document), so it stays budgeted for the block views that use it.
+        // Single-doc views use the line-table path below, which has no budget.
+        final text = List.filled(
+          7000,
+          'The quick brown fox jumps over the lazy dog.',
+        ).join(' ');
+        final specs = [
+          GPUTextRunSpec(
+            text: text,
+            fontId: 'lato',
+            fontSizePx: 16,
+            color: const [0, 0, 0, 1],
+          ),
+        ];
+        final worker = await GPUTextWorker.spawn();
+        try {
+          await worker.registerFont('lato', bytes);
+          await worker.prepareDoc('doc', specs);
+          final d = await worker.reflowDoc(
+            'doc',
+            400,
+            style: style,
+            includeAtlas: false,
+            includeGeometry: true,
+          );
+          expect(d.geometry, isNull, reason: 'over budget => declined');
+          expect(d.materializeGeometry(), isNull);
+          expect(d.glyphCount, greaterThan(0), reason: 'drawable unaffected');
+        } finally {
+          worker.dispose();
+        }
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+
+    test(
+      'line table + detail bands serve docs the snapshot declines',
+      () async {
+        final shaper = loadHarfBuzzShaper();
+        final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+        final font = GPUFont.parse(bytes);
+        // Same over-budget document as above: the line-table path must serve
+        // it (that's the whole point of the banded design).
+        final text = List.filled(
+          7000,
+          'The quick brown fox jumps over the lazy dog.',
+        ).join(' ');
+        final specs = [
+          GPUTextRunSpec(
+            text: text,
+            fontId: 'lato',
+            fontSizePx: 16,
+            color: const [0, 0, 0, 1],
+          ),
+        ];
+        final worker = await GPUTextWorker.spawn();
+        try {
+          await worker.registerFont('lato', bytes);
+          await worker.prepareDoc('doc', specs);
+
+          // Default: no table payload, and no layout retained.
+          final plain = await worker.reflowDoc(
+            'doc',
+            400,
+            style: style,
+            includeAtlas: false,
+          );
+          expect(plain.lineTable, isNull);
+          expect(
+            await worker.fetchLineBand('doc', plain.layoutGeneration, 0, 4),
+            isNull,
+            reason: 'no table requested → no layout retained',
+          );
+
+          final d = await worker.reflowDoc(
+            'doc',
+            400,
+            style: style,
+            includeAtlas: false,
+            includeLineTable: true,
+          );
+          final table = d.materializeLineTable();
+          expect(table, isNotNull);
+          expect(table!.lineCount, d.lineCount);
+          expect(table.lineCount, greaterThan(1000));
+          expect(table.srcEnd[table.lineCount - 1], text.length);
+
+          // Rows must match a main-isolate reference layout exactly.
+          final ref = referenceGeometry(specs, {'lato': font}, 400, shaper);
+          expect(table.lineCount, ref.lineCount);
+          for (final line in [0, 1, ref.lineCount ~/ 2, ref.lineCount - 1]) {
+            expect(table.tops[line], ref.lineTop(line), reason: 'top $line');
+            expect(
+              table.heights[line],
+              ref.lineBoxHeightAt(line),
+              reason: 'height $line',
+            );
+            expect(
+              table.srcStart[line],
+              ref.lineStartAt(line),
+              reason: 'src $line',
+            );
+          }
+
+          // Detail bands: mid-document lines answer exactly like the
+          // reference once their band lands.
+          final mid = table.lineCount ~/ 2;
+          final band = await worker.fetchLineBand(
+            'doc',
+            d.layoutGeneration,
+            mid,
+            mid + 8,
+          );
+          expect(band, isNotNull);
+          final banded = wf.BandedDocGeometry(
+            plainText: text,
+            placeholderOffsets: Int32List(0),
+            table: table,
+            generation: d.layoutGeneration,
+          );
+          expect(banded.applyDetailBand(band!.materialize()), 8);
+          final probe = ref.lineStartAt(mid) + 3;
+          expect(banded.caretAt(probe).x, ref.caretAt(probe).x);
+          expect(banded.caretAt(probe).top, ref.caretAt(probe).top);
+
+          // Unknown generations are refused.
+          expect(
+            await worker.fetchLineBand('doc', d.layoutGeneration - 1, 0, 4),
+            isNull,
+          );
+          // A newer table-carrying reflow keeps RECENT generations
+          // fetchable: several views sharing one doc id each hold their own
+          // reply's table, and all of them must get detail.
+          final d2 = await worker.reflowDoc(
+            'doc',
+            380,
+            style: style,
+            includeAtlas: false,
+            includeLineTable: true,
+          );
+          expect(d2.layoutGeneration, greaterThan(d.layoutGeneration));
+          expect(
+            await worker.fetchLineBand('doc', d.layoutGeneration, 0, 4),
+            isNotNull,
+            reason: 'recent generation stays fetchable beside a newer one',
+          );
+          expect(
+            await worker.fetchLineBand('doc', d2.layoutGeneration, 0, 4),
+            isNotNull,
+          );
+          // Enough newer generations evict the oldest retained layout.
+          var last = d2;
+          for (var w = 360.0; w >= 320.0; w -= 20.0) {
+            last = await worker.reflowDoc(
+              'doc',
+              w,
+              style: style,
+              includeAtlas: false,
+              includeLineTable: true,
+            );
+          }
+          expect(
+            await worker.fetchLineBand('doc', d.layoutGeneration, 0, 4),
+            isNull,
+            reason: 'evicted past the kept-generations cap',
+          );
+          expect(
+            await worker.fetchLineBand('doc', last.layoutGeneration, 0, 4),
+            isNotNull,
+          );
+        } finally {
+          worker.dispose();
+        }
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+
+    test(
+      'emoji clusters keep their source text in geometry plainText',
+      () async {
+        final bytes = File('assets/Lato-Regular.ttf').readAsBytesSync();
+        final emojiBytes = File('assets/TwemojiMozilla.ttf').readAsBytesSync();
+        const specs = [
+          GPUTextRunSpec(
+            text: 'hi 🌚 bye',
+            fontId: 'lato',
+            fontSizePx: 16,
+            color: [0, 0, 0, 1],
+          ),
+        ];
+        final worker = await GPUTextWorker.spawn();
+        try {
+          await worker.registerFont('lato', bytes);
+          await worker.registerFont('twemoji', emojiBytes);
+          await worker.prepareDoc('doc', specs, emojiFontId: 'twemoji');
+          final d = await worker.reflowDoc(
+            'doc',
+            300,
+            style: style,
+            includeGeometry: true,
+          );
+          final snap = d.materializeGeometry()!;
+          expect(snap.plainText, 'hi 🌚 bye');
+          expect(snap.plainText.contains('￼'), isFalse);
+        } finally {
+          worker.dispose();
+        }
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
   });
 }

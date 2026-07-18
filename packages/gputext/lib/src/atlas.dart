@@ -18,14 +18,12 @@ void _requireAtlasFormat(gpu.GpuContext context) {
   }
 }
 
-/// Pack curve vec2s `[from, end)` into RGBA32F texels of [dst] — one vec2 per
-/// texel (.zw unused).
+/// Pack curve vec2s `[from, end)` into RGBA32F texels of [dst] — TWO vec2s
+/// per texel (even index in .xy, odd in .zw; gputext.frag unpacks by index
+/// parity). Texel t therefore holds floats `[4t, 4t+4)` of the curves buffer,
+/// so packing is an identity copy of the float range.
 void _packCurveTexels(Float32List dst, Float32List curves, int from, int end) {
-  for (var i = from; i < end; i++) {
-    final o = i * 4;
-    dst[o] = curves[i * 2];
-    dst[o + 1] = curves[i * 2 + 1];
-  }
+  dst.setRange(from * 2, end * 2, curves, from * 2);
 }
 
 /// Pack band rows `[from, end)` into RGBA32F texel PAIRS of [dst]. Each band is
@@ -82,7 +80,8 @@ class AtlasTextureUploader {
     const maxH = 1 << 20;
 
     final curveVec2Count = curves.length ~/ 2;
-    final needCurveH = ((curveVec2Count + curveTexWidth - 1) ~/ curveTexWidth)
+    final curveTexels = (curveVec2Count + 1) ~/ 2; // two vec2s per texel
+    final needCurveH = ((curveTexels + curveTexWidth - 1) ~/ curveTexWidth)
         .clamp(1, maxH);
     if (_curvesTex == null || needCurveH > _curveTexHeight) {
       final capH =
@@ -144,7 +143,8 @@ AtlasTextures uploadAtlasTextures(
 ) {
   _requireAtlasFormat(context);
   final curveVec2Count = curves.length ~/ 2;
-  final curveTexHeight = (curveVec2Count + curveTexWidth - 1) ~/ curveTexWidth;
+  final curveTexels = (curveVec2Count + 1) ~/ 2; // two vec2s per texel
+  final curveTexHeight = (curveTexels + curveTexWidth - 1) ~/ curveTexWidth;
   final curvePixels = Float32List(curveTexWidth * curveTexHeight * 4);
   _packCurveTexels(curvePixels, curves, 0, curveVec2Count);
 

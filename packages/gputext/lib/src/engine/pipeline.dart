@@ -12,18 +12,20 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 
 import '../atlas.dart';
 
-// Legacy file-asset key (pubspec / ShaderBundleAssetMode.legacyOnly).
-const _bundleAssetLegacy = 'build/shaderbundles/gputext.shaderbundle';
-// DataAsset key from flutter_gpu_shaders (dataAssetsIfAvailable / Required).
-// Android debug builds often ship only this path.
+// Compiled bundle keys — never the *.shaderbundle.json manifest.
+// Prefer DataAsset keys (flutter_gpu_shaders registers these when
+// assetMode is dataAssetsIfAvailable / Required). Flutter exposes them as
+// packages/<pkg>/<dataAssetName>. Legacy keys are the historical pubspec
+// flutter.assets path for ShaderBundleAssetMode.legacyOnly.
 const _bundleAssetData =
     'flutter_gpu_shaders/shaderbundles/gputext.shaderbundle';
+const _bundleAssetLegacy = 'build/shaderbundles/gputext.shaderbundle';
 
 const _bundleAssetKeys = <String>[
-  _bundleAssetLegacy,
-  'packages/gputext/$_bundleAssetLegacy',
-  _bundleAssetData,
   'packages/gputext/$_bundleAssetData',
+  _bundleAssetData,
+  'packages/gputext/$_bundleAssetLegacy',
+  _bundleAssetLegacy,
 ];
 
 class FrameUniforms {

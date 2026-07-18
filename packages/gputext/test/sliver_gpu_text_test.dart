@@ -267,7 +267,7 @@ void main() {
     );
   });
 
-  testWidgets('coerces softWrap:false to wrapping (sliver is 1D)', (
+  testWidgets('wraps a long word list to the cross-axis extent', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1.0;
@@ -286,7 +286,7 @@ void main() {
         style: const TextStyle(fontSize: 16),
       ),
       fontIdResolver: (_) => 'lato',
-      style: const GPUTextLayoutStyle(lineHeight: 1.3, softWrap: false),
+      style: const GPUTextLayoutStyle(lineHeight: 1.3),
     );
 
     await tester.pumpWidget(
@@ -304,7 +304,7 @@ void main() {
     );
     await _pumpUntil(tester, () => metrics != null);
 
-    // Without coercion this is one ~5000px line; wrapped it is many lines no
+    // Unwrapped this would be one ~5000px line; wrapped it is many lines no
     // wider than the sliver's cross-axis extent.
     expect(metrics!.lineCount, greaterThan(1));
     expect(metrics!.size.width, lessThanOrEqualTo(800.5));
@@ -381,6 +381,66 @@ void main() {
     await tester.pumpWidget(app(makeBlocks(400)));
     await tester.pump();
     expect(sliver.debugLaidOutCount, greaterThanOrEqualTo(kept));
+  });
+
+  testWidgets('SliverGPUTextBlocks does not recompute tops on a bare scroll', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(800, 600);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final controller = await _spawnController(tester);
+    addTearDown(controller.dispose);
+
+    // Small doc: ~40 × ~21px ≈ 840px is scrollable past the 600px viewport,
+    // yet the whole thing stays inside the cache window at every offset in the
+    // top region below — so no block is ever evicted and no sync (which
+    // recomputes inline) is kicked while we scroll. Any recompute here would
+    // therefore be the per-frame performLayout walk we removed.
+    var laidOut = 0;
+    final blocks = makeBlocks(40);
+    final scroll = ScrollController();
+    addTearDown(scroll.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CustomScrollView(
+          controller: scroll,
+          slivers: [
+            SliverGPUTextBlocks(
+              controller: controller,
+              blocks: blocks,
+              estimateHeight: (_, _) => 21,
+              onLaidOutChanged: (n, _) => laidOut = n,
+            ),
+          ],
+        ),
+      ),
+    );
+    final sliver = tester.renderObject(
+      find.byType(SliverGPUTextBlocks),
+    ) as RenderSliverGPUTextBlocks;
+
+    // Let the whole doc lay out and the sync loop go quiet.
+    await _pumpUntil(tester, () => laidOut >= 40 && sliver.debugHasWindow);
+    await tester.pump();
+    await tester.pump();
+
+    // Baseline once quiescent, then drive 20 bare-scroll frames in the
+    // top region (offset ≤ 200), where the cache window covers every block.
+    final before = sliver.debugTopsRecomputes;
+    const frames = 20;
+    for (var i = 1; i <= frames; i++) {
+      scroll.jumpTo(i * 10.0);
+      await tester.pump();
+    }
+    final grew = sliver.debugTopsRecomputes - before;
+
+    // Each jumpTo forces a full performLayout, so pre-fix this grew by
+    // >= [frames]; gated behind _topsDirty, a bare scroll recomputes nothing.
+    expect(grew, lessThanOrEqualTo(1), reason: 'scroll is off the O(n) path');
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('SliverGPUTextBlocks corrects scroll offset as estimates '

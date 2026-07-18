@@ -9,7 +9,7 @@ cd example
 fvm flutter run --enable-impeller --enable-flutter-gpu -d <device>
 ```
 
-Open a specific demo with `GPUTEXT_DEMO` (`widgets`, `pretext`, `justify`, `gsf`, `vars`, `rtl`, `leaks`, `bench`).
+Open a specific demo with `GPUTEXT_DEMO` (`chat`, `widgets`, `pretext`, `justify`, `gsf`, `vars`, `rtl`, `leaks`, `bench`).
 
 ## Memory leak tracking
 

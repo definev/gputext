@@ -46,9 +46,9 @@ class SharedGlyphAtlas implements GlyphTable {
 
   bool get isEmpty => _rows.isEmpty;
 
-  /// Curve floats appended so far; 4 bytes each on the CPU. GPU-side these
-  /// cost count*8 bytes, not count*4: the uploader writes one vec2 per
-  /// RGBA32F texel, leaving `.zw` unused (see atlas.dart / gputext.frag).
+  /// Curve floats appended so far; 4 bytes each on the CPU and on the GPU —
+  /// the uploader packs two vec2s per RGBA32F texel, so texels are fully
+  /// used (see atlas.dart / gputext.frag).
   int get curveFloatCount => _curves.length;
 
   /// Row entries appended so far; 4 bytes each on the CPU. GPU-side a band is

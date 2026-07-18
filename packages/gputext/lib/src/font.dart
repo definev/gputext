@@ -860,10 +860,17 @@ class GPUFont {
       if (y < y0) y0 = y;
       if (y > y1) y1 = y;
     }
+    // Typed, not a list literal: the bbox outlives the outline — every banded
+    // glyph's GlyphTableEntry shares it, so boxed doubles here would pin ~100
+    // extra bytes per atlas entry for the app's lifetime.
     return GlyphOutline(
       quads: quads,
       advance: _advanceFor(id),
-      bbox: [x0, y0, x1, y1],
+      bbox: Float32List(4)
+        ..[0] = x0
+        ..[1] = y0
+        ..[2] = x1
+        ..[3] = y1,
     );
   }
 

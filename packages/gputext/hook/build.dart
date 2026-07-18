@@ -6,6 +6,9 @@ import 'package:native_toolchain_c/native_toolchain_c.dart';
 
 void main(List<String> args) async {
   await build(args, (input, output) async {
+    // Manifest is source only (*.shaderbundle.json) — never a Flutter asset.
+    // DataAssets registers the compiled build/shaderbundles/*.shaderbundle so
+    // consumers do not list it in pubspec (see flutter_gpu_shaders README).
     await buildShaderBundleJson(
       buildInput: input,
       buildOutput: output,

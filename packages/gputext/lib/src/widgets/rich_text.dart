@@ -38,6 +38,7 @@ import '../layout.dart' as wf show LayoutBounds, ColorGlyphPlacement;
 import '../paragraph.dart' as wf;
 import '../timeline.dart';
 import 'emoji.dart';
+import 'selectable_fragment.dart';
 import 'span_flattener.dart';
 
 const _maxSurfaceDim = 8192;
@@ -342,7 +343,7 @@ class RenderGPUParagraph extends RenderBox
     with
         ContainerRenderObjectMixin<RenderBox, TextParentData>,
         RenderInlineChildrenContainerDefaults
-    implements AtlasFontUser {
+    implements AtlasFontUser, GPUSelectableTextHost {
   RenderGPUParagraph({
     required this._text,
     required this._semanticsSource,
@@ -629,7 +630,25 @@ class RenderGPUParagraph extends RenderBox
     markNeedsPaint();
   }
 
-  List<_SelectableFragment>? _fragments;
+  // GPUSelectableTextHost — the shared SelectableTextFragment reaches the
+  // paragraph exclusively through these.
+  @override
+  wf.ParagraphGeometryBase? get selectionGeometry => _geometry;
+  @override
+  TextDirection get selectionTextDirection => _textDirection;
+  @override
+  Size get selectionSize => size;
+  @override
+  Matrix4 selectionTransformTo(RenderObject? ancestor) =>
+      getTransformTo(ancestor);
+  @override
+  bool get selectionPaintReady => attached && hasSize;
+  @override
+  void markSelectionPaintDirty() => markNeedsPaint();
+  @override
+  Color? get selectionHighlightColor => _selectionColor;
+
+  List<SelectableTextFragment>? _fragments;
 
   /// One selectable fragment per placeholder-free stretch of the source
   /// text, like RenderParagraph — WidgetSpan children register their own
@@ -655,7 +674,7 @@ class RenderGPUParagraph extends RenderBox
     if (cursor > fragStart) {
       ranges.add(TextRange(start: fragStart, end: cursor));
     }
-    _fragments = [for (final r in ranges) _SelectableFragment(this, r)];
+    _fragments = [for (final r in ranges) SelectableTextFragment(this, r)];
     _fragments!.forEach(registrar.add);
   }
 
@@ -1733,9 +1752,8 @@ class RenderGPUParagraph extends RenderBox
   /// is wider than the box, else vertical at the bottom (RenderParagraph's
   /// rule).
   void _paintFaded(PaintingContext context, Offset offset) {
-    final canvas = context.canvas;
     final bounds = offset & size;
-    canvas.saveLayer(bounds, Paint());
+    context.canvas.saveLayer(bounds, Paint());
     _paintContents(context, offset);
     final fade = _fadeExtentPx().clamp(1.0, size.width);
     final Offset from;
@@ -1748,6 +1766,10 @@ class RenderGPUParagraph extends RenderBox
       from = Offset(0, bounds.bottom - fade);
       to = Offset(0, bounds.bottom);
     }
+    // context.canvas re-fetched: _paintContents paints selection fragments,
+    // and a fragment that pushed handle LeaderLayers ended the previous
+    // picture recording, killing any canvas reference taken before it.
+    final canvas = context.canvas;
     canvas.drawRect(
       bounds,
       Paint()
@@ -2372,421 +2394,5 @@ class RenderGPUParagraph extends RenderBox
         ifTrue: 'adaptive',
       ),
     );
-  }
-}
-
-/// One placeholder-free stretch of a paragraph's source text, exposed to the
-/// selection framework (SelectionArea / SelectableRegion). Mirrors
-/// RenderParagraph's _SelectableFragment: geometry queries go through the
-/// paragraph's ParagraphGeometry in SOURCE offsets, so copied content is the
-/// pre-shaping text even when ligatures render as single glyphs.
-class _SelectableFragment with ChangeNotifier implements Selectable {
-  _SelectableFragment(this.paragraph, this.range);
-
-  final RenderGPUParagraph paragraph;
-
-  /// Source-text offsets covered by this fragment (no placeholders inside).
-  final TextRange range;
-
-  int? _selectionStart;
-  int? _selectionEnd;
-  LayerLink? _startHandle;
-  LayerLink? _endHandle;
-  SelectionGeometry? _cachedGeometry;
-
-  @override
-  SelectionGeometry get value => _cachedGeometry ??= _computeGeometry();
-
-  /// Called by the paragraph after (re)layout: positions moved.
-  void didChangeParagraphLayout() => _updateGeometry();
-
-  void _updateGeometry() {
-    final next = _computeGeometry();
-    if (next == _cachedGeometry) return;
-    _cachedGeometry = next;
-    notifyListeners();
-    if (paragraph.attached && paragraph.hasSize) paragraph.markNeedsPaint();
-  }
-
-  SelectionGeometry _computeGeometry() {
-    final hasContent = range.end > range.start;
-    final g = paragraph._geometry;
-    final s = _selectionStart;
-    final e = _selectionEnd;
-    if (g == null || s == null || e == null) {
-      return SelectionGeometry(
-        status: SelectionStatus.none,
-        hasContent: hasContent,
-      );
-    }
-    final a = math.min(s, e);
-    final b = math.max(s, e);
-    final flipped = e < s;
-    final collapsed = a == b;
-    SelectionPoint point(wf.CaretMetrics c, TextSelectionHandleType type) =>
-        SelectionPoint(
-          localPosition: Offset(c.x, c.top + c.height),
-          lineHeight: c.height,
-          handleType: type,
-        );
-    return SelectionGeometry(
-      status: collapsed
-          ? SelectionStatus.collapsed
-          : SelectionStatus.uncollapsed,
-      hasContent: hasContent,
-      startSelectionPoint: point(
-        g.caretAt(s),
-        collapsed
-            ? TextSelectionHandleType.collapsed
-            : (flipped
-                  ? TextSelectionHandleType.right
-                  : TextSelectionHandleType.left),
-      ),
-      endSelectionPoint: point(
-        g.caretAt(e),
-        collapsed
-            ? TextSelectionHandleType.collapsed
-            : (flipped
-                  ? TextSelectionHandleType.left
-                  : TextSelectionHandleType.right),
-      ),
-      selectionRects: [
-        for (final r in g.boxesForRange(a, b))
-          Rect.fromLTRB(r.left, r.top, r.right, r.bottom),
-      ],
-    );
-  }
-
-  @override
-  SelectionResult dispatchSelectionEvent(SelectionEvent event) {
-    final SelectionResult result;
-    if (event is SelectionEdgeUpdateEvent) {
-      result = _updateEdge(
-        event,
-        isEnd: event.type == SelectionEventType.endEdgeUpdate,
-      );
-    } else if (event is ClearSelectionEvent) {
-      _selectionStart = null;
-      _selectionEnd = null;
-      result = SelectionResult.none;
-    } else if (event is SelectAllSelectionEvent) {
-      _selectionStart = range.start;
-      _selectionEnd = range.end;
-      result = SelectionResult.none;
-    } else if (event is SelectWordSelectionEvent) {
-      result = _selectBoundaryAt(event.globalPosition, word: true);
-    } else if (event is SelectParagraphSelectionEvent) {
-      result = _selectBoundaryAt(event.globalPosition, word: false);
-    } else if (event is GranularlyExtendSelectionEvent) {
-      result = _granularlyExtend(event);
-    } else if (event is DirectionallyExtendSelectionEvent) {
-      result = _directionallyExtend(event);
-    } else {
-      result = SelectionResult.none;
-    }
-    _updateGeometry();
-    return result;
-  }
-
-  Offset _globalToLocal(Offset global) {
-    final transform = paragraph.getTransformTo(null)..invert();
-    return MatrixUtils.transformPoint(transform, global);
-  }
-
-  Rect get _paragraphRect =>
-      Rect.fromLTWH(0, 0, paragraph.size.width, paragraph.size.height);
-
-  SelectionResult _updateEdge(
-    SelectionEdgeUpdateEvent event, {
-    required bool isEnd,
-  }) {
-    final local = _globalToLocal(event.globalPosition);
-    final adjusted = SelectionUtils.adjustDragOffset(
-      _paragraphRect,
-      local,
-      direction: paragraph._textDirection,
-    );
-    var offset = paragraph
-        .getPositionForOffset(adjusted)
-        .offset
-        .clamp(range.start, range.end);
-    if (event.granularity == TextGranularity.word) {
-      // Long-press drags select whole words: snap the moving edge outward
-      // from the anchor edge.
-      final g = paragraph._geometry;
-      final anchor = isEnd ? _selectionStart : _selectionEnd;
-      if (g != null && g.plainText.isNotEmpty) {
-        final w = wf.wordRangeIn(
-          g.plainText,
-          offset.clamp(0, g.plainText.length - 1),
-        );
-        offset = (anchor == null || offset >= anchor)
-            ? w.end.clamp(range.start, range.end)
-            : w.start.clamp(range.start, range.end);
-      }
-    }
-    if (isEnd) {
-      _selectionEnd = offset;
-    } else {
-      _selectionStart = offset;
-    }
-    return SelectionUtils.getResultBasedOnRect(_paragraphRect, local);
-  }
-
-  SelectionResult _selectBoundaryAt(
-    Offset globalPosition, {
-    required bool word,
-  }) {
-    final g = paragraph._geometry;
-    if (g == null || range.end == range.start) return SelectionResult.end;
-    final local = _globalToLocal(globalPosition);
-    var at = g.positionForOffset(local.dx, local.dy).offset;
-    if (at < range.start) at = range.start;
-    final lastIn = math.max(range.start, range.end - 1);
-    if (at > lastIn) at = lastIn;
-    if (word) {
-      final w = wf.wordRangeIn(g.plainText, at);
-      _selectionStart = w.start.clamp(range.start, range.end);
-      _selectionEnd = w.end.clamp(range.start, range.end);
-    } else {
-      // Paragraph: between newlines (clamped into the fragment).
-      final text = g.plainText;
-      var start = at;
-      while (start > range.start && text.codeUnitAt(start - 1) != 0x0A) {
-        start--;
-      }
-      var end = at;
-      while (end < range.end && text.codeUnitAt(end) != 0x0A) {
-        end++;
-      }
-      _selectionStart = start;
-      _selectionEnd = end;
-    }
-    return SelectionResult.end;
-  }
-
-  static int _cpStart(String text, int index) {
-    if (index <= 0) return 0;
-    final unit = text.codeUnitAt(index);
-    return (unit >= 0xDC00 && unit <= 0xDFFF) ? index - 1 : index;
-  }
-
-  static int _stepForward(String text, int offset) {
-    if (offset >= text.length) return offset + 1;
-    final unit = text.codeUnitAt(offset);
-    final pair = unit >= 0xD800 && unit <= 0xDBFF && offset + 1 < text.length;
-    return offset + (pair ? 2 : 1);
-  }
-
-  static int _stepBackward(String text, int offset) {
-    if (offset <= 0) return -1;
-    return _cpStart(text, offset - 1) == offset - 1
-        ? offset - 1
-        : _cpStart(text, offset - 1);
-  }
-
-  SelectionResult _granularlyExtend(GranularlyExtendSelectionEvent event) {
-    final g = paragraph._geometry;
-    if (g == null) return SelectionResult.end;
-    final text = g.plainText;
-    var edge = event.isEnd ? _selectionEnd : _selectionStart;
-    edge ??= event.isEnd ? _selectionStart : _selectionEnd;
-    edge ??= event.forward ? range.start : range.end;
-
-    int next;
-    switch (event.granularity) {
-      case TextGranularity.character:
-        next = event.forward
-            ? _stepForward(text, edge)
-            : _stepBackward(text, edge);
-      case TextGranularity.word:
-        if (event.forward) {
-          final probe = math.min(
-            math.max(edge, 0),
-            math.max(0, text.length - 1),
-          );
-          final w = wf.wordRangeIn(text, probe);
-          next = w.end > edge ? w.end : _stepForward(text, edge);
-        } else {
-          final probe = math.max(0, edge - 1);
-          final w = wf.wordRangeIn(text, probe);
-          next = w.start < edge ? w.start : _stepBackward(text, edge);
-        }
-      case TextGranularity.line:
-        final r = g.lineRange(
-          g.caretAt(edge.clamp(range.start, range.end)).line,
-        );
-        next = event.forward ? r.end : r.start;
-      case TextGranularity.paragraph:
-      case TextGranularity.document:
-        next = event.forward ? range.end : range.start;
-    }
-
-    final crossedForward = event.forward && next > range.end;
-    final crossedBackward = !event.forward && next < range.start;
-    final clamped = next.clamp(range.start, range.end);
-    if (event.isEnd) {
-      _selectionEnd = clamped;
-    } else {
-      _selectionStart = clamped;
-    }
-    (event.isEnd ? _selectionStart ??= edge : _selectionEnd ??= edge);
-    if (crossedForward) return SelectionResult.next;
-    if (crossedBackward) return SelectionResult.previous;
-    return SelectionResult.end;
-  }
-
-  SelectionResult _directionallyExtend(
-    DirectionallyExtendSelectionEvent event,
-  ) {
-    final g = paragraph._geometry;
-    if (g == null || g.para.lines.isEmpty) return SelectionResult.end;
-    final localDx = _globalToLocal(Offset(event.dx, 0)).dx;
-    var edge = event.isEnd ? _selectionEnd : _selectionStart;
-    edge ??= event.isEnd ? _selectionStart : _selectionEnd;
-
-    int line;
-    switch (event.direction) {
-      case SelectionExtendDirection.forward:
-        line = g.caretAt(range.start).line;
-      case SelectionExtendDirection.backward:
-        line = g.caretAt(range.end).line;
-      case SelectionExtendDirection.previousLine:
-        line =
-            g
-                .caretAt((edge ?? range.start).clamp(range.start, range.end))
-                .line -
-            1;
-      case SelectionExtendDirection.nextLine:
-        line =
-            g.caretAt((edge ?? range.end).clamp(range.start, range.end)).line +
-            1;
-    }
-
-    SelectionResult result = SelectionResult.end;
-    int offset;
-    if (line < 0) {
-      offset = range.start;
-      result = SelectionResult.previous;
-    } else if (line >= g.para.lines.length) {
-      offset = range.end;
-      result = SelectionResult.next;
-    } else {
-      final mid = (g.lineTop(line) + g.lineBottom(line)) / 2;
-      offset = g
-          .positionForOffset(localDx, mid)
-          .offset
-          .clamp(range.start, range.end);
-      if (offset <= range.start &&
-          event.direction == SelectionExtendDirection.previousLine) {
-        // Still inside, fine — previous only when we ran off the top above.
-      }
-    }
-    if (event.isEnd) {
-      _selectionEnd = offset;
-      _selectionStart ??= edge ?? offset;
-    } else {
-      _selectionStart = offset;
-      _selectionEnd ??= edge ?? offset;
-    }
-    return result;
-  }
-
-  @override
-  SelectedContent? getSelectedContent() {
-    final s = _selectionStart;
-    final e = _selectionEnd;
-    final g = paragraph._geometry;
-    if (s == null || e == null || s == e || g == null) return null;
-    return SelectedContent(
-      plainText: g.plainText.substring(math.min(s, e), math.max(s, e)),
-    );
-  }
-
-  @override
-  SelectedContentRange? getSelection() {
-    final s = _selectionStart;
-    final e = _selectionEnd;
-    if (s == null || e == null) return null;
-    return SelectedContentRange(
-      startOffset: s - range.start,
-      endOffset: e - range.start,
-    );
-  }
-
-  @override
-  int get contentLength => range.end - range.start;
-
-  @override
-  Matrix4 getTransformTo(RenderObject? ancestor) =>
-      paragraph.getTransformTo(ancestor);
-
-  @override
-  Size get size => paragraph.size;
-
-  @override
-  List<Rect> get boundingBoxes {
-    final g = paragraph._geometry;
-    if (g == null) {
-      return <Rect>[Offset.zero & paragraph.size];
-    }
-    final boxes = g.boxesForRange(range.start, range.end);
-    if (boxes.isEmpty) return <Rect>[Offset.zero & paragraph.size];
-    return [
-      for (final b in boxes) Rect.fromLTRB(b.left, b.top, b.right, b.bottom),
-    ];
-  }
-
-  @override
-  void pushHandleLayers(LayerLink? startHandle, LayerLink? endHandle) {
-    if (identical(startHandle, _startHandle) &&
-        identical(endHandle, _endHandle)) {
-      return;
-    }
-    _startHandle = startHandle;
-    _endHandle = endHandle;
-    if (paragraph.attached && paragraph.hasSize) paragraph.markNeedsPaint();
-  }
-
-  /// Paints the highlight and mobile handle anchors; called from the
-  /// paragraph's paint, under the glyphs.
-  void paint(PaintingContext context, Offset offset) {
-    final s = _selectionStart;
-    final e = _selectionEnd;
-    final g = paragraph._geometry;
-    if (s != null && e != null && s != e && g != null) {
-      final color = paragraph._selectionColor;
-      if (color != null) {
-        final paintObj = Paint()..color = color;
-        for (final r in g.boxesForRange(math.min(s, e), math.max(s, e))) {
-          context.canvas.drawRect(
-            Rect.fromLTRB(
-              offset.dx + r.left,
-              offset.dy + r.top,
-              offset.dx + r.right,
-              offset.dy + r.bottom,
-            ),
-            paintObj,
-          );
-        }
-      }
-    }
-    final geometry = value;
-    final start = geometry.startSelectionPoint;
-    final end = geometry.endSelectionPoint;
-    if (_startHandle != null && start != null) {
-      context.pushLayer(
-        LeaderLayer(link: _startHandle!, offset: offset + start.localPosition),
-        (PaintingContext c, Offset o) {},
-        Offset.zero,
-      );
-    }
-    if (_endHandle != null && end != null) {
-      context.pushLayer(
-        LeaderLayer(link: _endHandle!, offset: offset + end.localPosition),
-        (PaintingContext c, Offset o) {},
-        Offset.zero,
-      );
-    }
   }
 }

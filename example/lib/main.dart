@@ -2,7 +2,6 @@ import 'dart:io' as io;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-import 'package:bitsdojo_window/bitsdojo_window.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -13,6 +12,7 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:gputext/gputext.dart';
 
 import 'bench/bench_page.dart';
+import 'chat_markdown_demo.dart';
 import 'cursed_demo.dart';
 import 'dragon_demo.dart';
 import 'emoji_bitmap_demo.dart';
@@ -27,6 +27,7 @@ import 'lowlevel_demo.dart';
 import 'leak_report_page.dart';
 import 'leak_tracking.dart';
 import 'pretext_demo.dart';
+import 'reader_demo.dart';
 import 'rtl_demo.dart';
 import 'shadow_demo.dart';
 import 'sysfont_demo.dart';
@@ -51,17 +52,6 @@ void main() {
     GPUText.initialize(); // warm fonts + pipeline for the widget demo
   }
   runApp(const GPUTextApp());
-
-  if (io.Platform.isMacOS) {
-    doWhenWindowReady(() {
-      const initialSize = Size(1280, 800);
-      appWindow.minSize = const Size(640, 480);
-      appWindow.size = initialSize;
-      appWindow.alignment = Alignment.center;
-      appWindow.title = 'gputext';
-      appWindow.show();
-    });
-  }
 }
 
 class GPUTextApp extends StatelessWidget {
@@ -75,12 +65,12 @@ class GPUTextApp extends StatelessWidget {
         const String.fromEnvironment('GPUTEXT_DEMO');
     return MaterialApp(
       theme: ThemeData(useMaterial3: true),
-      builder: (context, child) => _macFramelessShell(child),
       // Bench mode stays OUTSIDE SelectionArea: GPURichText registers
       // per-fragment selectables while bare RichText does not, so a
       // selection scope would tax only the gputext passes.
       home: switch (page) {
         'bench' => const BenchPage(),
+        'chat' => const ChatMarkdownDemoPage(),
         'widgets' => const WidgetDemoPage(),
         'pretext' => const PretextDemoPage(),
         'dragon' => const DragonDemoPage(),
@@ -89,6 +79,7 @@ class GPUTextApp extends StatelessWidget {
         'view' => const GPUTextViewDemoPage(),
         'sliver' => const SliverGPUTextDemoPage(),
         'sliverblocks' => const SliverBlocksDemoPage(),
+        'reader' => const ReaderDemoPage(),
         'blocks' => const GPUTextBlocksDemoPage(),
         'gsf' => const GoogleSansFlexDemoPage(),
         'vars' => const VariableFontDemoPage(),
@@ -103,41 +94,6 @@ class GPUTextApp extends StatelessWidget {
       },
     );
   }
-}
-
-Widget _macFramelessShell(Widget? child) {
-  if (!io.Platform.isMacOS) {
-    return child ?? const SizedBox.shrink();
-  }
-
-  final buttonColors = WindowButtonColors(
-    iconNormal: const Color(0xFF5E5E5E),
-    mouseOver: const Color(0xFFF6F6F6),
-    mouseDown: const Color(0xFFDDDDDD),
-    iconMouseOver: const Color(0xFF505050),
-    iconMouseDown: const Color(0xFF505050),
-  );
-
-  return WindowTitleBarBox(
-    child: Stack(
-      children: [
-        SizedBox(
-          height: 28,
-          child: Row(
-            children: [
-              CloseWindowButton(colors: buttonColors),
-              MinimizeWindowButton(colors: buttonColors),
-              MaximizeWindowButton(colors: buttonColors),
-              Expanded(
-                child: MoveWindow(child: Container(color: Colors.transparent)),
-              ),
-            ],
-          ),
-        ),
-        Positioned.fill(child: child ?? const SizedBox.shrink()),
-      ],
-    ),
-  );
 }
 
 class GPUTextDemoPage extends StatefulWidget {
@@ -238,16 +194,31 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
           format: gpuTextSurfaceFormat(gpu.gpuContext),
         );
       });
+      _wake();
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
     }
   }
 
+  /// Resume ticking after a settle-mute (input, resize, recenter). A muted
+  /// ticker keeps its elapsed clock, so the physics stays on one time base.
+  void _wake() {
+    _ticker.muted = false;
+  }
+
   void _onTick(Duration elapsed) {
-    if (_renderer == null || _scene == null || _surface == null) return;
+    if (_renderer == null || _scene == null || _surface == null) {
+      // Nothing drawable (bootstrapping / failed): stop pumping frames.
+      // [_bootstrap] wakes the ticker when the scene is ready.
+      _ticker.muted = true;
+      return;
+    }
     final now = elapsed.inMicroseconds / 1000.0;
-    final dt = _prevTs == 0 ? 1000 / 60 : now - _prevTs;
+    var dt = _prevTs == 0 ? 1000 / 60 : now - _prevTs;
+    // The first tick after a settle-mute spans the whole idle gap — treat
+    // it as one nominal frame or the fps readout / decay math blows up.
+    if (dt > 250) dt = 1000 / 60;
     _prevTs = now;
     _fpsDt = _fpsDt * 0.9 + dt * 0.1;
 
@@ -280,6 +251,15 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
 
     _renderFrame();
     setState(() {});
+
+    // Settled (no drag, no fling velocity, attack smoothing finished): mute
+    // the ticker. A running ticker schedules a frame EVERY vsync even when
+    // its callback would just redraw an identical scene — which reads as a
+    // permanent ~60fps refresh in the performance tools while the page sits
+    // idle. Input / resize / recenter call [_wake] to resume.
+    if (!_dragging && _velX == 0 && _velY == 0 && s <= 0) {
+      _ticker.muted = true;
+    }
   }
 
   void _renderFrame() {
@@ -368,6 +348,7 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
     _cam.x = scene.bounds.minX + (_size.width * _dpr / 2 - pad) / _cam.z;
     _cam.y = scene.bounds.maxY - (_size.height * _dpr / 2 - pad) / _cam.z;
     _view.copyFrom(_cam);
+    _wake();
   }
 
   @override
@@ -392,8 +373,13 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
         // shader computes analytic AA at surface resolution, so under-resolving
         // here (the old 2.0 cap) forced a nearest-neighbor upscale on >2x phones
         // that re-aliased every edge. The 4.0 ceiling just bounds worst-case fill.
-        _dpr = MediaQuery.devicePixelRatioOf(context);
-        _size = Size(constraints.maxWidth, constraints.maxHeight);
+        final dpr = MediaQuery.devicePixelRatioOf(context);
+        final size = Size(constraints.maxWidth, constraints.maxHeight);
+        // A muted (settled) ticker must resume for one frame so the surface
+        // re-renders at the new panel size / density.
+        if (dpr != _dpr || size != _size) _wake();
+        _dpr = dpr;
+        _size = size;
         if (_scene != null && _view.z == 1 && _cam.z == 1) {
           WidgetsBinding.instance.addPostFrameCallback((_) => _recenter());
         }
@@ -426,11 +412,13 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                       _size.width * _dpr,
                       _size.height * _dpr,
                     );
+                    _wake();
                   }
                 },
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onScaleStart: (details) {
+                    _wake();
                     _dragging = true;
                     _velX = _velY = 0;
                     _lastMoveT = _prevTs;
@@ -441,6 +429,7 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                     _prevScale = 1;
                   },
                   onScaleUpdate: (details) {
+                    _wake();
                     if (details.pointerCount >= 2) {
                       if (_pinchStartDistance == 0) {
                         _pinchStartDistance = 1;
@@ -532,6 +521,10 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                                 'New features',
                                 const FeaturesDemoPage(),
                               ),
+                              _demoButton(
+                                'AI chat markdown',
+                                const ChatMarkdownDemoPage(),
+                              ),
                               _demoButton('Pretext', const PretextDemoPage()),
                               _demoButton('Dragon', const DragonDemoPage()),
                               _demoButton('Cursed', const CursedDemoPage()),
@@ -554,6 +547,10 @@ class _GPUTextDemoPageState extends State<GPUTextDemoPage>
                               _demoButton(
                                 'SliverBlocks',
                                 const SliverBlocksDemoPage(),
+                              ),
+                              _demoButton(
+                                'Reader (essay)',
+                                const ReaderDemoPage(),
                               ),
                               _demoButton(
                                 'Bitmap emoji',

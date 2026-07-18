@@ -40,7 +40,9 @@ export 'text/inline_items.dart';
 export 'text/line_break_config.dart';
 export 'text/line_breaker.dart';
 export 'text/prepare.dart' show PreparedParagraph, prepareParagraph;
+export 'text/line_table.dart';
 export 'text/selection.dart';
+export 'text/selection_snapshot.dart';
 
 enum TextAlign { left, center, right, justify }
 

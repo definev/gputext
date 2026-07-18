@@ -59,13 +59,12 @@ enum GPUTextWidthBasis {
 }
 
 /// Sendable paragraph layout knobs — everything [ParagraphStyle] needs plus
-/// soft-wrap / width-basis policy that [GPURichText] applies around it.
+/// width-basis policy that [GPURichText] applies around it.
 class GPUTextLayoutStyle {
   const GPUTextLayoutStyle({
     this.align = TextAlign.left,
     this.lineHeight = 1.0,
     this.maxLines,
-    this.softWrap = true,
     this.addEllipsis = false,
     this.lineBreaker = LineBreaker.greedy,
     this.strut,
@@ -79,13 +78,7 @@ class GPUTextLayoutStyle {
   final double lineHeight;
   final int? maxLines;
 
-  /// When false, wrap width is infinite (single long line); pair with
-  /// [addEllipsis] to truncate at the box edge like `softWrap: false` +
-  /// `overflow: ellipsis` on [GPURichText].
-  final bool softWrap;
-
-  /// Append '…' when [maxLines] is exceeded, or (with [softWrap] false)
-  /// truncate each overlong line at the box width.
+  /// Append '…' when [maxLines] is exceeded.
   final bool addEllipsis;
 
   /// Line-break strategy (greedy by default; [LineBreaker.knuthPlass] for
@@ -117,7 +110,6 @@ class GPUTextLayoutStyle {
           other.align == align &&
           other.lineHeight == lineHeight &&
           other.maxLines == maxLines &&
-          other.softWrap == softWrap &&
           other.addEllipsis == addEllipsis &&
           other.lineBreaker == lineBreaker &&
           other.strut == strut &&
@@ -131,7 +123,6 @@ class GPUTextLayoutStyle {
     align,
     lineHeight,
     maxLines,
-    softWrap,
     addEllipsis,
     lineBreaker,
     strut,
@@ -146,7 +137,6 @@ class GPUTextLayoutStyle {
     double? lineHeight,
     int? maxLines,
     bool clearMaxLines = false,
-    bool? softWrap,
     bool? addEllipsis,
     LineBreaker? lineBreaker,
     StrutMetrics? strut,
@@ -159,7 +149,6 @@ class GPUTextLayoutStyle {
     align: align ?? this.align,
     lineHeight: lineHeight ?? this.lineHeight,
     maxLines: clearMaxLines ? null : (maxLines ?? this.maxLines),
-    softWrap: softWrap ?? this.softWrap,
     addEllipsis: addEllipsis ?? this.addEllipsis,
     lineBreaker: lineBreaker ?? this.lineBreaker,
     strut: clearStrut ? null : (strut ?? this.strut),
@@ -266,6 +255,28 @@ class GPUPlaceholderSpec extends GPUInlineSpec {
   final double? baselineOffset;
 }
 
+/// The selection source text of [runs] — each text run's characters, one
+/// '￼' per placeholder — plus the placeholder offsets in it. This is the
+/// SAME offset space the worker's layout geometry reports (fallback
+/// splitting and emoji itemization preserve source text), so the main
+/// isolate never needs the text shipped back.
+({String text, Int32List placeholderOffsets}) flattenSpecSource(
+  List<GPUInlineSpec> runs,
+) {
+  final buf = StringBuffer();
+  final holes = <int>[];
+  for (final spec in runs) {
+    switch (spec) {
+      case GPUTextRunSpec r:
+        buf.write(r.text);
+      case GPUPlaceholderSpec _:
+        holes.add(buf.length);
+        buf.write('\u{FFFC}');
+    }
+  }
+  return (text: buf.toString(), placeholderOffsets: Int32List.fromList(holes));
+}
+
 /// Sendable layout request. Every field is a primitive, enum, or list thereof,
 /// so it deep-copies cleanly across the isolate boundary.
 class GPUTextLayoutRequest {
@@ -365,10 +376,35 @@ class GPUTextInstances {
     this.rowBase = 0,
     this.atlasStructure = 0,
     this.colorGlyphStubs = const [],
+    this.geometry,
+    this.lineTable,
+    this.layoutGeneration = 0,
   }) : contentWidth = contentWidth ?? width;
 
   final TransferableTypedData instances;
   final TransferableTypedData? colorInstances;
+
+  /// Selection-geometry snapshot for this drawable (same lines/box/align as
+  /// the instances, so highlight rects match painted pens exactly), or null
+  /// unless the request asked for it (`includeGeometry`). Also null when the
+  /// document exceeds the selection-geometry budget (~250k source chars) —
+  /// the snapshot is O(document). The BLOCK views use this (each block's
+  /// geometry stays small); the single-document views use [lineTable] +
+  /// on-demand [GPUTextWorker.fetchLineBand] instead, which has NO budget.
+  /// Decode with [materializeGeometry]; see `SnapshotParagraphGeometry`.
+  final TransferableTypedData? geometry;
+
+  /// O(lines) selection line table for this drawable (single-document
+  /// views), or null unless the request asked for it (`includeLineTable`).
+  /// Never declined — ~29 B per line at any document size. Decode with
+  /// `LineTable.decode`; per-line glyph detail arrives separately via
+  /// [GPUTextWorker.fetchLineBand] tagged with [layoutGeneration].
+  final TransferableTypedData? lineTable;
+
+  /// The worker's layout generation for this doc at emit time (bumps every
+  /// reflow). [GPUTextWorker.fetchLineBand] replies only for the current
+  /// generation, so stale bands can never mix into a newer table.
+  final int layoutGeneration;
 
   /// Quadratic-outline control points the coverage shader samples. When the
   /// request carried `sinceCurves`, this is the append-only TAIL of the shared
@@ -395,13 +431,12 @@ class GPUTextInstances {
   final int colorGlyphCount;
   final int lineCount;
 
-  /// Alignment / wrap box width, logical px (the constraint used for layout
-  /// when soft-wrapping). The GPU viewport is this wide.
+  /// Alignment / wrap box width, logical px (the constraint used for layout).
+  /// The GPU viewport is this wide.
   final double width;
 
-  /// Horizontal scroll extent: max of [width] and the longest laid-out line.
-  /// Wider than [width] when `softWrap: false` (without ellipsis) or an
-  /// unbreakable run overflows — callers should allow horizontal pan.
+  /// Content extent: max of [width] and the longest laid-out line. Wider than
+  /// [width] only when an unbreakable run overflows the wrap width.
   final double contentWidth;
 
   final double height;
@@ -443,6 +478,30 @@ class GPUTextInstances {
   /// to `uploadAtlasTextures` / `GPUTextRenderer.create`.
   Float32List materializeCurves() => curves.materialize().asFloat32List();
   Uint32List materializeRows() => rows.materialize().asUint32List();
+
+  /// Decode the selection-geometry snapshot, or null when the request didn't
+  /// ask for one. Idempotent: materialize neuters the transferable, so the
+  /// first decode is cached and returned on later calls.
+  SnapshotParagraphGeometry? materializeGeometry() {
+    final g = geometry;
+    if (g == null) return null;
+    return _decodedGeometry ??= SnapshotParagraphGeometry.decode(
+      g.materialize(),
+    );
+  }
+
+  SnapshotParagraphGeometry? _decodedGeometry;
+
+  /// Decode the selection line table, or null when the request didn't ask
+  /// for one. Idempotent (materialize neuters the transferable; the first
+  /// decode is cached).
+  LineTable? materializeLineTable() {
+    final t = lineTable;
+    if (t == null) return null;
+    return _decodedLineTable ??= LineTable.decode(t.materialize());
+  }
+
+  LineTable? _decodedLineTable;
 }
 
 /// One color-bitmap emoji placed by the worker: PNG bytes + layout position.
@@ -496,6 +555,7 @@ class GPUTextSyncEntry {
     this.emojiFontId,
     this.lineBreak,
     this.language,
+    this.includeGeometry = false,
   });
 
   final String id;
@@ -513,6 +573,11 @@ class GPUTextSyncEntry {
   final String? emojiFontId;
   final LineBreakConfig? lineBreak;
   final String? language;
+
+  /// Ship a selection-geometry snapshot with this entry's drawable (see
+  /// [GPUTextInstances.geometry]; ignored above the ~250k source-char
+  /// budget documented there).
+  final bool includeGeometry;
 }
 
 /// Reply to a [GPUTextWorker.syncDocs] batch. [results] aligns with the
@@ -554,6 +619,45 @@ class GPUTextSyncResult {
 
   Float32List? materializeCurves() => curves?.materialize().asFloat32List();
   Uint32List? materializeRows() => rows?.materialize().asUint32List();
+}
+
+/// Sendable request for [GPUTextWorker.syncStream] — a streaming (append-
+/// mostly) document sync. One class rather than a bare tuple: the arity is
+/// large and the coalescer needs to recognize it structurally.
+class GPUTextStreamRequest {
+  const GPUTextStreamRequest({
+    required this.id,
+    required this.runs,
+    required this.width,
+    required this.style,
+    this.fallbackFontIds = const [],
+    this.emojiFontId,
+    this.lineBreak,
+    this.language,
+    this.includeAtlas = true,
+    this.dpr = 1.0,
+    this.sinceCurves = 0,
+    this.sinceRows = 0,
+    this.sinceStructure = 0,
+    this.includeLineTable = false,
+  });
+
+  final String id;
+
+  /// The FULL current content — the worker diffs against the previous sync.
+  final List<GPUInlineSpec> runs;
+  final double width;
+  final GPUTextLayoutStyle style;
+  final List<String> fallbackFontIds;
+  final String? emojiFontId;
+  final LineBreakConfig? lineBreak;
+  final String? language;
+  final bool includeAtlas;
+  final double dpr;
+  final int sinceCurves;
+  final int sinceRows;
+  final int sinceStructure;
+  final bool includeLineTable;
 }
 
 /// A [reflowDoc] call that was dropped because a newer reflow for the same
@@ -699,6 +803,8 @@ class GPUTextWorker {
     int sinceCurves = 0,
     int sinceRows = 0,
     int sinceStructure = 0,
+    bool includeGeometry = false,
+    bool includeLineTable = false,
   }) async {
     final effective = lineHeight == null
         ? style
@@ -713,12 +819,38 @@ class GPUTextWorker {
       sinceCurves,
       sinceRows,
       sinceStructure,
+      includeGeometry,
+      includeLineTable,
     ));
     if (identical(reply, _kReflowSuperseded) || reply == _kReflowSuperseded) {
       throw GPUTextReflowSuperseded();
     }
     if (reply is GPUTextInstances) return reply;
     throw StateError('reflowDoc failed: $reply');
+  }
+
+  /// Fetch per-line selection detail (glyph/item placement records) for
+  /// lines [firstLine, lastLine) of the layout tagged [generation] — the
+  /// [GPUTextInstances.layoutGeneration] that came with the line table.
+  /// Returns null when the worker has moved on to a newer layout (or never
+  /// kept one): the caller's next reflow reply brings a fresh table and the
+  /// band can be re-requested against it. Decode with `decodeLineBand`.
+  Future<TransferableTypedData?> fetchLineBand(
+    String id,
+    int generation,
+    int firstLine,
+    int lastLine,
+  ) async {
+    final reply = await _send((
+      'lineBand',
+      id,
+      generation,
+      firstLine,
+      lastLine,
+    ));
+    if (reply == null) return null;
+    if (reply is TransferableTypedData) return reply;
+    throw StateError('worker lineBand failed: $reply');
   }
 
   /// Drop the document prepared under [id], freeing its shaped paragraph on the
@@ -779,6 +911,92 @@ class GPUTextWorker {
   /// eviction — recovers the bytes here without re-preparing anything. Keys
   /// that can't be resolved (unregistered font, no matching strike) are simply
   /// absent from the result.
+  /// STREAMING sync: prepare-if-changed + reflow + emit for an append-mostly
+  /// document (an LLM response, a log tail). Pass the FULL current [runs]
+  /// each call; the worker splits them into hard-break paragraph slices and
+  /// re-shapes ONLY the slices whose content changed since the previous sync
+  /// under this [id] — for a pure append that is just the growing tail
+  /// paragraph, so per-sync HarfBuzz cost is O(delta), not O(document).
+  /// (Segmentation, line breaking, and emission still run over the whole
+  /// document — pure-arithmetic phases, cheap relative to shaping. The v1
+  /// incremental design is sketched in docs/appendable-prepare.md.)
+  ///
+  /// After every sync the document is ALSO a normally-prepared doc under
+  /// [id]: [reflowDoc], [fetchLineBand], and [disposeDoc] all work on it.
+  /// Call [finishStream] when the stream completes to drop the per-slice
+  /// shaping cache (the prepared doc stays).
+  ///
+  /// Contract and caveats:
+  /// - [id] stays FIXED for the whole stream (unlike the prepare-cache id
+  ///   contract, content is expected to change under it).
+  /// - Retroactive edits are correct, just costlier: the diff finds a smaller
+  ///   stable prefix and everything after it re-shapes.
+  /// - A non-null [lineBreak] disables slice reuse in v0 (its callbacks lose
+  ///   identity crossing the isolate) — every sync re-shapes fully.
+  /// - Content must be non-empty (at least one shapeable run); sync only
+  ///   after the first token arrives.
+  /// - Overlapping calls for the same [id] coalesce like [reflowDoc]
+  ///   (older futures throw [GPUTextReflowSuperseded]).
+  Future<GPUTextInstances> syncStream(
+    String id,
+    List<GPUInlineSpec> runs, {
+    required double width,
+    GPUTextLayoutStyle style = const GPUTextLayoutStyle(lineHeight: 1.3),
+    List<String> fallbackFontIds = const [],
+    String? emojiFontId,
+    LineBreakConfig? lineBreak,
+    String? language,
+    bool includeAtlas = true,
+    double dpr = 1.0,
+    int sinceCurves = 0,
+    int sinceRows = 0,
+    int sinceStructure = 0,
+    bool includeLineTable = false,
+  }) async {
+    final reply = await _send((
+      'syncStream',
+      GPUTextStreamRequest(
+        id: id,
+        runs: runs,
+        width: width,
+        style: style,
+        fallbackFontIds: fallbackFontIds,
+        emojiFontId: emojiFontId,
+        lineBreak: lineBreak,
+        language: language,
+        includeAtlas: includeAtlas,
+        dpr: dpr,
+        sinceCurves: sinceCurves,
+        sinceRows: sinceRows,
+        sinceStructure: sinceStructure,
+        includeLineTable: includeLineTable,
+      ),
+    ));
+    if (identical(reply, _kReflowSuperseded) || reply == _kReflowSuperseded) {
+      throw GPUTextReflowSuperseded();
+    }
+    if (reply is GPUTextInstances) return reply;
+    throw StateError('syncStream failed: $reply');
+  }
+
+  /// Drop the streaming shaping cache for [id]. The prepared document
+  /// survives as an ordinary doc (same id — [reflowDoc] keeps working), so
+  /// "hardening" a finished stream costs nothing. No-op for unknown ids.
+  Future<void> finishStream(String id) async {
+    final ok = await _send(('finishStream', id));
+    if (ok != true) throw StateError('finishStream failed: $ok');
+  }
+
+  /// Diagnostics (tests only): (paragraph slices currently cached, slices
+  /// shaped since the stream began), or null when [id] has no live streaming
+  /// state.
+  Future<(int, int)?> debugStreamStats(String id) async {
+    final reply = await _send(('streamStats', id));
+    if (reply == null) return null;
+    if (reply is (int, int)) return reply;
+    throw StateError('streamStats failed: $reply');
+  }
+
   Future<Map<String, Uint8List>> fetchColorPngs(List<String> keys) async {
     final reply = await _send(('colorPng', List<String>.of(keys)));
     if (reply is! Map) throw StateError('worker colorPng failed: $reply');
@@ -809,6 +1027,37 @@ class GPUTextWorker {
 
 /// A document prepared once (phase 1) and kept warm for cheap re-breaks.
 /// [atlas] is the worker's shared glyph atlas (not private to this doc).
+/// One hard-break paragraph slice of a streaming document: the spec slice
+/// (kept for the equality diff) and its shaped items (the HarfBuzz output
+/// this cache exists to reuse).
+class _StreamChunk {
+  _StreamChunk(this.specs, this.items);
+  final List<GPUInlineSpec> specs;
+  final List<InlineItem> items;
+}
+
+/// Worker-side state for one [GPUTextWorker.syncStream] document.
+class _StreamState {
+  _StreamState(this.fallbackFontIds, this.emojiFontId, this.language);
+  final List<String> fallbackFontIds;
+  final String? emojiFontId;
+  final String? language;
+  final chunks = <_StreamChunk>[];
+  int shapedSlices = 0; // cumulative, for debugStreamStats
+
+  /// Shaping-relevant config must match for chunk reuse to be sound.
+  bool configMatches(GPUTextStreamRequest req) {
+    if (emojiFontId != req.emojiFontId || language != req.language) {
+      return false;
+    }
+    if (fallbackFontIds.length != req.fallbackFontIds.length) return false;
+    for (var i = 0; i < fallbackFontIds.length; i++) {
+      if (fallbackFontIds[i] != req.fallbackFontIds[i]) return false;
+    }
+    return true;
+  }
+}
+
 class _Doc {
   _Doc(this.prepared, this.atlas, {this.emojiFontId});
   final PreparedParagraph prepared;
@@ -816,6 +1065,20 @@ class _Doc {
 
   /// Registered font id used for color emoji (COLR or bitmap), if any.
   final String? emojiFontId;
+
+  /// Bumps on every reflow of this doc — tags line tables and gates
+  /// [liveGeometries]-backed 'lineBand' replies so stale bands never answer.
+  int layoutGeneration = 0;
+
+  /// Recent table-carrying reflow layouts, keyed by generation, kept for
+  /// 'lineBand' fetches. SEVERAL views may share one prepared doc id (each
+  /// view's reflow bumps the generation); keeping a few generations lets
+  /// every live view fetch detail against the table IT holds instead of
+  /// starving all but the latest. Retained only while callers request line
+  /// tables; freed by disposeDoc (or eviction as newer generations land).
+  final Map<int, ParagraphGeometry> liveGeometries = {};
+
+  static const int keptGenerations = 3;
 }
 
 Future<void> _workerEntry(SendPort host) async {
@@ -823,6 +1086,7 @@ Future<void> _workerEntry(SendPort host) async {
   host.send(rx.sendPort);
   final fonts = <String, GPUFont>{};
   final docs = <String, _Doc>{};
+  final streams = <String, _StreamState>{};
   // One atlas for every prepareDoc — append-only, so banding a new paragraph
   // never moves existing glyph rowBases (already-emitted instance buffers stay
   // valid). One-shot [layout] still builds a private atlas per request.
@@ -861,6 +1125,7 @@ Future<void> _workerEntry(SendPort host) async {
             command,
             fonts: fonts,
             docs: docs,
+            streams: streams,
             sharedAtlas: sharedAtlas,
             shaper: shaper,
             sentColorPngs: sentColorPngs,
@@ -893,6 +1158,7 @@ Object? _dispatchCommand(
   Object command, {
   required Map<String, GPUFont> fonts,
   required Map<String, _Doc> docs,
+  required Map<String, _StreamState> streams,
   required SharedGlyphAtlas sharedAtlas,
   required TextShaper? shaper,
   required Set<String> sentColorPngs,
@@ -934,6 +1200,8 @@ Object? _dispatchCommand(
       final int sinceCurves,
       final int sinceRows,
       final int sinceStructure,
+      final bool includeGeometry,
+      final bool includeLineTable,
     ):
       return _reflowDoc(
         id,
@@ -947,10 +1215,45 @@ Object? _dispatchCommand(
         sinceRows: sinceRows,
         sinceStructure: sinceStructure,
         sentColorPngs: sentColorPngs,
+        includeGeometry: includeGeometry,
+        includeLineTable: includeLineTable,
       );
+    case (
+      'lineBand',
+      final String id,
+      final int generation,
+      final int first,
+      final int last,
+    ):
+      final g = docs[id]?.liveGeometries[generation];
+      if (g == null) {
+        return null; // stale or never kept — caller re-syncs on next reflow
+      }
+      final f = first.clamp(0, g.lineCount);
+      final l = last.clamp(f, g.lineCount);
+      return TransferableTypedData.fromList([
+        encodeLineBand(g, f, l).asUint8List(),
+      ]);
     case ('disposeDoc', final String id):
       docs.remove(id);
+      streams.remove(id);
       return true;
+    case ('syncStream', final GPUTextStreamRequest req):
+      return _syncStream(
+        req,
+        fonts: fonts,
+        shaper: shaper,
+        docs: docs,
+        streams: streams,
+        sharedAtlas: sharedAtlas,
+        sentColorPngs: sentColorPngs,
+      );
+    case ('finishStream', final String id):
+      streams.remove(id);
+      return true;
+    case ('streamStats', final String id):
+      final s = streams[id];
+      return s == null ? null : (s.chunks.length, s.shapedSlices);
     case (
       'syncDocs',
       final List<GPUTextSyncEntry> entries,
@@ -1062,6 +1365,7 @@ GPUTextSyncResult _syncDocs(
         docs,
         fonts,
         sentColorPngs: sentColorPngs,
+        includeGeometry: e.includeGeometry,
       ),
     );
   }
@@ -1108,7 +1412,10 @@ GPUTextSyncResult _syncDocs(
   );
 }
 
-/// Doc id of a reflow command, or null for any other command.
+/// Doc id of a reflow command, or null for any other command. This pattern
+/// MUST match the 'reflow' tuple [GPUTextWorker.reflowDoc] sends (and
+/// [_dispatchCommand] destructures) exactly — a drifted arity silently
+/// disables reflow coalescing.
 String? _reflowDocId(Object command) {
   if (command case (
     'reflow',
@@ -1120,26 +1427,40 @@ String? _reflowDocId(Object command) {
     final int _,
     final int _,
     final int _,
+    final bool _,
+    final bool _,
   )) {
     return id;
   }
   return null;
 }
 
-/// Collapse queued reflows: for each document id keep only the last entry in
-/// [inbox] and reply [_kReflowSuperseded] for the ones we drop. Non-reflow
-/// commands are left alone (ordering with prepare/dispose stays intact).
+/// Sampling key for coalescable commands: reflows and stream syncs each
+/// collapse per document id (namespaced so a reflow can't cancel a stream
+/// sync of the same id or vice versa). Null = never coalesced.
+String? _coalesceKey(Object command) {
+  final reflowId = _reflowDocId(command);
+  if (reflowId != null) return 'r $reflowId';
+  if (command case ('syncStream', final GPUTextStreamRequest req)) {
+    return 's ${req.id}';
+  }
+  return null;
+}
+
+/// Collapse queued reflows / stream syncs: for each document id keep only the
+/// last entry in [inbox] and reply [_kReflowSuperseded] for the ones we drop.
+/// Other commands are left alone (ordering with prepare/dispose stays intact).
 void _coalesceQueuedReflows(List<(int, Object)> inbox, SendPort host) {
   final lastByDoc = <String, int>{};
   for (var i = 0; i < inbox.length; i++) {
-    final id = _reflowDocId(inbox[i].$2);
+    final id = _coalesceKey(inbox[i].$2);
     if (id != null) lastByDoc[id] = i;
   }
   if (lastByDoc.isEmpty) return;
 
   final drop = <int>{};
   for (var i = 0; i < inbox.length; i++) {
-    final id = _reflowDocId(inbox[i].$2);
+    final id = _coalesceKey(inbox[i].$2);
     if (id != null && lastByDoc[id] != i) drop.add(i);
   }
   if (drop.isEmpty) return;
@@ -1380,6 +1701,9 @@ EmojiItem? _resolveColorEmoji(
       layers: layers,
       textColor: color,
       background: bg,
+      // Selection/copy content: without it the geometry's plainText holds
+      // '￼' and copied text loses the emoji.
+      sourceText: cluster,
       source: source,
     );
   }
@@ -1395,6 +1719,7 @@ EmojiItem? _resolveColorEmoji(
       bitmapGlyphId: gid,
       textColor: color,
       background: bg,
+      sourceText: cluster,
       source: source,
     );
   }
@@ -1510,6 +1835,214 @@ bool _prepareDoc(
   return true;
 }
 
+/// Streaming sync (see [GPUTextWorker.syncStream]): re-shape only the
+/// hard-break paragraph slices whose specs changed since the last sync,
+/// splice cached shaped items for the rest, then prepare + layout + emit the
+/// whole document through the ordinary [_layoutPrepared] path. The result is
+/// byte-compatible with a from-scratch [_prepareDoc] + [_reflowDoc] of the
+/// same runs: slicing only changes HOW items were shaped ((prepare's text
+/// analysis runs over concatenated adjacent runs, and '\n' is a UAX #9
+/// paragraph separator, so bidi context resets at every slice boundary
+/// regardless).
+GPUTextInstances _syncStream(
+  GPUTextStreamRequest req, {
+  required Map<String, GPUFont> fonts,
+  required TextShaper? shaper,
+  required Map<String, _Doc> docs,
+  required Map<String, _StreamState> streams,
+  required SharedGlyphAtlas sharedAtlas,
+  Set<String>? sentColorPngs,
+}) {
+  var state = streams[req.id];
+  if (state != null && !state.configMatches(req)) {
+    state = null; // shaping config changed — every cached slice is invalid
+  }
+  state ??= streams[req.id] = _StreamState(
+    List<String>.of(req.fallbackFontIds),
+    req.emojiFontId,
+    req.language,
+  );
+
+  final slices = _splitAtHardBreaks(req.runs);
+  // Longest stable prefix of paragraph slices. A LineBreakConfig's callbacks
+  // lose identity crossing the isolate, so hyphenation/segmentation configs
+  // conservatively disable reuse (v0 limitation, documented on syncStream).
+  var stable = 0;
+  if (req.lineBreak == null) {
+    while (stable < slices.length &&
+        stable < state.chunks.length &&
+        _specListEquals(state.chunks[stable].specs, slices[stable])) {
+      stable++;
+    }
+  }
+  state.chunks.length = stable;
+  for (var i = stable; i < slices.length; i++) {
+    final items = buildRunItems(
+      slices[i],
+      fonts,
+      shaper,
+      fallbackFontIds: req.fallbackFontIds,
+      emojiFontId: req.emojiFontId,
+      language: req.language,
+    );
+    // Band only the fresh slices — cached slices' glyphs are already rows in
+    // the append-only atlas.
+    bandRunItems(sharedAtlas, items);
+    state.chunks.add(_StreamChunk(slices[i], items));
+    state.shapedSlices++;
+  }
+
+  final items = [for (final c in state.chunks) ...c.items];
+  if (items.isEmpty) {
+    throw StateError(
+      'syncStream("${req.id}"): no shapeable content — sync only after the '
+      'first token arrives (or check the runs\' fontIds are registered)',
+    );
+  }
+  final prepared = prepareParagraph(items, lineBreak: req.lineBreak);
+  final old = docs[req.id];
+  final doc = _Doc(prepared, sharedAtlas, emojiFontId: req.emojiFontId);
+  if (old != null) {
+    // Keep lineBand generation continuity across syncs of the same stream.
+    doc.layoutGeneration = old.layoutGeneration;
+    doc.liveGeometries.addAll(old.liveGeometries);
+  }
+  docs[req.id] = doc;
+  return _layoutPrepared(
+    prepared,
+    sharedAtlas,
+    req.width,
+    req.style,
+    includeAtlas: req.includeAtlas,
+    dpr: req.dpr,
+    emojiFontId: req.emojiFontId,
+    fonts: fonts,
+    sinceCurves: req.sinceCurves,
+    sinceRows: req.sinceRows,
+    sinceStructure: req.sinceStructure,
+    sentColorPngs: sentColorPngs,
+    includeLineTable: req.includeLineTable,
+    cacheDoc: doc,
+  );
+}
+
+/// Partition [runs] into hard-break paragraph slices: each '\n' ends the
+/// slice it belongs to (the newline character stays with the preceding
+/// text, so concatenating the slices reproduces the input exactly).
+/// Placeholders belong to the slice that is open when they appear.
+List<List<GPUInlineSpec>> _splitAtHardBreaks(List<GPUInlineSpec> runs) {
+  final slices = <List<GPUInlineSpec>>[];
+  var cur = <GPUInlineSpec>[];
+  for (final spec in runs) {
+    if (spec is! GPUTextRunSpec) {
+      cur.add(spec);
+      continue;
+    }
+    final text = spec.text;
+    var start = 0;
+    while (true) {
+      final nl = text.indexOf('\n', start);
+      if (nl < 0) break;
+      cur.add(
+        start == 0 && nl + 1 == text.length
+            ? spec
+            : _withText(spec, text.substring(start, nl + 1)),
+      );
+      slices.add(cur);
+      cur = <GPUInlineSpec>[];
+      start = nl + 1;
+    }
+    if (start == 0) {
+      cur.add(spec); // no newline at all — keep the original instance
+    } else if (start < text.length) {
+      cur.add(_withText(spec, text.substring(start)));
+    }
+  }
+  if (cur.isNotEmpty) slices.add(cur);
+  return slices;
+}
+
+GPUTextRunSpec _withText(GPUTextRunSpec s, String text) => GPUTextRunSpec(
+  text: text,
+  fontId: s.fontId,
+  fontSizePx: s.fontSizePx,
+  color: s.color,
+  letterSpacingPx: s.letterSpacingPx,
+  wordSpacingPx: s.wordSpacingPx,
+  height: s.height,
+  evenLeading: s.evenLeading,
+  direction: s.direction,
+  language: s.language,
+  features: s.features,
+  decoration: s.decoration,
+  background: s.background,
+  hitTag: s.hitTag,
+);
+
+bool _specListEquals(List<GPUInlineSpec> a, List<GPUInlineSpec> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (!_specEquals(a[i], b[i])) return false;
+  }
+  return true;
+}
+
+bool _specEquals(GPUInlineSpec a, GPUInlineSpec b) {
+  if (a is GPUTextRunSpec && b is GPUTextRunSpec) {
+    return a.text == b.text &&
+        a.fontId == b.fontId &&
+        a.fontSizePx == b.fontSizePx &&
+        _doubleListEquals(a.color, b.color) &&
+        a.letterSpacingPx == b.letterSpacingPx &&
+        a.wordSpacingPx == b.wordSpacingPx &&
+        a.height == b.height &&
+        a.evenLeading == b.evenLeading &&
+        a.direction == b.direction &&
+        a.language == b.language &&
+        _featureMapEquals(a.features, b.features) &&
+        _decorationEquals(a.decoration, b.decoration) &&
+        _doubleListEquals(a.background, b.background) &&
+        a.hitTag == b.hitTag;
+  }
+  if (a is GPUPlaceholderSpec && b is GPUPlaceholderSpec) {
+    return a.index == b.index &&
+        a.width == b.width &&
+        a.height == b.height &&
+        a.alignment == b.alignment &&
+        a.baselineOffset == b.baselineOffset;
+  }
+  return false;
+}
+
+bool _doubleListEquals(List<double>? a, List<double>? b) {
+  if (identical(a, b)) return true;
+  if (a == null || b == null || a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+bool _featureMapEquals(Map<String, int> a, Map<String, int> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (final e in a.entries) {
+    if (b[e.key] != e.value) return false;
+  }
+  return true;
+}
+
+bool _decorationEquals(InlineDecoration? a, InlineDecoration? b) {
+  if (identical(a, b)) return true;
+  if (a == null || b == null) return false;
+  return a.underline == b.underline &&
+      a.overline == b.overline &&
+      a.lineThrough == b.lineThrough &&
+      a.style == b.style &&
+      a.thickness == b.thickness &&
+      _doubleListEquals(a.color, b.color);
+}
+
 GPUTextInstances _reflowDoc(
   String id,
   double width,
@@ -1522,6 +2055,8 @@ GPUTextInstances _reflowDoc(
   int sinceRows = 0,
   int sinceStructure = 0,
   Set<String>? sentColorPngs,
+  bool includeGeometry = false,
+  bool includeLineTable = false,
 }) {
   final doc = docs[id];
   if (doc == null) throw StateError('doc "$id" was never prepared');
@@ -1538,7 +2073,37 @@ GPUTextInstances _reflowDoc(
     sinceRows: sinceRows,
     sinceStructure: sinceStructure,
     sentColorPngs: sentColorPngs,
+    includeGeometry: includeGeometry,
+    includeLineTable: includeLineTable,
+    cacheDoc: doc,
   );
+}
+
+/// Ceiling on a document's SOURCE length (UTF-16 units) for the FULL
+/// selection-geometry snapshot (`includeGeometry`, used by the block views
+/// where every block is paragraph-sized and never hits this). The snapshot
+/// is O(document) — ~24 B per glyph plus an eager whole-document pen walk
+/// per reflow (measured: a 2.6 M-char stress body costs +472 ms and a 93 MB
+/// payload PER REFLOW) — so it stays budgeted. The single-document views no
+/// longer use it: they request `includeLineTable` (O(lines), ~29 B/line, no
+/// budget) and fetch per-line detail bands on demand, so selection works at
+/// any document size.
+const int _maxSelectionGeometryChars = 250000;
+
+/// Debug-only "geometry skipped" warning, once per worker isolate.
+bool _geometryBudgetWarned = false;
+
+bool _withinGeometryBudget(List<InlineItem> items) {
+  var chars = 0;
+  for (final item in items) {
+    chars += switch (item) {
+      TextRun r => r.originalText.length,
+      EmojiItem e => e.originalText.length,
+      PlaceholderItem _ => 1,
+    };
+    if (chars > _maxSelectionGeometryChars) return false;
+  }
+  return true;
 }
 
 /// Apply soft-wrap / ellipsis / width-basis policy around [layoutPreparedLines]
@@ -1556,29 +2121,35 @@ GPUTextInstances _layoutPrepared(
   int sinceRows = 0,
   int sinceStructure = 0,
   Set<String>? sentColorPngs,
+  bool includeGeometry = false,
+  bool includeLineTable = false,
+  _Doc? cacheDoc,
 }) {
-  final wrapWidth = style.softWrap && maxWidth.isFinite
-      ? maxWidth
-      : double.infinity;
+  if (includeGeometry && !_withinGeometryBudget(prepared.items)) {
+    includeGeometry = false;
+    assert(() {
+      if (!_geometryBudgetWarned) {
+        _geometryBudgetWarned = true;
+        // ignore:   avoid_print
+        print(
+          'gputext: selection geometry skipped — document exceeds '
+          '$_maxSelectionGeometryChars source chars. The snapshot costs '
+          '~24 B/glyph and an extra pen walk PER REFLOW, which on '
+          'multi-megabyte single documents multiplies reflow time and ships '
+          'tens of MB per reply. The view degrades to "not selectable"; '
+          'split huge content into blocks (GPUTextBlocksView / '
+          'SliverGPUTextBlocks) to keep per-document geometry small.',
+        );
+      }
+      return true;
+    }());
+  }
+  final wrapWidth = maxWidth.isFinite ? maxWidth : double.infinity;
   final lines = layoutPreparedLines(
     prepared,
     wrapWidth,
     style.toParagraphStyle(wrapWidth),
   );
-
-  // softWrap:false + ellipsis truncates each overlong line at the box edge.
-  if (style.addEllipsis && !style.softWrap && maxWidth.isFinite) {
-    for (final line in lines.lines) {
-      final lastRun = line.items.isEmpty ? null : line.items.last;
-      final last = lastRun is LineRun ? lastRun.text : null;
-      if (line.width > maxWidth && last != '…' && last != '...') {
-        ellipsizeLine(line, maxWidth);
-        // Ellipsis is synthesized after prepare — band it into the atlas.
-        final ell = line.items.isEmpty ? null : line.items.last;
-        if (ell is LineRun) atlas.ensureGlyphs(ell.font, ell.text);
-      }
-    }
-  }
 
   // Alignment / reported width.
   var longest = 0.0;
@@ -1598,10 +2169,55 @@ GPUTextInstances _layoutPrepared(
         boxWidth = lines.maxIntrinsicWidth.clamp(0.0, maxWidth);
     }
   }
-  // Overflow extent for horizontal scroll (softWrap:false, long unbreakables).
+  // Overflow extent when a long unbreakable run exceeds the wrap width.
   final contentWidth = boxWidth.isFinite
       ? math.max(boxWidth, longest)
       : longest;
+
+  // Selection geometry rides the same reply as the drawable it describes,
+  // built from the SAME post-ellipsis lines/boxWidth/align emit uses, so
+  // caret/highlight positions match painted pens by construction.
+  final geometry = includeGeometry
+      ? TransferableTypedData.fromList([
+          encodeGeometrySnapshot(
+            ParagraphGeometry(
+              items: prepared.items,
+              para: lines,
+              boxWidth: boxWidth,
+              align: style.align,
+            ),
+          ).asUint8List(),
+        ])
+      : null;
+
+  // Single-document selection: the O(lines) table rides the reply and the
+  // live geometry is retained for on-demand 'lineBand' fetches (placements
+  // cache per line, so only fetched lines ever pay a pen walk). The
+  // generation bumps on EVERY cached-doc reflow — with or without a table —
+  // and a few recent generations stay fetchable so several views sharing
+  // one doc id (each holding its own reply's table) all get detail. A
+  // no-table reflow leaves earlier retained layouts alone for the same
+  // reason.
+  TransferableTypedData? lineTable;
+  var layoutGeneration = 0;
+  if (cacheDoc != null) {
+    layoutGeneration = ++cacheDoc.layoutGeneration;
+    if (includeLineTable) {
+      final g = ParagraphGeometry(
+        items: prepared.items,
+        para: lines,
+        boxWidth: boxWidth,
+        align: style.align,
+      );
+      cacheDoc.liveGeometries[layoutGeneration] = g;
+      while (cacheDoc.liveGeometries.length > _Doc.keptGenerations) {
+        cacheDoc.liveGeometries.remove(cacheDoc.liveGeometries.keys.first);
+      }
+      lineTable = TransferableTypedData.fromList([
+        encodeLineTable(g).asUint8List(),
+      ]);
+    }
+  }
 
   return _drawable(
     lines,
@@ -1617,6 +2233,9 @@ GPUTextInstances _layoutPrepared(
     sinceRows: sinceRows,
     sinceStructure: sinceStructure,
     sentColorPngs: sentColorPngs,
+    geometrySnapshot: geometry,
+    lineTable: lineTable,
+    layoutGeneration: layoutGeneration,
   );
 }
 
@@ -1646,6 +2265,9 @@ GPUTextInstances _drawable(
   int sinceRows = 0,
   int sinceStructure = 0,
   Set<String>? sentColorPngs,
+  TransferableTypedData? geometrySnapshot,
+  TransferableTypedData? lineTable,
+  int layoutGeneration = 0,
 }) {
   final stubs = <GPUColorGlyphStub>[];
   final emojiFont = emojiFontId == null || fonts == null
@@ -1733,5 +2355,8 @@ GPUTextInstances _drawable(
     rowBase: rowBase,
     atlasStructure: atlas.structureGeneration,
     colorGlyphStubs: stubs,
+    geometry: geometrySnapshot,
+    lineTable: lineTable,
+    layoutGeneration: layoutGeneration,
   );
 }

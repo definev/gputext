@@ -733,7 +733,8 @@ class GPUTextEngine extends ChangeNotifier {
   // Atlas eviction
 
   /// Curve floats the atlas may hold before it compacts. 4 bytes each on the
-  /// CPU and 8 on the GPU, so the default is ~2 MB / ~4 MB. null disables
+  /// CPU and on the GPU (texels are fully packed), so the default is ~2 MB
+  /// on each side. null disables
   /// eviction entirely (the pre-eviction behaviour: the atlas only ever grows).
   ///
   /// Nothing else bounds the atlas over an app's lifetime: every distinct font

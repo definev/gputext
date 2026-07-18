@@ -6,7 +6,7 @@ import 'dart:io';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show SelectedContent;
+import 'package:flutter/rendering.dart' show ScrollCacheExtent, SelectedContent;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -109,6 +109,56 @@ void main() {
       expect(content?.plainText, 'hello');
     });
 
+    testWidgets('mouse drag crosses a WidgetSpan', (tester) async {
+      // Text split by an inline widget registers one fragment per side; the
+      // drag edge must route past the placeholder (each fragment cedes on
+      // its OWN bounds) or the selection can never reach the second half.
+      SelectedContent? content;
+      await tester.pumpWidget(
+        host(
+          GPURichText(
+            text: const TextSpan(
+              style: style,
+              children: [
+                TextSpan(text: 'hello '),
+                WidgetSpan(child: SizedBox(width: 24, height: 12)),
+                TextSpan(text: ' world'),
+              ],
+            ),
+          ),
+          onChanged: (c) => content = c,
+        ),
+      );
+      final render =
+          tester.renderObject(find.byType(GPURichText)) as RenderGPUParagraph;
+      expect(render.plainText, 'hello \u{FFFC} world');
+      Offset globalCaret(int offset) => render.localToGlobal(
+        render.getOffsetForCaret(TextPosition(offset: offset), Rect.zero) +
+            const Offset(0, 10),
+      );
+
+      final gesture = await tester.startGesture(
+        globalCaret(0),
+        kind: PointerDeviceKind.mouse,
+      );
+      addTearDown(gesture.removePointer);
+      await tester.pump();
+      // Incremental moves, like a real drag: the edge lands inside the first
+      // fragment and must be handed forward from there (a single jump would
+      // let the delegate hit-test the far fragment directly and hide a
+      // routing bug).
+      // End strictly inside the paragraph box (mid-'world'), not at its right
+      // edge — an edge-of-box endpoint routes forward even without
+      // per-fragment bounds and would mask the bug.
+      await gesture.moveTo(globalCaret(3));
+      await tester.pump();
+      await gesture.moveTo(globalCaret(11));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(content?.plainText, 'hello  wor');
+    });
+
     testWidgets('selection copies SOURCE text through ligatures', (
       tester,
     ) async {
@@ -206,6 +256,120 @@ void main() {
       expect(content?.plainText, contains('before'));
       expect(content?.plainText, contains('chip'));
       expect(content?.plainText, contains('after'));
+    });
+
+    testWidgets('selection survives scroll and width change', (tester) async {
+      // The selection is stored as source offsets, so scrolling paragraphs
+      // out of the cache extent and rewrapping at a new width must not
+      // change the reported content.
+      SelectedContent? content;
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      var width = 500.0;
+      late StateSetter setOuterState;
+
+      Widget build() => MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              setOuterState = setState;
+              return Center(
+                child: SizedBox(
+                  width: width,
+                  height: 400,
+                  child: SelectionArea(
+                    onSelectionChanged: (c) => content = c,
+                    child: ListView(
+                      controller: scroll,
+                      scrollCacheExtent: const ScrollCacheExtent.pixels(
+                        2000, // keep items alive while scrolled
+                      ),
+                      children: [
+                        for (var i = 0; i < 8; i++)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: GPURichText(
+                              text: TextSpan(
+                                text:
+                                    'Paragraph $i: the quick brown fox jumps '
+                                    'over the lazy dog near the river bank '
+                                    'and keeps going for a while longer.',
+                                style: style,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(build());
+      await tester.pumpAndSettle();
+
+      final paras = tester
+          .renderObjectList(find.byType(GPURichText))
+          .cast<RenderGPUParagraph>()
+          .toList();
+      Offset caretGlobal(RenderGPUParagraph r, int offset) => r.localToGlobal(
+        r.getOffsetForCaret(TextPosition(offset: offset), Rect.zero) +
+            const Offset(0, 10),
+      );
+
+      // Drag from paragraph 0 into paragraph 2 with incremental moves.
+      final gesture = await tester.startGesture(
+        caretGlobal(paras[0], 13),
+        kind: PointerDeviceKind.mouse,
+      );
+      addTearDown(gesture.removePointer);
+      await tester.pump();
+      await gesture.moveTo(caretGlobal(paras[0], 40));
+      await tester.pump();
+      await gesture.moveTo(caretGlobal(paras[1], 30));
+      await tester.pump();
+      await gesture.moveTo(caretGlobal(paras[2], 25));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      final before = content?.plainText;
+      expect(before, isNotNull);
+      expect(before, contains('Paragraph 1'));
+
+      // Scroll down and back; the selection must not change.
+      scroll.jumpTo(600);
+      await tester.pumpAndSettle();
+      scroll.jumpTo(0);
+      await tester.pumpAndSettle();
+      expect(
+        content?.plainText,
+        before,
+        reason: 'selection changed after scroll',
+      );
+
+      // Now resize: relayout rewraps every paragraph.
+      setOuterState(() => width = 380);
+      await tester.pumpAndSettle();
+      expect(
+        content?.plainText,
+        before,
+        reason: 'selection changed after width resize',
+      );
+
+      // And scroll once more at the new width.
+      scroll.jumpTo(300);
+      await tester.pumpAndSettle();
+      scroll.jumpTo(0);
+      await tester.pumpAndSettle();
+      expect(
+        content?.plainText,
+        before,
+        reason: 'selection changed after scroll at new width',
+      );
     });
 
     testWidgets('selection highlight paints rects', (tester) async {

@@ -31,10 +31,13 @@ flat in float v_guardPx;
 
 out vec4 frag_color;
 
+// Curve points are packed two vec2s per RGBA32F texel (see atlas.dart):
+// even indices in .xy, odd in .zw.
 vec2 loadCurveVec2(int idx) {
-  int x = idx % CURVE_TEX_WIDTH;
-  int y = idx / CURVE_TEX_WIDTH;
-  return texelFetch(curvesTex, ivec2(x, y), 0).xy;
+  int t = idx >> 1;
+  vec4 texel = texelFetch(
+      curvesTex, ivec2(t % CURVE_TEX_WIDTH, t / CURVE_TEX_WIDTH), 0);
+  return (idx & 1) == 0 ? texel.xy : texel.zw;
 }
 
 // Row-band table, two texels per band (see atlas.dart):

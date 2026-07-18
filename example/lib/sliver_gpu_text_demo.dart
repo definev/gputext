@@ -76,7 +76,7 @@ class _SliverGPUTextDemoPageState extends State<SliverGPUTextDemoPage> {
   GPUTextDocument _buildDocument() {
     const body = TextStyle(fontSize: 16, height: 1.5);
     final children = <InlineSpan>[];
-    for (var s = 0; s < 40; s++) {
+    for (var s = 0; s < 1000; s++) {
       children.addAll([
         TextSpan(
           text: 'Section ${s + 1} — rendered by SliverGPUText ',
@@ -84,10 +84,11 @@ class _SliverGPUTextDemoPageState extends State<SliverGPUTextDemoPage> {
         ),
         // Sized inline widget: fast path, no measure frame.
         GPUWidgetSpan(
-          size: const Size(64, 20),
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.ideographic,
           child: Material(
             type: MaterialType.transparency,
-            child: InkWell(
+            child: GestureDetector(
               onTap: () => _tapLog.value = 'badge §${s + 1} tapped',
               child: _badge('GPU §${s + 1}', const Color(0xFF7C3AED)),
             ),
@@ -169,69 +170,73 @@ class _SliverGPUTextDemoPageState extends State<SliverGPUTextDemoPage> {
           controller: _scroll,
           interactive: true,
           thumbVisibility: true,
-          child: CustomScrollView(
-            controller: _scroll,
-            slivers: [
-              SliverAppBar(
-                pinned: true,
-                title: const Text('SliverGPUText'),
-                actions: [
-                  Center(
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: 16),
-                      child: ValueListenableBuilder<GPUTextMetrics?>(
-                        valueListenable: _metrics,
-                        builder: (context, m, _) => Text(
-                          m == null
-                              ? '…'
-                              : '${m.glyphCount} glyphs · ${m.lineCount} lines '
-                                    '· ${m.reflowMs.toStringAsFixed(1)} ms',
-                          style: const TextStyle(fontSize: 12),
+          // Selection: mouse-drag / long-press selects across the GPU sliver
+          // (and the ordinary tiles); touch-drag scrolls.
+          child: SelectionArea(
+            child: CustomScrollView(
+              controller: _scroll,
+              slivers: [
+                SliverAppBar(
+                  pinned: true,
+                  title: const Text('SliverGPUText'),
+                  actions: [
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 16),
+                        child: ValueListenableBuilder<GPUTextMetrics?>(
+                          valueListenable: _metrics,
+                          builder: (context, m, _) => Text(
+                            m == null
+                                ? '…'
+                                : '${m.glyphCount} glyphs · ${m.lineCount} lines '
+                                      '· ${m.reflowMs.toStringAsFixed(1)} ms',
+                            style: const TextStyle(fontSize: 12),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
-              ),
-              SliverToBoxAdapter(
-                child: Container(
-                  color: const Color(0xFFEDF2FB),
-                  padding: const EdgeInsets.all(16),
-                  child: ValueListenableBuilder<String>(
-                    valueListenable: _tapLog,
-                    builder: (context, log, _) => Text(
-                      'A box sliver above the GPU text. Last interaction: $log',
+                  ],
+                ),
+                SliverToBoxAdapter(
+                  child: Container(
+                    color: const Color(0xFFEDF2FB),
+                    padding: const EdgeInsets.all(16),
+                    child: ValueListenableBuilder<String>(
+                      valueListenable: _tapLog,
+                      builder: (context, log, _) => Text(
+                        'A box sliver above the GPU text. Last interaction: $log',
+                      ),
                     ),
                   ),
                 ),
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 16,
-                ),
-                sliver: SliverGPUText(
-                  controller: controller,
-                  document: doc,
-                  onMetrics: (m) => _metrics.value = m,
-                  onSpanTap: (tag, span) {
-                    if (span?.recognizer == null) {
-                      _tapLog.value = 'span tap: $tag';
-                    }
-                  },
-                ),
-              ),
-              SliverList.builder(
-                itemCount: 5,
-                itemBuilder: (context, i) => ListTile(
-                  leading: const Icon(Icons.check),
-                  title: Text(
-                    'Ordinary SliverList tile ${i + 1} — after the '
-                    'GPU document, same viewport',
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 16,
+                  ),
+                  sliver: SliverGPUText(
+                    controller: controller,
+                    document: doc,
+                    onMetrics: (m) => _metrics.value = m,
+                    onSpanTap: (tag, span) {
+                      if (span?.recognizer == null) {
+                        _tapLog.value = 'span tap: $tag';
+                      }
+                    },
                   ),
                 ),
-              ),
-            ],
+                SliverList.builder(
+                  itemCount: 5,
+                  itemBuilder: (context, i) => ListTile(
+                    leading: const Icon(Icons.check),
+                    title: Text(
+                      'Ordinary SliverList tile ${i + 1} — after the '
+                      'GPU document, same viewport',
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

@@ -1,16 +1,15 @@
 // SliverGPUText — GPU text as a first-class sliver. Where GPUTextView's
-// shrinkWrap mode reconstructs the visible window from ancestor ScrollPosition
-// listeners + transform probing (and defers work around flings), a sliver is
-// HANDED that window by the viewport protocol every layout pass and paints in
-// the same frame, so none of that machinery exists here.
+// removed shrinkWrap mode reconstructed the visible window from ancestor
+// ScrollPosition listeners + transform probing (and deferred work around
+// flings), a sliver is HANDED that window by the viewport protocol every
+// layout pass and paints in the same frame, so none of that machinery exists
+// here.
 //
 // Inline widgets ([GPUWidgetSpan]) are hosted as real render children, laid
 // out to their placeholder boxes and painted over the glyphs; sizeless spans
 // are measured under loose constraints during the first layout pass and the
-// document reflows once with the real sizes. The sliver protocol is
-// one-dimensional, so documents always wrap to the cross-axis extent —
-// softWrap:false is coerced to wrapping. Vertical, forward-growth viewports
-// only.
+// document reflows once with the real sizes. Documents always wrap to the
+// cross-axis extent. Vertical, forward-growth viewports only.
 part of 'gpu_text_view.dart';
 
 /// GPU-rendered rich text as a sliver for a [CustomScrollView].
@@ -35,10 +34,7 @@ part of 'gpu_text_view.dart';
 /// [GPUWidgetSpan] is measured under loose constraints during the first
 /// layout and the document reflows once with the real size.
 ///
-/// Text always wraps to the sliver's cross-axis extent: the sliver protocol
-/// is one-dimensional, so [GPUTextLayoutStyle.softWrap] `false` — a
-/// horizontal-overflow feature — is coerced to wrapping here. Use
-/// [GPUTextView] for unwrapped documents with 2D pan.
+/// Text always wraps to the sliver's cross-axis extent.
 ///
 /// V1 limitations — use [GPUTextView] where these matter:
 ///  * index-based `placeholderBuilder` fallbacks are not supported (bundle
@@ -55,6 +51,8 @@ class SliverGPUText extends MultiChildRenderObjectWidget {
     this.background = const Color(0xFFFFFFFF),
     this.onMetrics,
     this.onSpanTap,
+    this.selectionRegistrar,
+    this.selectionColor,
   }) : super(children: _hostChildren(document));
 
   /// The placeholder widgets, one element child per index, in index order.
@@ -92,8 +90,31 @@ class SliverGPUText extends MultiChildRenderObjectWidget {
   /// dispatched.
   final void Function(String hitTag, TextSpan? span)? onSpanTap;
 
+  /// Selection registrar. Like [GPURichText], a null registrar falls back to
+  /// the enclosing [SelectionContainer], so a sliver inside a [SelectionArea]
+  /// participates without extra plumbing. While a registrar is attached,
+  /// reflows additionally ship selection geometry from the worker.
+  final SelectionRegistrar? selectionRegistrar;
+
+  /// Highlight color; defaults to [DefaultSelectionStyle.of] when selection
+  /// is active.
+  final Color? selectionColor;
+
+  SelectionRegistrar? _effectiveRegistrar(BuildContext context) =>
+      selectionRegistrar ?? SelectionContainer.maybeOf(context);
+
+  Color? _effectiveSelectionColor(
+    BuildContext context,
+    SelectionRegistrar? registrar,
+  ) => registrar == null
+      ? selectionColor
+      : selectionColor ??
+            DefaultSelectionStyle.of(context).selectionColor ??
+            DefaultSelectionStyle.defaultColor;
+
   @override
   RenderObject createRenderObject(BuildContext context) {
+    final registrar = _effectiveRegistrar(context);
     return RenderSliverGPUText(
       controller: controller,
       document: document,
@@ -101,6 +122,10 @@ class SliverGPUText extends MultiChildRenderObjectWidget {
       devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
       onMetrics: onMetrics,
       onSpanTap: onSpanTap,
+    )..configureSelection(
+      registrar: registrar,
+      color: _effectiveSelectionColor(context, registrar),
+      direction: Directionality.maybeOf(context) ?? TextDirection.ltr,
     );
   }
 
@@ -109,13 +134,19 @@ class SliverGPUText extends MultiChildRenderObjectWidget {
     BuildContext context,
     RenderSliverGPUText renderObject,
   ) {
+    final registrar = _effectiveRegistrar(context);
     renderObject
       ..devicePixelRatio = MediaQuery.devicePixelRatioOf(context)
       ..background = background
       ..onMetrics = onMetrics
       ..onSpanTap = onSpanTap
       ..controller = controller
-      ..document = document;
+      ..document = document
+      ..configureSelection(
+        registrar: registrar,
+        color: _effectiveSelectionColor(context, registrar),
+        direction: Directionality.maybeOf(context) ?? TextDirection.ltr,
+      );
   }
 }
 
@@ -167,7 +198,9 @@ class RenderSliverGPUText extends RenderSliver
     required double devicePixelRatio,
     this.onMetrics,
     this.onSpanTap,
-  }) : _dpr = devicePixelRatio;
+  }) : _dpr = devicePixelRatio {
+    _wireSelectionSource();
+  }
 
   // --- configuration ---
 
@@ -184,6 +217,7 @@ class RenderSliverGPUText extends RenderSliver
     final old = _document;
     if (identical(old, value)) return;
     _document = value;
+    _wireSelectionSource();
     if (value.id != old.id) {
       // Measured placeholder sizes belong to the old content.
       _measuredDocId = null;
@@ -193,20 +227,10 @@ class RenderSliverGPUText extends RenderSliver
     // Same id ⇒ same content by the [GPUTextDocument.id] contract, so an
     // equal layout style means the reflow would be byte-identical — skip the
     // worker round-trip (parents rebuild equivalent documents routinely).
-    // Compare the COERCED styles: docs differing only in softWrap lay out
-    // identically here.
-    if (value.id == old.id && _sliverStyle(value) == _sliverStyle(old)) {
+    if (value.id == old.id && value.effectiveStyle == old.effectiveStyle) {
       return;
     }
     _requestReflow();
-  }
-
-  /// The style the sliver actually lays out with. The sliver protocol is
-  /// one-dimensional, so `softWrap: false` (horizontal overflow) is coerced
-  /// to wrapping — there is no horizontal axis to pan.
-  static GPUTextLayoutStyle _sliverStyle(GPUTextDocument doc) {
-    final style = doc.effectiveStyle;
-    return style.softWrap ? style : style.copyWith(softWrap: true);
   }
 
   Color _background;
@@ -226,6 +250,56 @@ class RenderSliverGPUText extends RenderSliver
 
   void Function(GPUTextMetrics metrics)? onMetrics;
   void Function(String hitTag, TextSpan? span)? onSpanTap;
+
+  // --- selection ---
+
+  // Fragment coordinates stay doc-local; the sliver's scroll offset lives in
+  // the bindHost shift, so scrolling never touches fragment values.
+  final _DocSelection _selection = _DocSelection();
+  // Settle refresh for the selection line table after table-less resize
+  // streaming (see _reflow's wantTable): set by the selection's stale hook
+  // on the first quiet frame, cleared when the table lands.
+  bool _tableRefreshDue = false;
+
+  /// Banded selection: source text derived from the specs on this isolate,
+  /// per-line detail fetched from the worker for the painted band.
+  void _wireSelectionSource() {
+    final source = flattenSpecSource(_document.runs);
+    _selection.setSource(source.text, source.placeholderOffsets);
+    _selection.setBandFetcher(
+      (generation, first, last) =>
+          _controller._fetchLineBand(_document.id, generation, first, last),
+    );
+    _selection.setReflowHooks(
+      quiet: () => _reflowEpoch == _appliedReflowEpoch,
+      onTableStale: () {
+        if (_disposed || _controller._disposed || _tableRefreshDue) return;
+        _tableRefreshDue = true;
+        _requestReflow();
+      },
+    );
+  }
+
+  /// Wired by the widget's create/updateRenderObject (registrar resolved from
+  /// SelectionContainer.maybeOf there — reads register the dependency).
+  void configureSelection({
+    required SelectionRegistrar? registrar,
+    required Color? color,
+    required TextDirection direction,
+  }) {
+    _selection.configure(
+      registrar: registrar,
+      color: color,
+      direction: direction,
+      onEnabledChanged: _onSelectionEnabledChanged,
+    );
+  }
+
+  /// Registrar appeared: the drawable on screen shipped without geometry —
+  /// fetch one.
+  void _onSelectionEnabledChanged() {
+    if (_selection.enabled) _requestReflow();
+  }
 
   // --- pipeline state ---
 
@@ -311,16 +385,33 @@ class RenderSliverGPUText extends RenderSliver
   @visibleForTesting
   Rect get debugWindowSrc => _windowSrc;
 
+  /// Test hook: every selection-highlight rect the paint pass would draw
+  /// (doc space, pre-cull), across all fragments.
+  @visibleForTesting
+  List<Rect> get debugSelectionRects => [
+    for (final f in _selection.fragments) ...f.value.selectionRects,
+  ];
+
   // --- lifecycle ---
 
   @override
   void attach(PipelineOwner owner) {
     super.attach(owner);
     _validForMouseTracker = true;
+    _selection.bindHost(
+      this,
+      // Sliver-local origin is the paint origin; doc y maps through the live
+      // scroll offset (same math as childMainAxisPosition).
+      shift: () => Offset(0, -constraints.scrollOffset),
+      size: () => Size(_docWidth, _docHeight),
+    );
+    _selection.repaint.addListener(markNeedsPaint);
   }
 
   @override
   void detach() {
+    _selection.repaint.removeListener(markNeedsPaint);
+    _selection.unbindHost(this);
     _validForMouseTracker = false;
     super.detach();
   }
@@ -328,6 +419,7 @@ class RenderSliverGPUText extends RenderSliver
   @override
   void dispose() {
     _disposed = true;
+    _selection.dispose();
     _tap?.dispose();
     _clipHandle.layer = null;
     _surface?.dispose();
@@ -388,11 +480,19 @@ class RenderSliverGPUText extends RenderSliver
       final sw = Stopwatch()..start();
       // The controller wrapper keeps the atlas mirror current (replies carry
       // only the tail it doesn't hold, usually nothing).
+      // Table-less while resize streaming with nothing selected; one settle
+      // refresh afterwards (see _GPUTextViewState._reflow).
+      final wantTable =
+          _selection.enabled &&
+          (_selection.hasSelection ||
+              !_selection.hasLineTable ||
+              _tableRefreshDue);
       final d = await _controller._reflowDoc(
         doc.id,
         w,
-        style: _sliverStyle(doc),
+        style: doc.effectiveStyle,
         dpr: _dpr,
+        includeLineTable: wantTable,
       );
       sw.stop();
       // Monotone gate: skip only when an even newer result already landed.
@@ -400,7 +500,7 @@ class RenderSliverGPUText extends RenderSliver
         return;
       }
       _appliedReflowEpoch = epoch;
-      _applyDrawable(d, sw.elapsedMicroseconds / 1000.0);
+      _applyDrawable(d, sw.elapsedMicroseconds / 1000.0, wantTable);
     } on GPUTextReflowSuperseded {
       if (!_disposed && !_controller._disposed && epoch == _reflowEpoch) {
         _requestReflow();
@@ -411,7 +511,11 @@ class RenderSliverGPUText extends RenderSliver
     }
   }
 
-  void _applyDrawable(GPUTextInstances d, double ms) {
+  void _applyDrawable(
+    GPUTextInstances d,
+    double ms, [
+    bool tableRequested = false,
+  ]) {
     final surface = _surface;
     if (surface == null) return;
     // Upload from the controller's atlas mirror when this surface's texture
@@ -435,6 +539,15 @@ class RenderSliverGPUText extends RenderSliver
     ];
     _backgrounds = d.backgrounds;
     _hitBoxes = d.hitBoxes;
+    // Same reply as the instances (epoch-gated with them): selection rows
+    // always describe the pixels on screen.
+    _selection.applyLineTable(
+      d.materializeLineTable(),
+      d.layoutGeneration,
+      Size(d.width, d.height),
+      requested: tableRequested,
+    );
+    if (tableRequested) _tableRefreshDue = false;
     _placeholderByIndex = {
       for (final b in d.placeholders)
         if (b.index >= 0) b.index: b,
@@ -637,14 +750,17 @@ class RenderSliverGPUText extends RenderSliver
       offset,
       Offset.zero & Size(w, h),
       (context, offset) {
-        final canvas = context.canvas;
-        if (_background.a > 0) {
-          canvas.drawRect(offset & Size(w, h), Paint()..color = _background);
-        }
-        canvas.save();
-        canvas.translate(offset.dx, offset.dy);
         final scroll = c.scrollOffset;
+        if (_background.a > 0) {
+          context.canvas.drawRect(
+            offset & Size(w, h),
+            Paint()..color = _background,
+          );
+        }
         if (_backgrounds.isNotEmpty || _decorationsBelow.isNotEmpty) {
+          final canvas = context.canvas;
+          canvas.save();
+          canvas.translate(offset.dx, offset.dy);
           _paintSpanChrome(
             canvas,
             backgrounds: _backgrounds,
@@ -654,7 +770,31 @@ class RenderSliverGPUText extends RenderSliver
             viewportWidth: w,
             viewportHeight: h,
           );
+          canvas.restore();
         }
+        // Selection highlight + handle LeaderLayers, under the glyph image
+        // (transparent GPU clear). Must run OUTSIDE the canvas translate:
+        // pushLayer ignores canvas transforms, so the doc→paint shift rides
+        // the offset instead.
+        {
+          // Cull to the painted band (doc space) — a huge selection must
+          // not pay a drawRect per offscreen line. Noting the band here is
+          // also what drives per-line detail prefetch for it.
+          final cull = Rect.fromLTWH(0, scroll, w, h);
+          _selection.noteVisibleBand(cull);
+          if (_selection.fragments.isNotEmpty) {
+            final selOffset = offset + Offset(0, -scroll);
+            for (final f in _selection.fragments) {
+              f.paint(context, selOffset, cull: cull);
+            }
+          }
+        }
+        // Re-fetch the canvas: a fragment that pushed handle LeaderLayers
+        // ended the previous picture recording, killing any canvas reference
+        // taken before it (native-peer StateError on next use).
+        final canvas = context.canvas;
+        canvas.save();
+        canvas.translate(offset.dx, offset.dy);
         final img = _window;
         if (img != null) {
           canvas.drawImageRect(
@@ -918,13 +1058,26 @@ Color _rgbaColor(List<double> c) => Color.from(
 /// is identical (same id ⇒ same runs by the [GPUTextDocument.id] contract),
 /// so every cache keyed by id stays valid. Shared by [GPUTextBlocksView] and
 /// [SliverGPUTextBlocks].
-bool _equivalentBlockLists(List<GPUTextDocument> a, List<GPUTextDocument> b) {
+bool _equivalentBlockLists(List<GPUBlock> a, List<GPUBlock> b) {
   if (identical(a, b)) return true;
   if (a.length != b.length) return false;
   for (var i = 0; i < a.length; i++) {
-    if (identical(a[i], b[i])) continue;
-    if (a[i].id != b[i].id) return false;
-    if (a[i].effectiveStyle != b[i].effectiveStyle) return false;
+    final x = a[i];
+    final y = b[i];
+    if (identical(x, y)) continue;
+    if (x.id != y.id) return false;
+    if (x is GPUTextDocument && y is GPUTextDocument) {
+      if (x.effectiveStyle != y.effectiveStyle) return false;
+    } else if (x is GPUWidgetBlock && y is GPUWidgetBlock) {
+      // Compare by fields, not builder identity: a fresh list with the same
+      // ids/heights is equivalent (the on-screen media layer is rebuilt
+      // separately in didUpdateWidget so new closures still take effect).
+      if (x.height != y.height || x.estimatedHeight != y.estimatedHeight) {
+        return false;
+      }
+    } else {
+      return false; // block kind changed at this index
+    }
   }
   return true;
 }
@@ -959,6 +1112,8 @@ class SliverGPUTextBlocks extends LeafRenderObjectWidget {
     this.maxPreparedDocs = 64,
     this.estimateHeight,
     this.onLaidOutChanged,
+    this.selectionRegistrar,
+    this.selectionColor,
   });
 
   /// Shared worker owner; fonts referenced by [blocks] must be registered on
@@ -992,8 +1147,32 @@ class SliverGPUTextBlocks extends LeafRenderObjectWidget {
   /// Reports (blocksLaidOut, totalBlocks) as blocks lay out — for a HUD.
   final void Function(int laidOut, int total)? onLaidOutChanged;
 
+  /// Selection registrar. Like [GPURichText], a null registrar falls back to
+  /// the enclosing [SelectionContainer]. While a registrar is attached, block
+  /// syncs additionally ship selection geometry from the worker. Blocks
+  /// outside the cache window hold no geometry (select-all covers the synced
+  /// window — the standard virtualized-sliver limitation).
+  final SelectionRegistrar? selectionRegistrar;
+
+  /// Highlight color; defaults to [DefaultSelectionStyle.of] when selection
+  /// is active.
+  final Color? selectionColor;
+
+  SelectionRegistrar? _effectiveRegistrar(BuildContext context) =>
+      selectionRegistrar ?? SelectionContainer.maybeOf(context);
+
+  Color? _effectiveSelectionColor(
+    BuildContext context,
+    SelectionRegistrar? registrar,
+  ) => registrar == null
+      ? selectionColor
+      : selectionColor ??
+            DefaultSelectionStyle.of(context).selectionColor ??
+            DefaultSelectionStyle.defaultColor;
+
   @override
   RenderObject createRenderObject(BuildContext context) {
+    final registrar = _effectiveRegistrar(context);
     return RenderSliverGPUTextBlocks(
       controller: controller,
       blocks: blocks,
@@ -1004,6 +1183,10 @@ class SliverGPUTextBlocks extends LeafRenderObjectWidget {
       estimateHeight: estimateHeight,
       devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
       onLaidOutChanged: onLaidOutChanged,
+    )..configureSelection(
+      registrar: registrar,
+      color: _effectiveSelectionColor(context, registrar),
+      direction: Directionality.maybeOf(context) ?? TextDirection.ltr,
     );
   }
 
@@ -1012,6 +1195,7 @@ class SliverGPUTextBlocks extends LeafRenderObjectWidget {
     BuildContext context,
     RenderSliverGPUTextBlocks renderObject,
   ) {
+    final registrar = _effectiveRegistrar(context);
     renderObject
       ..devicePixelRatio = MediaQuery.devicePixelRatioOf(context)
       ..background = background
@@ -1021,7 +1205,12 @@ class SliverGPUTextBlocks extends LeafRenderObjectWidget {
       ..estimateHeight = estimateHeight
       ..onLaidOutChanged = onLaidOutChanged
       ..controller = controller
-      ..blocks = blocks;
+      ..blocks = blocks
+      ..configureSelection(
+        registrar: registrar,
+        color: _effectiveSelectionColor(context, registrar),
+        direction: Directionality.maybeOf(context) ?? TextDirection.ltr,
+      );
   }
 }
 
@@ -1038,7 +1227,9 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     required this._estimateHeight,
     required double devicePixelRatio,
     this.onLaidOutChanged,
-  }) : _dpr = devicePixelRatio;
+  }) : _dpr = devicePixelRatio {
+    _rebuildBlockIndex();
+  }
 
   // --- configuration ---
 
@@ -1055,7 +1246,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     if (identical(value, _blocks)) return;
     final equivalent = _equivalentBlockLists(_blocks, value);
     _blocks = value;
-    if (equivalent) return; // parent rebuild with identical content
+    if (equivalent) return; // parent rebuild with identical content (same ids)
     _resetCaches();
     markNeedsLayout();
   }
@@ -1065,6 +1256,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     if (value == _blockSpacing) return;
     _blockSpacing = value;
     _drawableGen++; // block screen positions shift inside the strip
+    _topsDirty = true; // gaps between tops change; heights don't
     markNeedsLayout();
   }
 
@@ -1093,6 +1285,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
   set estimateHeight(GPUBlockHeightEstimator? value) {
     if (value == _estimateHeight) return;
     _estimateHeight = value;
+    _topsDirty = true; // changes the provisional height of unshaped blocks
     markNeedsLayout(); // estimates only matter for not-yet-laid-out blocks
   }
 
@@ -1105,6 +1298,72 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
   }
 
   void Function(int laidOut, int total)? onLaidOutChanged;
+
+  // --- selection (per block, mirrors _GPUTextBlocksViewState) ---
+
+  final Map<String, _DocSelection> _selections = {};
+  SelectionRegistrar? _selRegistrar;
+  Color? _selColor;
+  TextDirection _selDirection = TextDirection.ltr;
+  Map<String, int> _indexOfId = const {};
+
+  bool get _selectionEnabled => _selRegistrar != null;
+
+  /// Wired by the widget's create/updateRenderObject.
+  void configureSelection({
+    required SelectionRegistrar? registrar,
+    required Color? color,
+    required TextDirection direction,
+  }) {
+    final wasEnabled = _selectionEnabled;
+    _selRegistrar = registrar;
+    _selColor = color;
+    _selDirection = direction;
+    for (final sel in _selections.values) {
+      sel.configure(registrar: registrar, color: color, direction: direction);
+    }
+    // Registrar appeared: live blocks synced without geometry — refetch.
+    if (!wasEnabled && registrar != null && attached) markNeedsLayout();
+  }
+
+  double _topOfId(String id) {
+    final i = _indexOfId[id];
+    return i == null || i >= _tops.length ? 0.0 : _tops[i];
+  }
+
+  void _rebuildBlockIndex() {
+    _indexOfId = {for (var i = 0; i < _blocks.length; i++) _blocks[i].id: i};
+  }
+
+  _DocSelection _selectionFor(String id) => _selections.putIfAbsent(id, () {
+    final sel = _DocSelection();
+    sel.configure(
+      registrar: _selRegistrar,
+      color: _selColor,
+      direction: _selDirection,
+    );
+    sel.repaint.addListener(markNeedsPaint);
+    if (attached) _bindBlockSelection(id, sel);
+    return sel;
+  });
+
+  void _bindBlockSelection(String id, _DocSelection sel) {
+    sel.bindHost(
+      this,
+      // Sliver-local = doc-local shifted by the block top minus the live
+      // scroll offset (same math as the strip paint).
+      shift: () => Offset(0, _topOfId(id) - constraints.scrollOffset),
+      size: () => sel._docSize,
+    );
+  }
+
+  void _disposeSelections() {
+    for (final sel in _selections.values) {
+      sel.repaint.removeListener(markNeedsPaint);
+      sel.dispose();
+    }
+    _selections.clear();
+  }
 
   // --- pipeline / cache state (mirrors _GPUTextBlocksViewState) ---
 
@@ -1127,6 +1386,13 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
   List<double> _tops = const [];
   double _totalHeight = 0;
   int _laidOut = 0;
+  // _tops/_totalHeight are a pure function of block heights, estimates,
+  // spacing, and cross-axis width — none of which a bare scroll touches. The
+  // viewport relayouts this sliver every scroll frame; recomputing the tops
+  // (O(n) over every block, plus a fresh List alloc) there was the dominant
+  // per-frame cost. Recompute only when an input is dirtied — see the gate in
+  // performLayout; _sync/_applyBlockDrawable recompute inline as heights land.
+  bool _topsDirty = true;
 
   // Estimate→real height deltas for blocks fully above the viewport,
   // accumulated by the sync loop and reported as scrollOffsetCorrection on
@@ -1168,6 +1434,12 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
   @visibleForTesting
   int get debugLaidOutCount => _laidOut;
 
+  /// Test hook: how many times the O(n) top/extent recompute actually ran.
+  /// A bare scroll (no new blocks, unchanged width/spacing) must not grow it.
+  @visibleForTesting
+  int get debugTopsRecomputes => _topsRecomputes;
+  int _topsRecomputes = 0;
+
   /// Test hook: whether a rasterized strip is currently cached.
   @visibleForTesting
   bool get debugHasWindow => _window != null;
@@ -1183,6 +1455,20 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
   bool get debugWindowComplete => _windowComplete;
 
   @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _selections.forEach(_bindBlockSelection);
+  }
+
+  @override
+  void detach() {
+    for (final sel in _selections.values) {
+      sel.unbindHost(this);
+    }
+    super.detach();
+  }
+
+  @override
   void dispose() {
     // Abandon in-flight sync; do NOT fire per-doc disposeDoc here — the
     // parent typically disposes the controller (killing the worker) right
@@ -1190,6 +1476,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     // every prepared doc.
     _disposed = true;
     _gen++;
+    _disposeSelections();
     _preparedLru.clear();
     _live.clear();
     _atlasTextures = null;
@@ -1211,12 +1498,16 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     _laidOut = 0;
     _tops = const [];
     _totalHeight = 0;
+    _topsDirty = true;
     _atlasTextures = null;
     _atlasGenOnGpu = -1;
     _pendingCorrection = 0;
     _window = null; // content actually changed — a stale strip would lie
     _windowComplete = false;
     _windowIsStale = false;
+    // Content changed: selections' source offsets no longer apply.
+    _disposeSelections();
+    _rebuildBlockIndex();
     _windowGen = -1;
     _rasterCrossAxis = -1;
     _rasterViewportExtent = -1;
@@ -1238,6 +1529,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     _laidOut = 0;
     _tops = const [];
     _totalHeight = 0;
+    _topsDirty = true;
     _pendingCorrection = 0;
     _windowGen = -1;
     _rasterCrossAxis = -1;
@@ -1282,6 +1574,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
   }
 
   void _recomputeTops(double width) {
+    _topsRecomputes++;
     final n = _blocks.length;
     final tops = List<double>.filled(n, 0);
     var y = 0.0;
@@ -1292,6 +1585,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     }
     _tops = tops;
     _totalHeight = y;
+    _topsDirty = false;
   }
 
   /// Indices whose [top, top+height] intersects [lo, hi].
@@ -1337,7 +1631,12 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
       geometry = SliverGeometry.zero;
       return;
     }
-    _recomputeTops(_width);
+    // Only rebuild tops when an input changed (a block laid out, width/DPR,
+    // spacing, or the block set) — never on a bare scroll. _invalidateForWidth
+    // above and the setters/resets flip _topsDirty; _sync recomputes inline as
+    // heights land. The length guard catches the first pass and any reset that
+    // emptied _tops. This is the change that takes scroll off the O(n) path.
+    if (_topsDirty || _tops.length != _blocks.length) _recomputeTops(_width);
 
     // Estimate→real height fixups land as a scroll-offset correction: the
     // viewport adjusts its offset by the delta and immediately re-runs our
@@ -1461,6 +1760,14 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
 
         final liveBefore = _live.length;
         _live.removeWhere((id, _) => !want.contains(id));
+        // Selection state follows the window, EXCEPT blocks holding a live
+        // selection — their highlight must survive scroll-away-and-back.
+        _selections.removeWhere((id, sel) {
+          if (want.contains(id) || sel.hasSelection) return false;
+          sel.repaint.removeListener(markNeedsPaint);
+          sel.dispose();
+          return true;
+        });
         var changed = _live.length != liveBefore;
 
         for (final chunk in _syncChunks(wantIdx, offset, _lastViewportH)) {
@@ -1473,17 +1780,26 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
           for (final i in chunk) {
             final doc = _blocks[i];
             _touchPrepared(doc.id);
-            if (!_live.containsKey(doc.id)) {
+            // A live block still needs a round trip when selection was
+            // enabled after it synced (no geometry request answered yet).
+            // Attempted, not "has geometry": a declined request (doc over
+            // the geometry budget) must not re-sync forever.
+            final needsGeometry =
+                _selectionEnabled &&
+                !(_selections[doc.id]?.geometryAttempted ?? false);
+            if (!_live.containsKey(doc.id) || needsGeometry) {
               docsToSync.add(doc);
               syncIdx.add(i);
             }
           }
           if (docsToSync.isEmpty) continue;
 
+          final geometryRequested = _selectionEnabled;
           final result = await _controller._syncDocs(
             docsToSync,
             width,
             dpr: dpr,
+            includeGeometry: geometryRequested,
           );
           if (result == null) return; // controller disposed mid-flight
           if (_disposed || gen != _gen || _controller._disposed) return;
@@ -1504,6 +1820,7 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
               offset,
               pipeline,
               gen,
+              geometryRequested: geometryRequested,
             );
           }
           changed = true;
@@ -1594,8 +1911,9 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     GPUTextInstances d,
     double offset,
     GPUTextPipeline pipeline,
-    int gen,
-  ) {
+    int gen, {
+    bool geometryRequested = false,
+  }) {
     final width = _width;
     final instances = d.materialize();
     final count = instances.length ~/ floatsPerInstance;
@@ -1605,6 +1923,15 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
     if (oldH != newH && _tops[i] + oldH <= offset) {
       // Fully above the viewport: correct on next layout pass.
       _pendingCorrection += newH - oldH;
+    }
+    // Same reply as the instances: selection rects always describe the
+    // pixels the strip will show.
+    if (_selectionEnabled || _selections.containsKey(doc.id)) {
+      _selectionFor(doc.id).applyDrawable(
+        d.materializeGeometry(),
+        Size(d.width, d.height),
+        requested: geometryRequested,
+      );
     }
     final firstTime = !_heights.containsKey(doc.id);
     _heights[doc.id] = newH;
@@ -1802,13 +2129,34 @@ class RenderSliverGPUTextBlocks extends RenderSliver {
       offset,
       Offset.zero & Size(w, h),
       (context, offset) {
-        final canvas = context.canvas;
         if (_background.a > 0) {
-          canvas.drawRect(offset & Size(w, h), Paint()..color = _background);
+          context.canvas.drawRect(
+            offset & Size(w, h),
+            Paint()..color = _background,
+          );
+        }
+        // Selection highlight + handle LeaderLayers, under the glyph strip
+        // (transparent composite clear).
+        if (_selections.isNotEmpty) {
+          for (final entry in _selections.entries) {
+            final sel = entry.value;
+            if (sel.fragments.isEmpty) continue;
+            final top = _topOfId(entry.key);
+            final so = offset + Offset(0, top - c.scrollOffset);
+            // Cull to the painted band (block-local space).
+            final cull = Rect.fromLTWH(0, c.scrollOffset - top, w, h);
+            for (final f in sel.fragments) {
+              f.paint(context, so, cull: cull);
+            }
+          }
         }
         final img = _window;
         if (img != null) {
-          canvas.drawImageRect(
+          // context.canvas is re-fetched here, NOT cached above the fragment
+          // pass: a fragment that pushed handle LeaderLayers ended the
+          // previous picture recording, killing any earlier canvas reference
+          // (native-peer StateError on next use).
+          context.canvas.drawImageRect(
             img,
             _windowSrc, // strip sub-rect: the backing texture is bucketed
             Rect.fromLTWH(

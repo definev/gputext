@@ -88,6 +88,40 @@ class _SliverBlocksDemoPageState extends State<SliverBlocksDemoPage> {
     ];
   }
 
+  List<InlineSpan> _buildRichText() {
+    const sentences = [
+      'Each paragraph here is an independent block: it is shaped on the '
+          'worker isolate only when it scrolls near the viewport.',
+      'Scroll extent starts from cheap estimates and converges to real '
+          'heights as blocks lay out.',
+      'When a block above the viewport resolves, the delta is reported as a '
+          'scroll-offset correction, so nothing on screen lurches.',
+      'GPU instance buffers exist only for blocks near the viewport; shaped '
+          'paragraphs stay warm under an LRU.',
+      'Grab the scrollbar and throw it to the middle — the blocks there lay '
+          'out on demand.',
+    ];
+    return [
+      for (var i = 0; i < _blockCount; i++)
+        TextSpan(
+          children: [
+            TextSpan(
+              text: '¶ $i  ',
+              style: const TextStyle(color: Color(0xFF9CA3AF)),
+            ),
+            TextSpan(
+              // Vary length so estimates are meaningfully wrong.
+              text: List.generate(
+                1 + (i * 7) % 5,
+                (k) => sentences[(i + k) % sentences.length],
+              ).join(' '),
+            ),
+          ],
+          style: const TextStyle(fontSize: 16, height: 1.4),
+        ),
+    ];
+  }
+
   @override
   void dispose() {
     _laidOut.dispose();
@@ -106,36 +140,40 @@ class _SliverBlocksDemoPageState extends State<SliverBlocksDemoPage> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     return Scaffold(
-      body: CustomScrollView(
-        slivers: [
-          SliverAppBar(
-            pinned: true,
-            title: const Text('SliverGPUTextBlocks'),
-            actions: [
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 16),
-                  child: ValueListenableBuilder<(int, int)>(
-                    valueListenable: _laidOut,
-                    builder: (context, v, _) => Text(
-                      'laid out ${v.$1} / ${v.$2}',
-                      style: const TextStyle(fontSize: 12),
+      // Selection: mouse-drag / long-press selects across the GPU blocks;
+      // touch-drag scrolls.
+      body: SelectionArea(
+        child: CustomScrollView(
+          slivers: [
+            SliverAppBar(
+              pinned: true,
+              title: const Text('SliverGPUTextBlocks'),
+              actions: [
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 16),
+                    child: ValueListenableBuilder<(int, int)>(
+                      valueListenable: _laidOut,
+                      builder: (context, v, _) => Text(
+                        'laid out ${v.$1} / ${v.$2}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-            sliver: SliverGPUTextBlocks(
-              controller: controller,
-              blocks: blocks,
-              blockSpacing: 12,
-              onLaidOutChanged: (n, total) => _laidOut.value = (n, total),
+              ],
             ),
-          ),
-        ],
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              sliver: SliverGPUTextBlocks(
+                controller: controller,
+                blocks: blocks,
+                blockSpacing: 12,
+                onLaidOutChanged: (n, total) => _laidOut.value = (n, total),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

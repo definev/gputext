@@ -8,7 +8,6 @@ environment:
   sdk: ^3.13.0-252.0.dev
 
 dependencies:
-  bitsdojo_window: ^0.1.6
   characters: ^1.4.0
   cupertino_icons: ^1.0.8
   flutter:
@@ -18,6 +17,7 @@ dependencies:
   gputext: ^0.1.0-dev.1
   # Version pinned by the Flutter SDK; used for in-app leak checks (debug).
   leak_tracker: any
+  markdown: ^7.3.0
   vector_math: ^2.1.4
 
 dev_dependencies:
@@ -31,11 +31,16 @@ flutter:
   uses-material-design: true
   assets:
     - assets/Lato-Regular.ttf
+    - assets/Lato-Bold.ttf
+    - assets/Lato-Italic.ttf
+    - assets/Lato-BoldItalic.ttf
     - assets/SourceSans3-Regular.otf
     - assets/TwemojiMozilla.ttf
     - assets/NotoColorEmoji.ttf
     - assets/NotoSansSC-subset.ttf
     - assets/Google_Sans_Flex/GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf
+    - assets/JetBrainsMono-Regular.ttf
+    - assets/JetBrainsMono-Bold.ttf
     - assets/bench/en-gatsby-opening.txt
     - assets/bench/zh-zhufu.txt
     - assets/bench/mixed-app-text.txt
@@ -43,6 +48,13 @@ flutter:
     - family: Lato
       fonts:
         - asset: assets/Lato-Regular.ttf
+        - asset: assets/Lato-Bold.ttf
+          weight: 700
+        - asset: assets/Lato-Italic.ttf
+          style: italic
+        - asset: assets/Lato-BoldItalic.ttf
+          weight: 700
+          style: italic
     - family: SourceSans3
       fonts:
         - asset: assets/SourceSans3-Regular.otf
@@ -58,3 +70,8 @@ flutter:
     - family: GoogleSansFlex
       fonts:
         - asset: assets/Google_Sans_Flex/GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/JetBrainsMono-Regular.ttf
+        - asset: assets/JetBrainsMono-Bold.ttf
+          weight: 700
