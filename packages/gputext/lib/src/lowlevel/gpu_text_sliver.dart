@@ -222,6 +222,8 @@ class RenderSliverGPUText extends RenderSliver
       // Measured placeholder sizes belong to the old content.
       _measuredDocId = null;
       _resolvedRuns = null;
+      _preparedRuns = null;
+      _measuredSizes = const {};
       markNeedsLayout(); // the measure pass runs during layout
     }
     // Same id ⇒ same content by the [GPUTextDocument.id] contract, so an
@@ -337,6 +339,17 @@ class RenderSliverGPUText extends RenderSliver
   Map<int, PlaceholderBox> _placeholderByIndex = const {};
   String? _measuredDocId;
   List<GPUInlineSpec>? _resolvedRuns;
+  // The runs instance the worker last (re-)prepared for this id; a resize hands
+  // [_resolvedRuns] a new instance, which is how [_reflow] knows to force a
+  // re-prepare.
+  List<GPUInlineSpec>? _preparedRuns;
+
+  // Last natural sizes reflowed for each sizeless [GPUWidgetSpan], keyed by
+  // placeholder index. Auto-sized children are re-measured under loose
+  // constraints on EVERY layout, so a hosted widget that changes size (an
+  // image decoding, an animation) re-triggers a reflow and the text re-weaves
+  // around it — not just once per document id.
+  Map<int, Size> _measuredSizes = const {};
 
   @override
   void setupParentData(RenderObject child) {
@@ -468,14 +481,22 @@ class RenderSliverGPUText extends RenderSliver
       if (doc.autoSizedPlaceholders.isNotEmpty && _measuredDocId != doc.id) {
         return;
       }
+      final runs = _resolvedRuns ?? doc.runs;
+      // A sizeless placeholder that resized hands us a fresh [runs] instance
+      // (new reserved box) under the same id — force the worker to re-shape it,
+      // else the cached paragraph keeps the old box and the text never re-weaves.
+      final force =
+          doc.autoSizedPlaceholders.isNotEmpty && !identical(runs, _preparedRuns);
       await _controller._ensurePrepared(
         doc.id,
-        _resolvedRuns ?? doc.runs,
+        runs,
         fallbackFontIds: doc.fallbackFontIds,
         emojiFontId: doc.emojiFontId,
         lineBreak: doc.lineBreak,
         language: doc.language,
+        force: force,
       );
+      _preparedRuns = runs;
       if (_disposed || _controller._disposed || epoch != _reflowEpoch) return;
       final sw = Stopwatch()..start();
       // The controller wrapper keeps the atlas mirror current (replies carry
@@ -627,41 +648,71 @@ class RenderSliverGPUText extends RenderSliver
     _updateWindow(c, contentH);
   }
 
-  /// Lay out the hosted placeholder children. A child whose index has a box
-  /// from the current drawable is laid out tight to it; everything else (the
-  /// pre-reflow frame, and the auto-size measure pass) is laid out under
-  /// loose constraints so sizeless [GPUWidgetSpan]s report their natural
-  /// size. The measure pass then patches the runs and re-kicks the reflow —
-  /// the extent is provisional for that one frame, exactly like the box
-  /// view's offstage measure.
+  /// Lay out the hosted placeholder children.
+  ///
+  /// Explicitly-sized [GPUWidgetSpan]s are laid out tight to their reserved
+  /// box. Sizeless ones are re-measured under loose constraints (capped to the
+  /// cross-axis width — an inline widget can't be wider than its line) on
+  /// EVERY layout and displayed at their natural size: an image finishing
+  /// decode or a widget animating its size relayouts the child, which lands
+  /// here, and any change from the last reflowed size re-kicks a reflow so the
+  /// text re-weaves around it. The extent is provisional for the one frame
+  /// between a size change and the reflow that lands, exactly as at first paint.
   void _layoutPlaceholderChildren() {
     if (firstChild == null) return;
     final doc = _document;
-    final needsMeasure =
-        doc.autoSizedPlaceholders.isNotEmpty && _measuredDocId != doc.id;
-    final measured = needsMeasure ? <int, Size>{} : null;
+    final auto = doc.autoSizedPlaceholders;
+    final measured = auto.isEmpty ? null : <int, Size>{};
+    final maxW = _width > 0 ? _width : double.infinity;
     var child = firstChild;
     while (child != null) {
       final pd = child.parentData! as _SliverPlaceholderParentData;
       final box = _placeholderByIndex[pd.index];
-      if (box != null && !needsMeasure) {
+      if (auto.contains(pd.index)) {
+        // Sizeless: measure natural size every layout so a resize reflows.
+        child.layout(BoxConstraints(maxWidth: maxW), parentUsesSize: true);
+        measured![pd.index] = child.size;
+        if (box != null) {
+          pd.offset = Offset(box.left, box.top);
+          pd.hasBox = true;
+        } else {
+          pd.hasBox = false; // pre-first-reflow: measured, not yet placed
+        }
+      } else if (box != null) {
         child.layout(BoxConstraints.tight(Size(box.width, box.height)));
         pd.offset = Offset(box.left, box.top);
         pd.hasBox = true;
       } else {
         child.layout(const BoxConstraints(), parentUsesSize: true);
-        measured?[pd.index] = child.size;
         pd.hasBox = false;
       }
       child = childAfter(child);
     }
-    if (needsMeasure) {
+    if (measured != null && _autoSizesChanged(doc, measured)) {
       _measuredDocId = doc.id;
-      _resolvedRuns = _resolvePlaceholderSpecSizes(doc.runs, {
-        for (final i in doc.autoSizedPlaceholders) i: measured![i] ?? Size.zero,
-      });
+      _measuredSizes = measured;
+      _resolvedRuns = _resolvePlaceholderSpecSizes(doc.runs, measured);
       _requestReflow();
     }
+  }
+
+  /// True when this measure pass differs from what we last reflowed — a new
+  /// document, or any sizeless placeholder whose natural size moved by more
+  /// than half a pixel (the epsilon keeps sub-pixel jitter from thrashing the
+  /// worker during an animation).
+  bool _autoSizesChanged(GPUTextDocument doc, Map<int, Size> now) {
+    if (_measuredDocId != doc.id || now.length != _measuredSizes.length) {
+      return true;
+    }
+    for (final e in now.entries) {
+      final prev = _measuredSizes[e.key];
+      if (prev == null ||
+          (prev.width - e.value.width).abs() > 0.5 ||
+          (prev.height - e.value.height).abs() > 0.5) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// Rasterize the viewport's cache region of the drawable when the cached

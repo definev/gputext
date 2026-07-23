@@ -280,4 +280,97 @@ void main() {
     expect(metrics, hasLength(2), reason: 'parked metrics must deliver');
     expect(scroll.offset, lessThanOrEqualTo(scroll.position.maxScrollExtent));
   });
+
+  testWidgets('re-weaves text when a sizeless GPUWidgetSpan child resizes', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(800, 600);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final controller = await _spawnController(tester);
+    addTearDown(controller.dispose);
+
+    // The sizeless span's child grows on demand; the trailing sized span sits
+    // right after it on the same line, so its left edge tracks the grown width.
+    final widthN = ValueNotifier<double>(40);
+    addTearDown(widthN.dispose);
+    const autoKey = Key('auto-span');
+    const trailerKey = Key('trailer-span');
+    final metrics = <GPUTextMetrics>[];
+
+    final doc = GPUTextDocument.rich(
+      'view-resize-span',
+      TextSpan(
+        style: const TextStyle(fontSize: 16),
+        children: [
+          const TextSpan(text: 'A '),
+          GPUWidgetSpan(
+            child: ValueListenableBuilder<double>(
+              valueListenable: widthN,
+              builder: (_, wv, _) => SizedBox(
+                key: autoKey,
+                width: wv,
+                height: 24,
+                child: const ColoredBox(color: Color(0xFFDDCC77)),
+              ),
+            ),
+          ),
+          GPUWidgetSpan(
+            size: const Size(30, 24),
+            child: const SizedBox(
+              key: trailerKey,
+              child: ColoredBox(color: Color(0xFF88CCEE)),
+            ),
+          ),
+          const TextSpan(text: ' end.'),
+        ],
+      ),
+      fontIdResolver: (_) => 'lato',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Align(
+          alignment: Alignment.topLeft,
+          child: GPUTextView(
+            controller: controller,
+            document: doc,
+            onMetrics: metrics.add,
+          ),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => metrics.isNotEmpty, reason: 'first reflow');
+    await tester.pump();
+
+    // The child measured at its natural 40px width; the trailer sits after it.
+    expect(
+      tester.getSize(find.byKey(autoKey)).width,
+      moreOrLessEquals(40, epsilon: 0.01),
+    );
+    final trailerLeft0 = tester.getTopLeft(find.byKey(trailerKey)).dx;
+    expect(trailerLeft0, greaterThan(40));
+
+    // Grow the hosted widget: the re-measure must re-kick the reflow so the
+    // trailer shifts right by the width delta — robust auto-size, not frozen
+    // at the first measured size.
+    widthN.value = 100;
+    await _pumpUntil(
+      tester,
+      () =>
+          (tester.getSize(find.byKey(autoKey)).width - 100).abs() < 0.01 &&
+          (tester.getTopLeft(find.byKey(trailerKey)).dx - (trailerLeft0 + 60))
+                  .abs() <
+              1.0,
+      reason: 'trailer must shift by the grown width',
+    );
+
+    expect(
+      tester.getTopLeft(find.byKey(trailerKey)).dx,
+      moreOrLessEquals(trailerLeft0 + 60, epsilon: 1.0),
+    );
+    expect(tester.takeException(), isNull);
+  });
 }

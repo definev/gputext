@@ -639,9 +639,19 @@ class GPUTextViewController {
     String? emojiFontId,
     LineBreakConfig? lineBreak,
     String? language,
+    bool force = false,
   }) {
     if (_disposed) return Future<bool>.value(false);
-    if (_prepared.contains(id)) return Future<bool>.value(false);
+    if (!force && _prepared.contains(id)) return Future<bool>.value(false);
+    // A forced re-prepare (a sizeless placeholder resized, so [runs] carries a
+    // new reserved box for the same id) must re-shape and REPLACE the worker's
+    // cached paragraph. Drop the warm marks so this doesn't coalesce with an
+    // in-flight prepare carrying the old runs; the worker processes 'doc'
+    // messages in send order, so the latest re-prepare wins.
+    if (force) {
+      _prepared.remove(id);
+      _preparing.remove(id);
+    }
     return _preparing.putIfAbsent(id, () async {
       try {
         if (_disposed) return false;
@@ -994,20 +1004,26 @@ class _GPUTextViewState extends State<GPUTextView> {
     for (final f in _selection.fragments) ...f.value.selectionRects,
   ];
 
-  // Auto-measure (prototype): for sizeless GPUWidgetSpans the child is measured
-  // off-screen (one frame) before layout. [_resolvedRuns] is document.runs with
-  // those placeholder boxes patched to the measured sizes; [_measuredDocId]
-  // marks the doc id it's valid for; [_measureKeys] read each child's size.
-  final Map<int, GlobalKey> _measureKeys = {};
+  // Auto-measure: for sizeless GPUWidgetSpans the child is hosted at its
+  // natural size (see [_autoPlaceholderLayer]) and re-measured on every layout,
+  // so a widget that changes size (an image decoding, an animation) re-weaves
+  // the text around it — not just once per document id. [_resolvedRuns] is
+  // document.runs with those placeholder boxes patched to the measured sizes;
+  // [_measuredSizes] is the last size reflowed for each placeholder index;
+  // [_measuredDocId] marks the doc id the reflow gate has opened for.
   String? _measuredDocId;
   List<GPUInlineSpec>? _resolvedRuns;
-  bool _measureScheduled = false;
+  // The runs instance the worker last (re-)prepared for this id; a resize hands
+  // [_resolvedRuns] a new instance, which is how [_reflow] knows to force a
+  // re-prepare.
+  List<GPUInlineSpec>? _preparedRuns;
+  final Map<int, Size> _measuredSizes = {};
+
+  // Placeholder boxes from the current drawable, keyed by index — the auto
+  // layer positions each sizeless GPUWidgetSpan over its laid-out box.
+  Map<int, PlaceholderBox> _placeholderByIndex = const {};
 
   double get _renderWidth => _docWidth > 0 ? _docWidth : _contentWidth;
-
-  bool get _needsMeasure =>
-      widget.document.autoSizedPlaceholders.isNotEmpty &&
-      _measuredDocId != widget.document.id;
 
   @override
   void initState() {
@@ -1110,7 +1126,8 @@ class _GPUTextViewState extends State<GPUTextView> {
       if (widget.document.id != old.document.id) {
         _measuredDocId = null;
         _resolvedRuns = null;
-        _measureScheduled = false;
+        _preparedRuns = null;
+        _measuredSizes.clear();
       }
       // Parent rebuilds routinely reconstruct an equivalent document (rich()
       // allocates fresh every build). Same id ⇒ same content by contract, so
@@ -1444,6 +1461,13 @@ class _GPUTextViewState extends State<GPUTextView> {
         sw.stop();
       } else {
         final runs = _resolvedRuns ?? doc.runs;
+        // A sizeless placeholder that resized hands us a fresh [runs] instance
+        // (new reserved box) under the same id — force the worker to re-shape
+        // it, else the cached paragraph keeps the old box and the text never
+        // re-weaves.
+        final force =
+            doc.autoSizedPlaceholders.isNotEmpty &&
+            !identical(runs, _preparedRuns);
         await widget.controller._ensurePrepared(
           doc.id,
           runs,
@@ -1451,7 +1475,9 @@ class _GPUTextViewState extends State<GPUTextView> {
           emojiFontId: doc.emojiFontId,
           lineBreak: doc.lineBreak,
           language: doc.language,
+          force: force,
         );
+        _preparedRuns = runs;
         if (!mounted || widget.controller._disposed || epoch != _reflowEpoch) {
           return;
         }
@@ -1514,6 +1540,10 @@ class _GPUTextViewState extends State<GPUTextView> {
     _docWidth = d.width;
     _docHeight = d.height;
     _placeholders = d.placeholders;
+    _placeholderByIndex = {
+      for (final b in d.placeholders)
+        if (b.index >= 0) b.index: b,
+    };
     _decorationsBelow = [
       for (final l in d.decorations)
         if (!l.aboveText) l,
@@ -1626,43 +1656,68 @@ class _GPUTextViewState extends State<GPUTextView> {
     return (image: image, src: surface.contentRect);
   }
 
-  // --- auto-measure (prototype) ---
+  // --- auto-measure ---
 
-  GlobalKey _measureKeyFor(int index) =>
-      _measureKeys.putIfAbsent(index, GlobalKey.new);
+  // A sizeless GPUWidgetSpan's child reported a new natural size (first layout,
+  // an image decoding, an animation growing it). Patch the resolved runs and
+  // reflow so the text re-weaves; the reflow gate opens once every sizeless
+  // placeholder has been measured at least once (avoids a flash of half-placed
+  // boxes on the first frame). Called from [_MeasureSize] during layout — safe
+  // because the reflow it kicks is async (no synchronous setState).
+  void _onAutoSize(int index, Size size) {
+    if (!mounted) return;
+    _measuredSizes[index] = size;
+    final doc = widget.document;
+    _resolvedRuns = _resolvePlaceholderSpecSizes(doc.runs, _measuredSizes);
+    if (doc.autoSizedPlaceholders.every(_measuredSizes.containsKey)) {
+      _measuredDocId = doc.id;
+    }
+    _requestReflow();
+  }
 
-  // An offstage layer that lays out each sizeless placeholder's child so we can
-  // read its natural size. Offstage lays the child out (reads its size) but
-  // reports zero size and never paints; Align(widthFactor/heightFactor: 1)
-  // shrink-wraps to the child under loose constraints.
-  Widget _measureLayer(GPUTextDocument doc) {
-    return Offstage(
+  // Hosts every sizeless GPUWidgetSpan as a single mounted child that both
+  // MEASURES (re-reporting on any size change) and DISPLAYS at natural size,
+  // positioned over its laid-out box. A child is [Offstage] until the first
+  // reflow gives it a box. A part-positioned [Positioned] (left/top only) hands
+  // its child UNBOUNDED loose constraints regardless of the content height, so
+  // the child reports its natural size even at first paint when there is no
+  // height yet; a [ConstrainedBox] caps the width to the content width — an
+  // inline widget can't be wider than its line. One mount (not a separate
+  // offstage measure copy) keeps a stateful/GlobalKey child from building twice.
+  Widget _autoPlaceholderLayer(GPUTextDocument doc, double w) {
+    final maxW = w.isFinite && w > 0 ? w : double.infinity;
+    return IgnorePointer(
       child: Stack(
+        fit: StackFit.expand,
         children: [
           for (final i in doc.autoSizedPlaceholders)
             if (doc.placeholderWidgets[i] case final child?)
-              Align(
-                key: _measureKeyFor(i),
-                widthFactor: 1,
-                heightFactor: 1,
-                child: child,
-              ),
+              _autoPlaceholderSlot(i, _placeholderByIndex[i], maxW, child),
         ],
       ),
     );
   }
 
-  void _readMeasures(GPUTextDocument doc) {
-    _measureScheduled = false;
-    if (!mounted || doc.id != widget.document.id) return;
-    final sizes = <int, Size>{};
-    for (final i in doc.autoSizedPlaceholders) {
-      sizes[i] = _measureKeys[i]?.currentContext?.size ?? Size.zero;
-    }
-    _measuredDocId = doc.id;
-    _resolvedRuns = _resolvePlaceholderSpecSizes(doc.runs, sizes);
-    setState(() {}); // drop the offstage measure layer
-    _requestReflow();
+  Widget _autoPlaceholderSlot(
+    int index,
+    PlaceholderBox? box,
+    double maxW,
+    Widget child,
+  ) {
+    return Positioned(
+      left: box?.left ?? 0,
+      top: box?.top ?? 0,
+      child: Offstage(
+        offstage: box == null,
+        child: _MeasureSize(
+          onChange: (size) => _onAutoSize(index, size),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: maxW),
+            child: child,
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -1757,17 +1812,11 @@ class _GPUTextViewState extends State<GPUTextView> {
                 _requestReflow();
               }
             }
-            // Auto-measure: while a doc has unmeasured placeholders, keep the
-            // offstage measure layer mounted and read the sizes next frame. The
-            // reflow gate holds until that lands.
+            // Auto-measure: sizeless placeholders self-report via the always-
+            // mounted [_autoPlaceholderLayer] (below), which re-kicks the reflow
+            // on any size change. The reflow gate holds until every one has a
+            // first size.
             final doc = widget.document;
-            if (_needsMeasure && !_measureScheduled) {
-              _measureScheduled = true;
-              // Must run after this frame's layout so GlobalKeys have sizes.
-              SchedulerBinding.instance.addPostFrameCallback(
-                (_) => mounted ? _readMeasures(doc) : null,
-              );
-            }
 
             // Full-content layers (chrome / selection / placeholders): static
             // between reflows, so each sits behind its own RepaintBoundary;
@@ -1833,7 +1882,6 @@ class _GPUTextViewState extends State<GPUTextView> {
             final body = Stack(
               fit: StackFit.expand,
               children: [
-                if (_needsMeasure) _measureLayer(doc),
                 // Backgrounds + underlines (under glyphs). GPU clear is
                 // transparent so these show through. RepaintBoundary: the
                 // picture is static between reflows — without it the parent
@@ -1909,6 +1957,12 @@ class _GPUTextViewState extends State<GPUTextView> {
                       ),
                     ),
                   ),
+                // Sizeless GPUWidgetSpans: mounted whenever the doc has any, so
+                // they bootstrap-measure before the first reflow and re-measure
+                // continuously (not gated on the raster window like the tight
+                // overlay above).
+                if (doc.autoSizedPlaceholders.isNotEmpty)
+                  _autoPlaceholderLayer(doc, w),
                 _hitLayer(),
               ],
             );
@@ -1966,12 +2020,18 @@ class _GPUTextViewState extends State<GPUTextView> {
     if (_selection.enabled) _requestReflow();
   }
 
-  /// Placeholders in document space, culled to the rasterized window.
+  /// Explicitly-sized placeholders in document space, culled to the rasterized
+  /// window and laid out tight to their reserved box. Sizeless ([auto-sized])
+  /// GPUWidgetSpans are hosted by [_autoPlaceholderLayer] instead (at their
+  /// natural size, always mounted so they can re-measure), so they are skipped
+  /// here — mounting them twice would build a stateful/GlobalKey child twice.
   Widget _placeholderOverlayWindow(double vh, double vw) {
+    final auto = widget.document.autoSizedPlaceholders;
     return Stack(
       children: [
         for (final box in _placeholders)
           if (box.index >= 0 &&
+              !auto.contains(box.index) &&
               box.top + box.height >= 0 &&
               box.top <= vh &&
               box.left + box.width >= 0 &&
@@ -3814,6 +3874,46 @@ class _RenderMeasuredBlock extends RenderProxyBox {
     if ((h - _reported).abs() > 0.01) {
       _reported = h;
       _onHeight(_id, h);
+    }
+  }
+}
+
+/// Reports its [child]'s laid-out size (under the loose constraints it is
+/// given — so it measures the child's NATURAL size) whenever that size changes
+/// by more than half a pixel, including async changes (an image finishing
+/// decode, an animation growing the child). Used to re-weave sizeless
+/// [GPUWidgetSpan]s around a hosted widget that resizes. The half-pixel epsilon
+/// keeps sub-pixel jitter from thrashing the worker during an animation.
+class _MeasureSize extends SingleChildRenderObjectWidget {
+  const _MeasureSize({required this.onChange, required Widget super.child});
+
+  final ValueChanged<Size> onChange;
+
+  @override
+  _RenderMeasureSize createRenderObject(BuildContext context) =>
+      _RenderMeasureSize(onChange);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderMeasureSize ro) =>
+      ro.onChange = onChange;
+}
+
+class _RenderMeasureSize extends RenderProxyBox {
+  _RenderMeasureSize(this._onChange);
+
+  ValueChanged<Size> _onChange;
+  set onChange(ValueChanged<Size> v) => _onChange = v;
+
+  Size _reported = const Size(-1, -1);
+
+  @override
+  void performLayout() {
+    super.performLayout(); // RenderProxyBox sizes to the child
+    final s = size;
+    if ((s.width - _reported.width).abs() > 0.5 ||
+        (s.height - _reported.height).abs() > 0.5) {
+      _reported = s;
+      _onChange(s);
     }
   }
 }
